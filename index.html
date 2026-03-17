@@ -1,0 +1,1647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Seventy Five | Planning Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Jost:wght@300;400;500&family=Pinyon+Script&display=swap" rel="stylesheet">
+
+  <!-- Firebase SDKs -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBmqd_uayeu-aCAteNoC5N5TIigbJhiKt8",
+      authDomain: "the75-portal.firebaseapp.com",
+      projectId: "the75-portal",
+      storageBucket: "the75-portal.firebasestorage.app",
+      messagingSenderId: "171312087304",
+      appId: "1:171312087304:web:8812330da476abfd94acbd",
+      measurementId: "G-Z31K5H21D4"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const provider = new GoogleAuthProvider();
+
+    let currentUser = null;
+    let autoSaveTimers = {};
+
+    // ── AUTH STATE ──────────────────────────────────────────────
+    onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        currentUser = user;
+        const userRef = doc(db, "couples", user.uid);
+        const snap = await getDoc(userRef);
+        if (!snap.exists()) {
+          await setDoc(userRef, {
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName || "",
+            createdAt: new Date().toISOString(),
+            meeting1: {}, meeting2: {}, meeting3: {}
+          });
+        }
+        document.getElementById("login-screen").style.display = "none";
+        document.getElementById("portal-root").style.display = "block";
+        const nameEl = document.getElementById("nav-user-name");
+        if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
+        await loadAllForms(user.uid);
+        updateAllProgress();
+      } else {
+        currentUser = null;
+        document.getElementById("login-screen").style.display = "flex";
+        document.getElementById("portal-root").style.display = "none";
+      }
+    });
+
+    // ── LOAD SAVED DATA ─────────────────────────────────────────
+    async function loadAllForms(uid) {
+      const snap = await getDoc(doc(db, "couples", uid));
+      if (!snap.exists()) return;
+      const data = snap.data();
+      ["meeting1","meeting2","meeting3"].forEach(meeting => {
+        const saved = data[meeting] || {};
+        Object.entries(saved).forEach(([key, val]) => {
+          const el = document.querySelector(`[data-field="${meeting}.${key}"]`);
+          if (!el) return;
+          if (el.type === "checkbox") { el.checked = val; }
+          else if (el.type === "radio") { el.checked = val; }
+          else { el.value = val; }
+        });
+      });
+    }
+
+    // ── SAVE FIELD ──────────────────────────────────────────────
+    window.saveField = async function(meeting, field, value) {
+      if (!currentUser) return;
+      const key = `${meeting}.${field}`;
+      clearTimeout(autoSaveTimers[key]);
+      autoSaveTimers[key] = setTimeout(async () => {
+        try {
+          await updateDoc(doc(db, "couples", currentUser.uid), {
+            [`${meeting}.${field}`]: value
+          });
+          showSaveIndicator(meeting, "saved");
+          updateProgress(meeting);
+        } catch(e) { showSaveIndicator(meeting, "error"); }
+      }, 800);
+    };
+
+    // ── MANUAL SAVE ─────────────────────────────────────────────
+    window.saveSection = async function(meeting) {
+      if (!currentUser) return;
+      const btn = document.getElementById(`save-btn-${meeting}`);
+      btn.textContent = "Saving…";
+      btn.disabled = true;
+      try {
+        const fields = document.querySelectorAll(`[data-field^="${meeting}."]`);
+        const updates = {};
+        fields.forEach(el => {
+          const fieldKey = el.getAttribute("data-field").replace(`${meeting}.`, "");
+          if (el.type === "checkbox") updates[`${meeting}.${fieldKey}`] = el.checked;
+          else if (el.type === "radio") { if (el.checked) updates[`${meeting}.${fieldKey}`] = el.value; }
+          else updates[`${meeting}.${fieldKey}`] = el.value;
+        });
+        await updateDoc(doc(db, "couples", currentUser.uid), updates);
+        btn.textContent = "✓ Saved!";
+        btn.style.background = "var(--gold)";
+        updateProgress(meeting);
+        setTimeout(() => { btn.textContent = "Save Progress"; btn.style.background = ""; btn.disabled = false; }, 2000);
+      } catch(e) { btn.textContent = "Save Progress"; btn.disabled = false; }
+    };
+
+    // ── PROGRESS ────────────────────────────────────────────────
+    function updateProgress(meeting) {
+      const fields = document.querySelectorAll(`[data-field^="${meeting}."]`);
+      let filled = 0, total = 0;
+      const counted = new Set();
+      fields.forEach(el => {
+        const key = el.getAttribute("data-field");
+        if (el.type === "checkbox" || el.type === "radio") {
+          if (!counted.has(el.name || key)) { counted.add(el.name || key); total++; }
+          if (el.checked && !counted.has("checked_" + (el.name || key))) { counted.add("checked_" + (el.name || key)); filled++; }
+        } else {
+          total++;
+          if (el.value && el.value.trim()) filled++;
+        }
+      });
+      const pct = total > 0 ? Math.round((filled/total)*100) : 0;
+      const bar = document.getElementById(`progress-bar-${meeting}`);
+      const label = document.getElementById(`progress-label-${meeting}`);
+      const stepPct = document.getElementById(`step-pct-${meeting}`);
+      if (bar) bar.style.width = pct + "%";
+      if (label) label.textContent = pct + "% Complete";
+      if (stepPct) stepPct.textContent = pct + "%";
+    }
+
+    window.updateAllProgress = function() {
+      ["meeting1","meeting2","meeting3"].forEach(updateProgress);
+    };
+
+    // ── SAVE INDICATOR ──────────────────────────────────────────
+    function showSaveIndicator(meeting, status) {
+      const el = document.getElementById(`autosave-${meeting}`);
+      if (!el) return;
+      el.textContent = status === "saved" ? "✓ Auto-saved" : "⚠ Save failed";
+      el.style.opacity = "1";
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => { el.style.opacity = "0"; }, 2000);
+    }
+
+    // ── AUTH FUNCTIONS ──────────────────────────────────────────
+    window.signInWithGoogle = async function() {
+      const btn = document.getElementById("btn-google");
+      btn.textContent = "Signing in…"; btn.disabled = true;
+      try { await signInWithPopup(auth, provider); }
+      catch(e) { btn.textContent = "Continue with Google"; btn.disabled = false; showLoginError(e.message); }
+    };
+
+    window.signInWithEmail = async function() {
+      const email = document.getElementById("login-email").value.trim();
+      const password = document.getElementById("login-password").value;
+      const btn = document.getElementById("btn-email");
+      if (!email || !password) { showLoginError("Please enter your email and password."); return; }
+      btn.textContent = "Signing in…"; btn.disabled = true;
+      try { await signInWithEmailAndPassword(auth, email, password); }
+      catch(e) {
+        if (e.code === "auth/user-not-found" || e.code === "auth/invalid-credential") {
+          try { await createUserWithEmailAndPassword(auth, email, password); }
+          catch(e2) { showLoginError("Incorrect email or password. Please try again."); }
+        } else { showLoginError(e.message); }
+        btn.textContent = "Sign In"; btn.disabled = false;
+      }
+    };
+
+    window.signOutUser = async function() { await signOut(auth); window.showPage('home'); };
+
+    function showLoginError(msg) {
+      const el = document.getElementById("login-error");
+      if (el) { el.textContent = msg; el.style.display = "block"; }
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const pw = document.getElementById("login-password");
+      if (pw) pw.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
+      const em = document.getElementById("login-email");
+      if (em) em.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
+    });
+  </script>
+
+  <style>
+    :root {
+      --cream: #F7F3EE;
+      --warm-white: #FDFAF6;
+      --gold: #B8965A;
+      --gold-light: #D4B483;
+      --gold-dark: #8B6E3A;
+      --charcoal: #2C2C2C;
+      --mid-gray: #6B6B6B;
+      --border: #E8E0D5;
+      --font-heading: 'Cormorant Garamond',Georgia,serif;
+      --font-body: 'Jost',sans-serif;
+      --font-script: 'Pinyon Script',cursive;
+    }
+    *{margin:0;padding:0;box-sizing:border-box;}
+    html{scroll-behavior:smooth;}
+    body{background:var(--cream);color:var(--charcoal);font-family:var(--font-body);font-weight:300;line-height:1.7;overflow-x:hidden;}
+    a{text-decoration:none;color:inherit;}
+    ul{list-style:none;}
+
+    /* ── LOGIN ── */
+    #login-screen{display:flex;min-height:100vh;background:var(--charcoal);position:relative;overflow:hidden;}
+    .login-bg{position:absolute;inset:0;background-image:url('https://images.unsplash.com/photo-1519225421980-715cb0215aed?auto=format&fit=crop&w=1920&q=80');background-size:cover;background-position:center;filter:brightness(0.3);}
+    .login-panel{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;padding:60px 24px;animation:fadeUp 0.9s ease both;}
+    .login-logo{text-align:center;margin-bottom:48px;}
+    .login-logo-script{font-family:var(--font-script);font-size:52px;color:var(--gold-light);display:block;line-height:1;margin-bottom:6px;}
+    .login-logo-text{font-family:var(--font-heading);font-size:11px;letter-spacing:0.38em;text-transform:uppercase;color:rgba(253,250,246,0.5);display:block;}
+    .login-divider{width:40px;height:1px;background:var(--gold);margin:20px auto;opacity:0.5;}
+    .login-eyebrow{font-size:10px;letter-spacing:0.25em;text-transform:uppercase;color:rgba(253,250,246,0.4);text-align:center;margin-bottom:36px;}
+    .login-card{background:rgba(253,250,246,0.04);border:1px solid rgba(232,224,213,0.15);backdrop-filter:blur(12px);padding:44px 40px;width:100%;max-width:420px;border-radius:2px;}
+    .login-card h2{font-family:var(--font-heading);font-size:28px;font-weight:300;color:var(--warm-white);text-align:center;margin-bottom:8px;}
+    .login-card h2 em{font-style:italic;color:var(--gold-light);}
+    .login-card-sub{font-size:12px;color:rgba(253,250,246,0.4);text-align:center;margin-bottom:32px;line-height:1.6;}
+    .btn-google{width:100%;padding:13px 20px;background:rgba(253,250,246,0.08);border:1px solid rgba(232,224,213,0.2);color:var(--warm-white);font-family:var(--font-body);font-size:11px;letter-spacing:0.15em;text-transform:uppercase;cursor:pointer;transition:all 0.25s;display:flex;align-items:center;justify-content:center;gap:12px;border-radius:1px;}
+    .btn-google:hover{background:rgba(253,250,246,0.14);}
+    .login-or{display:flex;align-items:center;gap:16px;margin:24px 0;}
+    .login-or::before,.login-or::after{content:'';flex:1;height:1px;background:rgba(232,224,213,0.12);}
+    .login-or span{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:rgba(253,250,246,0.25);}
+    .login-input{width:100%;padding:12px 16px;background:rgba(253,250,246,0.05);border:1px solid rgba(232,224,213,0.15);color:var(--warm-white);font-family:var(--font-body);font-size:14px;font-weight:300;border-radius:1px;margin-bottom:12px;transition:border-color 0.2s;outline:none;}
+    .login-input::placeholder{color:rgba(253,250,246,0.3);}
+    .login-input:focus{border-color:rgba(184,150,90,0.5);}
+    .btn-email{width:100%;padding:13px 20px;background:var(--gold);border:none;color:var(--warm-white);font-family:var(--font-body);font-size:11px;letter-spacing:0.2em;text-transform:uppercase;cursor:pointer;transition:background 0.25s;border-radius:1px;}
+    .btn-email:hover{background:var(--gold-dark);}
+    #login-error{display:none;margin-top:16px;font-size:12px;color:#e07070;text-align:center;line-height:1.5;}
+    .login-footer-note{margin-top:28px;font-size:11px;color:rgba(253,250,246,0.25);text-align:center;line-height:1.7;}
+
+    /* ── NAV ── */
+    nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(247,243,238,0.97);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:0 60px;display:flex;align-items:center;justify-content:space-between;height:72px;}
+    .nav-logo{display:flex;flex-direction:column;align-items:center;gap:2px;font-family:var(--font-heading);font-size:13px;font-weight:400;letter-spacing:0.35em;text-transform:uppercase;color:var(--charcoal);text-align:center;cursor:pointer;}
+    .nav-logo span{display:block;font-family:var(--font-script);font-size:26px;letter-spacing:0.02em;text-transform:none;color:var(--gold);line-height:1;}
+    .nav-links{display:flex;align-items:center;gap:40px;list-style:none;}
+    .nav-links a{font-size:11px;font-weight:400;letter-spacing:0.15em;text-transform:uppercase;color:var(--charcoal);transition:color 0.2s;}
+    .nav-links a:hover{color:var(--gold);}
+    .nav-dropdown{position:relative;}
+    .nav-dropdown-menu{display:none;position:absolute;top:calc(100% + 12px);left:50%;transform:translateX(-50%);background:var(--warm-white);border:1px solid var(--border);border-radius:2px;padding:12px 0;min-width:220px;box-shadow:0 8px 32px rgba(44,44,44,0.08);white-space:nowrap;z-index:200;}
+    .nav-dropdown::after{content:'';position:absolute;top:100%;left:0;right:0;height:14px;}
+    .nav-dropdown:hover .nav-dropdown-menu{display:block;}
+    .nav-dropdown-menu a{display:block;padding:10px 24px;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;}
+    .nav-dropdown-menu a:hover{background:var(--cream);color:var(--gold);}
+    .nav-user{display:flex;align-items:center;gap:16px;}
+    .nav-user-name{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--mid-gray);}
+    .nav-signout{font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--gold);cursor:pointer;background:none;border:none;font-family:var(--font-body);padding:0;transition:color 0.2s;}
+    .nav-signout:hover{color:var(--gold-dark);}
+
+    /* ── PAGE SYSTEM ── */
+    .page{display:none;}
+    .page.active{display:block;}
+
+    /* ── HERO ── */
+    .hero{height:100vh;min-height:700px;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+    .hero-bg{position:absolute;inset:0;background-image:url('https://images.unsplash.com/photo-1519225421980-715cb0215aed?auto=format&fit=crop&w=1920&q=80');background-size:cover;background-position:center;filter:brightness(0.45);}
+    .hero-content{position:relative;text-align:center;padding:0 40px;max-width:860px;animation:fadeUp 1.2s ease both;}
+    .hero-eyebrow{font-size:10px;font-weight:400;letter-spacing:0.3em;text-transform:uppercase;color:var(--gold-light);margin-bottom:28px;}
+    .hero-title{font-family:var(--font-heading);font-size:clamp(52px,8vw,96px);font-weight:300;color:#FDFAF6;line-height:1.1;margin-bottom:24px;}
+    .hero-title em{font-style:italic;color:var(--gold-light);}
+    .hero-subtitle{font-size:12px;letter-spacing:0.2em;text-transform:uppercase;color:rgba(253,250,246,0.5);margin-bottom:48px;}
+    .hero-cta{display:inline-block;padding:14px 44px;border:1px solid rgba(253,250,246,0.35);border-radius:1px;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#FDFAF6;transition:all 0.3s;}
+    .hero-cta:hover{background:rgba(253,250,246,0.1);border-color:rgba(253,250,246,0.6);}
+    .hero-scroll{position:absolute;bottom:40px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:10px;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:rgba(253,250,246,0.3);}
+    .scroll-line{width:1px;height:48px;background:linear-gradient(to bottom,transparent,var(--gold-light),transparent);animation:scrollPulse 2.5s ease-in-out infinite;}
+    @keyframes scrollPulse{0%,100%{opacity:0.3;}50%{opacity:0.8;}}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(24px);}to{opacity:1;transform:translateY(0);}}
+
+    /* ── WELCOME ── */
+    .welcome{padding:120px 60px;max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center;}
+    .section-label{font-size:10px;letter-spacing:0.28em;text-transform:uppercase;color:var(--gold);margin-bottom:20px;display:block;}
+    .welcome-left h2{font-family:var(--font-heading);font-size:clamp(34px,4vw,52px);font-weight:300;color:var(--charcoal);line-height:1.2;margin-bottom:28px;}
+    .welcome-left h2 em{font-style:italic;color:var(--gold);}
+    .welcome-left p{font-size:15px;line-height:1.85;color:var(--mid-gray);}
+    .welcome-signature{font-family:var(--font-heading);font-size:18px;font-style:italic;font-weight:300;color:var(--charcoal);line-height:1.7;border-left:2px solid var(--gold);padding-left:28px;}
+    .welcome-sig-title{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:var(--gold);margin-top:16px;display:block;}
+    .ornament-divider{display:flex;align-items:center;gap:24px;padding:0 60px;}
+    .ornament-divider::before,.ornament-divider::after{content:'';flex:1;height:1px;background:linear-gradient(to right,transparent,var(--gold-light));}
+    .ornament-divider::after{background:linear-gradient(to left,transparent,var(--gold-light));}
+    .ornament-icon{font-size:18px;color:var(--gold);opacity:0.6;letter-spacing:0.5em;}
+
+    /* ── JOURNEY ── */
+    .journey{background:var(--charcoal);padding:120px 60px;}
+    .journey::before{content:'';display:block;width:1px;height:60px;background:linear-gradient(to bottom,transparent,var(--gold-light),transparent);margin:0 auto 48px;}
+    .journey-header{text-align:center;margin-bottom:72px;}
+    .journey-header h2{font-family:var(--font-heading);font-size:clamp(36px,5vw,60px);font-weight:300;color:var(--warm-white);line-height:1.15;}
+    .journey-header h2 em{font-style:italic;color:var(--gold-light);}
+    .journey-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;max-width:1200px;margin:0 auto;}
+    .journey-step{background:rgba(253,250,246,0.03);padding:48px 36px;color:inherit;display:block;transition:background 0.3s;cursor:pointer;position:relative;}
+    .journey-step:hover{background:rgba(184,150,90,0.12);}
+    .step-number{font-family:var(--font-heading);font-size:80px;font-weight:300;color:rgba(212,180,131,0.15);line-height:1;margin-bottom:8px;}
+    .step-tag{font-size:9px;letter-spacing:0.22em;text-transform:uppercase;color:var(--gold);margin-bottom:16px;display:block;}
+    .step-title{font-family:var(--font-heading);font-size:26px;font-weight:300;color:var(--warm-white);margin-bottom:16px;line-height:1.2;}
+    .step-desc{font-size:13px;line-height:1.75;color:rgba(253,250,246,0.5);margin-bottom:24px;}
+    .step-items{margin-bottom:28px;}
+    .step-items li{font-size:12px;color:rgba(253,250,246,0.4);padding:7px 0;border-bottom:1px solid rgba(232,224,213,0.08);display:flex;align-items:center;gap:10px;}
+    .step-items li:last-child{border-bottom:none;}
+    .step-items li::before{content:'';width:4px;height:4px;background:var(--gold);border-radius:50%;flex-shrink:0;}
+    .step-cta{font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:var(--gold);display:inline-flex;align-items:center;gap:8px;}
+    .step-cta::after{content:'→';}
+    .step-progress-badge{position:absolute;top:20px;right:20px;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--gold-light);background:rgba(184,150,90,0.15);border:1px solid rgba(184,150,90,0.2);padding:4px 10px;border-radius:1px;}
+
+    /* ── RESOURCES ── */
+    .resources{padding:120px 60px;background:var(--warm-white);}
+    .resources-header{text-align:center;margin-bottom:72px;}
+    .resources-header h2{font-family:var(--font-heading);font-size:clamp(36px,5vw,60px);font-weight:300;color:var(--charcoal);line-height:1.15;}
+    .resources-header h2 em{font-style:italic;color:var(--gold);}
+    .resources-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;max-width:1200px;margin:0 auto;}
+    .resource-card{background:var(--cream);padding:44px 36px;display:block;transition:background 0.3s;}
+    .resource-card:hover{background:var(--warm-white);}
+    .resource-icon{width:40px;height:1px;background:linear-gradient(90deg,var(--gold),var(--gold-light));margin-bottom:28px;}
+    .resource-card h3{font-family:var(--font-heading);font-size:22px;font-weight:400;color:var(--charcoal);margin-bottom:12px;}
+    .resource-card p{font-size:13px;line-height:1.75;color:var(--mid-gray);margin-bottom:24px;}
+    .resource-link{font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:var(--gold-dark);display:inline-flex;align-items:center;gap:8px;}
+    .resource-link::after{content:'→';}
+
+    /* ── FOOTER ── */
+    footer{background:var(--charcoal);color:rgba(253,250,246,0.5);padding:72px 60px 40px;}
+    .footer-grid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:60px;max-width:1200px;margin:0 auto 48px;}
+    .footer-logo{font-family:var(--font-heading);font-size:13px;letter-spacing:0.35em;text-transform:uppercase;color:rgba(253,250,246,0.6);margin-bottom:4px;}
+    .footer-logo span{display:block;font-family:var(--font-script);font-size:28px;letter-spacing:0.02em;text-transform:none;color:var(--gold);margin-bottom:4px;}
+    footer p{font-size:13px;line-height:1.7;}
+    footer h4{font-size:10px;font-weight:400;letter-spacing:0.22em;text-transform:uppercase;color:rgba(253,250,246,0.3);margin-bottom:16px;}
+    footer ul li{margin-bottom:10px;}
+    footer ul li a{font-size:13px;color:rgba(253,250,246,0.5);transition:color 0.2s;}
+    footer ul li a:hover{color:var(--gold);}
+    .footer-bottom{max-width:1200px;margin:0 auto;padding-top:32px;border-top:1px solid rgba(253,250,246,0.08);display:flex;align-items:center;justify-content:space-between;font-size:11px;}
+
+    /* ── MEETING PAGES ── */
+    .meeting-hero{height:45vh;min-height:360px;position:relative;display:flex;align-items:flex-end;overflow:hidden;margin-top:72px;}
+    .meeting-hero-bg{position:absolute;inset:0;background-size:cover;background-position:center;filter:brightness(0.4);}
+    .meeting1-bg{background-image:url('https://images.unsplash.com/photo-1511795409834-ef04bbd61622?auto=format&fit=crop&w=1920&q=80');}
+    .meeting2-bg{background-image:url('https://images.unsplash.com/photo-1550005809-91ad75fb315f?auto=format&fit=crop&w=1920&q=80');}
+    .meeting3-bg{background-image:url('https://images.unsplash.com/photo-1606800052052-a08af7148866?auto=format&fit=crop&w=1920&q=80');}
+    .meeting-hero-content{position:relative;padding:0 60px 48px;max-width:900px;}
+    .meeting-hero-content h1{font-family:var(--font-heading);font-size:clamp(40px,6vw,72px);font-weight:300;color:var(--warm-white);line-height:1.1;margin-bottom:12px;}
+    .meeting-hero-content h1 em{font-style:italic;color:var(--gold-light);}
+    .meeting-hero-content p{font-size:13px;letter-spacing:0.12em;color:rgba(253,250,246,0.55);text-transform:uppercase;}
+
+    /* ── PROGRESS BAR ── */
+    .meeting-progress-bar{background:var(--charcoal);padding:20px 60px;display:flex;align-items:center;gap:24px;}
+    .progress-track{flex:1;height:3px;background:rgba(253,250,246,0.08);border-radius:2px;overflow:hidden;}
+    .progress-fill{height:100%;background:linear-gradient(90deg,var(--gold),var(--gold-light));border-radius:2px;transition:width 0.5s ease;width:0%;}
+    .progress-text{font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:var(--gold-light);white-space:nowrap;}
+    .autosave-indicator{font-size:10px;color:var(--gold-light);opacity:0;transition:opacity 0.3s;letter-spacing:0.08em;}
+
+    /* ── PLANNING FORM ── */
+    .planning-form-wrap{padding:60px;background:var(--cream);max-width:1100px;margin:0 auto;}
+    .form-section-block{margin-bottom:60px;}
+    .form-section-title{font-family:var(--font-heading);font-size:clamp(24px,3vw,36px);font-weight:300;color:var(--charcoal);line-height:1.2;margin-bottom:6px;}
+    .form-section-title em{font-style:italic;color:var(--gold);}
+    .form-section-intro{font-size:13px;color:var(--mid-gray);margin-bottom:32px;line-height:1.7;border-left:2px solid var(--gold);padding-left:16px;}
+    .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px 40px;}
+    .form-grid.single{grid-template-columns:1fr;}
+    .form-group{display:flex;flex-direction:column;gap:8px;}
+    .form-group.full{grid-column:1/-1;}
+    .form-label{font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--charcoal);font-weight:400;}
+    .form-label-note{font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;font-weight:300;display:block;margin-top:2px;}
+    .form-input{padding:11px 14px;background:var(--warm-white);border:1px solid var(--border);color:var(--charcoal);font-family:var(--font-body);font-size:13px;font-weight:300;border-radius:1px;transition:border-color 0.2s;outline:none;width:100%;}
+    .form-input:focus{border-color:var(--gold);}
+    .form-textarea{padding:12px 14px;background:var(--warm-white);border:1px solid var(--border);color:var(--charcoal);font-family:var(--font-body);font-size:13px;font-weight:300;border-radius:1px;transition:border-color 0.2s;outline:none;width:100%;resize:vertical;min-height:100px;line-height:1.6;}
+    .form-textarea:focus{border-color:var(--gold);}
+    .form-textarea.tall{min-height:140px;}
+
+    /* ── CHECKBOXES & RADIOS ── */
+    .check-group{display:flex;flex-direction:column;gap:10px;margin-top:4px;}
+    .check-group.inline{flex-direction:row;flex-wrap:wrap;gap:10px 24px;}
+    .check-item{display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13px;color:var(--mid-gray);line-height:1.5;}
+    .check-item input[type="checkbox"],.check-item input[type="radio"]{appearance:none;-webkit-appearance:none;width:16px;height:16px;border:1px solid var(--border);background:var(--warm-white);border-radius:1px;flex-shrink:0;margin-top:2px;cursor:pointer;transition:all 0.2s;position:relative;}
+    .check-item input[type="radio"]{border-radius:50%;}
+    .check-item input[type="checkbox"]:checked{background:var(--gold);border-color:var(--gold);}
+    .check-item input[type="radio"]:checked{background:var(--gold);border-color:var(--gold);}
+    .check-item input[type="checkbox"]:checked::after{content:'✓';position:absolute;top:-1px;left:2px;font-size:11px;color:white;font-weight:bold;}
+
+    /* ── SAVE BUTTON ── */
+    .form-save-row{display:flex;align-items:center;gap:20px;padding:32px 0;border-top:1px solid var(--border);margin-top:20px;}
+    .btn-save{padding:14px 40px;background:var(--charcoal);color:var(--warm-white);font-family:var(--font-body);font-size:10px;font-weight:400;letter-spacing:0.2em;text-transform:uppercase;border:none;cursor:pointer;transition:background 0.25s;border-radius:1px;}
+    .btn-save:hover{background:var(--gold-dark);}
+    .btn-back{display:inline-block;padding:12px 28px;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;font-weight:400;letter-spacing:0.18em;text-transform:uppercase;transition:all 0.2s;cursor:pointer;background:none;font-family:var(--font-body);}
+    .btn-back:hover{border-color:var(--gold);color:var(--gold);}
+
+    /* ── FORM DIVIDER ── */
+    .form-divider{height:1px;background:linear-gradient(to right,transparent,var(--border),transparent);margin:48px 0;}
+
+    /* ── RESPONSIVE ── */
+    @media(max-width:900px){
+      nav{padding:0 24px;}
+      .welcome{grid-template-columns:1fr;padding:80px 24px;gap:40px;}
+      .journey{padding:80px 24px;}
+      .journey-steps{grid-template-columns:1fr;}
+      .resources{padding:80px 24px;}
+      .resources-grid{grid-template-columns:1fr;}
+      .planning-form-wrap{padding:40px 24px;}
+      .form-grid{grid-template-columns:1fr;}
+      .meeting-hero-content{padding:0 24px 40px;}
+      .meeting-progress-bar{padding:16px 24px;}
+      .footer-grid{grid-template-columns:1fr;gap:32px;}
+      footer{padding:48px 24px 32px;}
+      .ornament-divider{padding:0 24px;}
+      .check-group.inline{flex-direction:column;}
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════ LOGIN SCREEN ══════════════════ -->
+<div id="login-screen">
+  <div class="login-bg"></div>
+  <div class="login-panel">
+    <div class="login-logo">
+      <span class="login-logo-script">The Seventy Five</span>
+      <span class="login-logo-text">Planning Portal</span>
+    </div>
+    <div class="login-divider"></div>
+    <p class="login-eyebrow">Welcome &mdash; Please sign in to continue</p>
+    <div class="login-card">
+      <h2>Your wedding,<br><em>beautifully planned.</em></h2>
+      <p class="login-card-sub">Sign in to access your personal planning portal and pick up right where you left off.</p>
+      <button class="btn-google" id="btn-google" onclick="window.signInWithGoogle()">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z" fill="#4285F4"/><path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/><path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/><path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/></svg>
+        Continue with Google
+      </button>
+      <div class="login-or"><span>or</span></div>
+      <input class="login-input" type="email" id="login-email" placeholder="Email address" autocomplete="email"/>
+      <input class="login-input" type="password" id="login-password" placeholder="Password" autocomplete="current-password"/>
+      <button class="btn-email" id="btn-email" onclick="window.signInWithEmail()">Sign In</button>
+      <div id="login-error"></div>
+      <p class="login-footer-note">New here? Enter your email and create a password<br>to set up your account in seconds.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ PORTAL ROOT ══════════════════ -->
+<div id="portal-root" style="display:none;">
+
+<!-- NAV -->
+<nav id="main-nav">
+  <a class="nav-logo" onclick="window.showPage('home');return false;" href="#">
+    <span>The Seventy Five</span>
+    PLANNING PORTAL
+  </a>
+  <ul class="nav-links">
+    <li><a href="#" onclick="window.showPage('home');return false;">Home</a></li>
+    <li class="nav-dropdown">
+      <a href="#">Planning Meetings &#9662;</a>
+      <div class="nav-dropdown-menu">
+        <a href="#" onclick="window.showPage('meeting1');return false;">First Planning Meeting</a>
+        <a href="#" onclick="window.showPage('meeting2');return false;">Second Planning Meeting</a>
+        <a href="#" onclick="window.showPage('meeting3');return false;">Final Planning Meeting</a>
+      </div>
+    </li>
+    <li><a href="#" onclick="window.showPage('home');setTimeout(()=>{document.getElementById('resources').scrollIntoView({behavior:'smooth'})},100);return false;">Resources</a></li>
+    <li><a href="https://theseventyfive.hbportal.co/app/" target="_blank">Contact</a></li>
+  </ul>
+  <div class="nav-user">
+    <span class="nav-user-name">Welcome, <span id="nav-user-name"></span></span>
+    <button class="nav-signout" onclick="window.signOutUser()">Sign Out</button>
+  </div>
+</nav>
+
+<!-- ══════════════════ HOME PAGE ══════════════════ -->
+<div id="page-home" class="page active">
+  <section class="hero">
+    <div class="hero-bg"></div>
+    <div class="hero-content">
+      <p class="hero-eyebrow">Welcome to Your Planning Portal</p>
+      <h1 class="hero-title">Your dream day,<br><em>thoughtfully planned.</em></h1>
+      <p class="hero-subtitle">The Seventy Five &middot; Rockbridge, Ohio</p>
+      <a href="#welcome" class="hero-cta">Begin Your Journey</a>
+    </div>
+    <div class="hero-scroll"><div class="scroll-line"></div><span>Scroll</span></div>
+  </section>
+
+  <div class="welcome" id="welcome">
+    <div class="welcome-left">
+      <span class="section-label">Welcome</span>
+      <h2>Planning your wedding should feel as <em>beautiful</em> as the day itself.</h2>
+      <p>This portal is your dedicated planning home &mdash; a place where every detail, every vision, and every decision lives in one beautiful space.</p>
+      <br>
+      <p>Here you will find everything you need: your planning forms, resources, vendor guides, and direct access to your coordinator at every step. Your answers save automatically so you can always pick up right where you left off.</p>
+    </div>
+    <div class="welcome-right">
+      <div class="welcome-signature">
+        &ldquo;We have poured our hearts into creating not just a venue, but a full planning experience that ensures your day is as perfect as you imagined.&rdquo;
+        <span class="welcome-sig-title">Emily Britt &middot; Co-Owner, The Seventy Five</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="ornament-divider"><span class="ornament-icon">&#10022; &#10022; &#10022;</span></div>
+
+  <section class="journey" id="journey">
+    <div class="journey-header">
+      <span class="section-label">Your Planning Journey</span>
+      <h2>Three meetings.<br><em>One perfect day.</em></h2>
+    </div>
+    <div class="journey-steps">
+      <a class="journey-step" href="#" onclick="window.showPage('meeting1');return false;">
+        <span class="step-progress-badge" id="step-pct-meeting1">0%</span>
+        <div class="step-number">01</div>
+        <span class="step-tag">After Signing &middot; Online Google Meet</span>
+        <div class="step-title">First Planning Meeting</div>
+        <p class="step-desc">Your introduction to the planning process. We uncover your vision, priorities, and all the beautiful details that make your day uniquely yours.</p>
+        <ul class="step-items">
+          <li>Vision, style &amp; color palette</li>
+          <li>Ceremony dreams &amp; traditions</li>
+          <li>Vendor introductions</li>
+          <li>Guest count &amp; logistics</li>
+          <li>Box Hops lodging</li>
+        </ul>
+        <span class="step-cta">Open Planning Form</span>
+      </a>
+      <a class="journey-step" href="#" onclick="window.showPage('meeting2');return false;">
+        <span class="step-progress-badge" id="step-pct-meeting2">0%</span>
+        <div class="step-number">02</div>
+        <span class="step-tag">Halfway Point &middot; In Person at The 75</span>
+        <div class="step-title">Second Planning Meeting</div>
+        <p class="step-desc">The details come to life. Bring your d&eacute;cor, choose your linens, and lock in the look and feel of your wedding day.</p>
+        <ul class="step-items">
+          <li>D&eacute;cor &amp; linen selections</li>
+          <li>Vendor confirmation</li>
+          <li>Day-of flow &amp; timeline</li>
+          <li>Ceremony &amp; reception details</li>
+          <li>Security deposit due</li>
+        </ul>
+        <span class="step-cta">Open Planning Form</span>
+      </a>
+      <a class="journey-step" href="#" onclick="window.showPage('meeting3');return false;">
+        <span class="step-progress-badge" id="step-pct-meeting3">0%</span>
+        <div class="step-number">03</div>
+        <span class="step-tag">4&ndash;6 Weeks Out &middot; Virtual with Vendors</span>
+        <div class="step-title">Final Planning Meeting</div>
+        <p class="step-desc">The final alignment call. Your lead coordinator, caterer, DJ, and photographer come together to confirm every detail.</p>
+        <ul class="step-items">
+          <li>Complete timeline confirmation</li>
+          <li>Ceremony lineup finalized</li>
+          <li>All vendor arrival times locked</li>
+          <li>Rain plan confirmed</li>
+          <li>Special logistics reviewed</li>
+        </ul>
+        <span class="step-cta">Open Planning Form</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="resources" id="resources">
+    <div class="resources-header">
+      <span class="section-label">Resources</span>
+      <h2>Everything you<br>need in <em>one place.</em></h2>
+    </div>
+    <div class="resources-grid">
+      <a class="resource-card" href="assets/docs/Wedding_Guide.pdf" target="_blank"><div class="resource-icon"></div><h3>Wedding Guide</h3><p>Your comprehensive guide to planning at The Seventy Five &mdash; checklists, timelines, and everything you need to know.</p><span class="resource-link">Download Guide</span></a>
+      <a class="resource-card" href="assets/docs/Wedding_Guide.pdf#page=6" target="_blank"><div class="resource-icon"></div><h3>Preferred Vendors</h3><p>Our carefully curated list of trusted caterers, florists, photographers, DJs, and more &mdash; all familiar with The 75.</p><span class="resource-link">View Vendors</span></a>
+      <a class="resource-card" href="assets/docs/Reserving_The_Box_Hops.pdf" target="_blank"><div class="resource-icon"></div><h3>The Box Hops</h3><p>As a Seventy Five couple, you have priority access to our six stunning Box Hop Airbnbs &mdash; three on our property and three nearby.</p><span class="resource-link">Explore Lodging</span></a>
+      <a class="resource-card" href="https://www.linenshowroom.com" target="_blank"><div class="resource-icon"></div><h3>Linen Showroom</h3><p>Browse and design your custom linen color palette. <strong>Username:</strong> The 75 &middot; <strong>Password:</strong> Events</p><span class="resource-link">Visit Linenshowroom.com</span></a>
+      <a class="resource-card" href="https://venue.prismm.com/?extluid=88ec036c-d361-46bc-9f31-e4fb97d5fc1f" target="_blank"><div class="resource-icon"></div><h3>Venue Layout</h3><p>Explore floor plan options for your ceremony and reception. Use Prismm to visualize your setup and send to your coordinator.</p><span class="resource-link">View Floor Plans</span></a>
+      <a class="resource-card" href="https://theseventyfive.hbportal.co/app/" target="_blank"><div class="resource-icon"></div><h3>Contact Your Coordinator</h3><p>Have a question between meetings? Reach out to your lead coordinator or venue manager directly. We are always here.</p><span class="resource-link">Open Client Portal</span></a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="footer-grid">
+      <div>
+        <div class="footer-logo"><span>The Seventy Five</span>BY BOX HOP</div>
+        <p style="margin-top:16px;">A scene for your unforgettable experience.<br>10835 State Route 374, Rockbridge, Ohio 43149</p>
+      </div>
+      <div>
+        <h4>Planning</h4>
+        <ul>
+          <li><a href="#" onclick="window.showPage('meeting1');return false;">First Planning Meeting</a></li>
+          <li><a href="#" onclick="window.showPage('meeting2');return false;">Second Planning Meeting</a></li>
+          <li><a href="#" onclick="window.showPage('meeting3');return false;">Final Planning Meeting</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Contact</h4>
+        <ul>
+          <li><a href="mailto:events@theseventyfivevenue.com">events@theseventyfivevenue.com</a></li>
+          <li><a href="mailto:stay@theboxhop.com">stay@theboxhop.com</a></li>
+          <li><a href="https://theseventyfivevenue.com" target="_blank">theseventyfivevenue.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; 2025 The Seventy Five Venue by Box Hop &middot; All rights reserved.</span>
+      <span>@theseventyfivevenue</span>
+    </div>
+  </footer>
+</div><!-- end page-home -->
+
+
+<!-- ══════════════════ MEETING 1 ══════════════════ -->
+<div id="page-meeting1" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting1-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Meeting One &middot; Online Google Meet &middot; 30 Minutes</span>
+      <h1>First Planning<br><em>Meeting</em></h1>
+      <p>This is where your vision takes shape.</p>
+    </div>
+  </div>
+  <div class="meeting-progress-bar">
+    <div class="progress-track"><div class="progress-fill" id="progress-bar-meeting1"></div></div>
+    <span class="progress-text" id="progress-label-meeting1">0% Complete</span>
+    <span class="autosave-indicator" id="autosave-meeting1"></span>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:48px;line-height:1.8;font-style:italic;">"It's time to dream big! In this first planning meeting, we'll uncover your wedding style, define your priorities, and make sure the details line up with the experience you want to create. Fill in what you know — you can always come back to update your answers."</p>
+
+    <!-- SECTION 1: Couple & Event Basics -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Couple &amp; Event <em>Basics</em></h2>
+      <p class="form-section-intro">Let's start with the essentials. These details help us understand who you are and what your day looks like.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Bride + Groom Full Names</label>
+          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bride's Phone Number</label>
+          <input type="text" class="form-input" data-field="meeting1.bridePhone" placeholder="e.g. 614.555.1234" oninput="window.saveField('meeting1','bridePhone',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Groom's Phone Number</label>
+          <input type="text" class="form-input" data-field="meeting1.groomPhone" placeholder="e.g. 614.555.5678" oninput="window.saveField('meeting1','groomPhone',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Wedding Date</label>
+          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Wedding Planner Name &amp; Contact <span class="form-label-note">If applicable</span></label>
+          <input type="text" class="form-input" data-field="meeting1.weddingPlanner" placeholder="Name &amp; phone number" oninput="window.saveField('meeting1','weddingPlanner',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony Time <span class="form-label-note">Approximate is fine</span></label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reception Start Time <span class="form-label-note">Approximate is fine</span></label>
+          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony Location Name <span class="form-label-note">If not at The Seventy Five</span></label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Time of Guest Arrival</label>
+          <input type="text" class="form-input" data-field="meeting1.guestArrival" placeholder="e.g. 4:00 PM" oninput="window.saveField('meeting1','guestArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Estimated Guest Count</label>
+          <input type="text" class="form-input" data-field="meeting1.guestCount" placeholder="e.g. 150" oninput="window.saveField('meeting1','guestCount',this.value)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Family Dynamic <span class="form-label-note">Any specific family dynamics or occurrences you'd like us to be aware of throughout the process</span></label>
+          <textarea class="form-textarea" data-field="meeting1.familyDynamic" placeholder="Share anything that would help us serve your family better..." oninput="window.saveField('meeting1','familyDynamic',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Will children be in attendance? <span class="form-label-note">Anyone under 18</span></label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="radio" name="m1_children" data-field="meeting1.children" value="Yes" onchange="window.saveField('meeting1','children','Yes')"><span>Yes</span></label>
+            <label class="check-item"><input type="radio" name="m1_children" data-field="meeting1.children" value="No" onchange="window.saveField('meeting1','children','No')"><span>No</span></label>
+            <label class="check-item"><input type="radio" name="m1_children" data-field="meeting1.children" value="Not sure yet" onchange="window.saveField('meeting1','children','Not sure yet')"><span>Not sure yet</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Guests needing accessibility help?</label>
+          <textarea class="form-textarea" data-field="meeting1.accessibility" placeholder="Please describe any accessibility needs..." oninput="window.saveField('meeting1','accessibility',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 2: Vision & Priorities -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Vision &amp; <em>Priorities</em></h2>
+      <p class="form-section-intro">Tell us about the feeling you want to create. The more you share, the better we can help bring your vision to life.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Style &amp; Theme</label>
+          <textarea class="form-textarea" data-field="meeting1.styleTheme" placeholder="Describe your overall wedding style and theme..." oninput="window.saveField('meeting1','styleTheme',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">How do you want your wedding to feel? <span class="form-label-note">e.g. "romantic and intimate" or "fun, high-energy party"</span></label>
+          <textarea class="form-textarea" data-field="meeting1.weddingFeel" placeholder="Describe the vibe and feeling you're going for..." oninput="window.saveField('meeting1','weddingFeel',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Colors or tones you're drawn to <span class="form-label-note">e.g. earthy neutrals, jewel tones, soft pastels</span></label>
+          <textarea class="form-textarea" data-field="meeting1.colorPalette" placeholder="Describe your color palette..." oninput="window.saveField('meeting1','colorPalette',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Specific style or theme in mind? <span class="form-label-note">e.g. modern, romantic, rustic, glam</span></label>
+          <input type="text" class="form-input" data-field="meeting1.specificTheme" placeholder="e.g. Romantic garden party" oninput="window.saveField('meeting1','specificTheme',this.value)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Add-ons &amp; Bundles</label>
+          <textarea class="form-textarea" data-field="meeting1.addOns" placeholder="Any add-ons or bundles you're interested in..." oninput="window.saveField('meeting1','addOns',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Traditions pre/during the Ceremony</label>
+          <textarea class="form-textarea" data-field="meeting1.traditionsCeremony" placeholder="e.g. Unity candle, handfasting, family readings..." oninput="window.saveField('meeting1','traditionsCeremony',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Traditions or Games post-Ceremony</label>
+          <textarea class="form-textarea" data-field="meeting1.traditionsPost" placeholder="e.g. Lawn games, sparkler exit, photo booth..." oninput="window.saveField('meeting1','traditionsPost',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Ideal Structure Day-of <span class="form-label-note">Overall flow of the day — select all that apply</span></label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dayflow_timeline" onchange="window.saveField('meeting1','dayflow_timeline',this.checked)"><span>Stick to the timeline down to the minute!</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dayflow_flexible" onchange="window.saveField('meeting1','dayflow_flexible',this.checked)"><span>It is okay if a couple of things don't happen exactly on time</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dayflow_dinner" onchange="window.saveField('meeting1','dayflow_dinner',this.checked)"><span>Just make sure dinner and sunset photos are not missed</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dayflow_illusion" onchange="window.saveField('meeting1','dayflow_illusion',this.checked)"><span>Time is an illusion</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Using decor from The 75?</label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.decor75_yes" onchange="window.saveField('meeting1','decor75_yes',this.checked)"><span>Yes</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.decor75_no" onchange="window.saveField('meeting1','decor75_no',this.checked)"><span>No</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.decor75_unsure" onchange="window.saveField('meeting1','decor75_unsure',this.checked)"><span>Not sure yet</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">What's most important to you about the guest experience? <span class="form-label-note">Food, music, flow of the night, overall vibe</span></label>
+          <textarea class="form-textarea" data-field="meeting1.guestExperience" placeholder="Tell us what matters most to your guests..." oninput="window.saveField('meeting1','guestExperience',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 3: Vendors -->
+    <div class="form-section-block">
+      <h2 class="form-section-title"><em>Vendors</em></h2>
+      <p class="form-section-intro">These are our recommended vendors for you to choose from. The only vendor that The 75 requires you to choose from our list is the caterer. Check all vendors that you are considering or have questions about!</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Caterer(s) <span class="form-label-note">Required — must choose from our list</span></label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cat_cameron" onchange="window.saveField('meeting1','cat_cameron',this.checked)"><span>Cameron Mitchell Premier Events</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cat_la" onchange="window.saveField('meeting1','cat_la',this.checked)"><span>L.A. Catering</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cat_berwick" onchange="window.saveField('meeting1','cat_berwick',this.checked)"><span>The Berwick</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cat_together" onchange="window.saveField('meeting1','cat_together',this.checked)"><span>Together &amp; Co.</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cat_sweet" onchange="window.saveField('meeting1','cat_sweet',this.checked)"><span>Sweet Carrot</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cat_emilios" onchange="window.saveField('meeting1','cat_emilios',this.checked)"><span>Emilio's</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cake / Bakery</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cake_birdies" onchange="window.saveField('meeting1','cake_birdies',this.checked)"><span>Birdies Cupcakes</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cake_crystal" onchange="window.saveField('meeting1','cake_crystal',this.checked)"><span>Cakes Creatively by Crystal</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cake_kitties" onchange="window.saveField('meeting1','cake_kitties',this.checked)"><span>Kittie's Cakes</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cake_spencer" onchange="window.saveField('meeting1','cake_spencer',this.checked)"><span>Spencer's Sugar Shop</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cake_other" onchange="window.saveField('meeting1','cake_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Photographer(s) / Videographer(s)</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.photo_asteria" onchange="window.saveField('meeting1','photo_asteria',this.checked)"><span>Asteria Photography</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.photo_feelstory" onchange="window.saveField('meeting1','photo_feelstory',this.checked)"><span>Feelstory Photography</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.photo_kismet" onchange="window.saveField('meeting1','photo_kismet',this.checked)"><span>Kismet Visuals &amp; Co</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.photo_other" onchange="window.saveField('meeting1','photo_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">DJ / Band</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dj_brad" onchange="window.saveField('meeting1','dj_brad',this.checked)"><span>Brad McPherson</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dj_fasttracks" onchange="window.saveField('meeting1','dj_fasttracks',this.checked)"><span>Fast Tracks DJ</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dj_josh" onchange="window.saveField('meeting1','dj_josh',this.checked)"><span>Josh Staley Productions</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dj_turnup" onchange="window.saveField('meeting1','dj_turnup',this.checked)"><span>Turn Up Columbus</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dj_soundlight" onchange="window.saveField('meeting1','dj_soundlight',this.checked)"><span>Sound and Light Creative</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.dj_other" onchange="window.saveField('meeting1','dj_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Florist</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.flor_bearroots" onchange="window.saveField('meeting1','flor_bearroots',this.checked)"><span>Bear Roots Floral</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.flor_blooms" onchange="window.saveField('meeting1','flor_blooms',this.checked)"><span>Blooms By Amanda</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.flor_dashing" onchange="window.saveField('meeting1','flor_dashing',this.checked)"><span>Dashing Designs</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.flor_evergreen" onchange="window.saveField('meeting1','flor_evergreen',this.checked)"><span>Evergreen Flower Co</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.flor_madison" onchange="window.saveField('meeting1','flor_madison',this.checked)"><span>Madison House Designs</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.flor_other" onchange="window.saveField('meeting1','flor_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Transportation</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.trans_cardinal" onchange="window.saveField('meeting1','trans_cardinal',this.checked)"><span>Cardinal Transportation</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.trans_funbus" onchange="window.saveField('meeting1','trans_funbus',this.checked)"><span>Fun Bus Adventures</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.trans_other" onchange="window.saveField('meeting1','trans_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rentals</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.rent_borrow" onchange="window.saveField('meeting1','rent_borrow',this.checked)"><span>Borrow Curated</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.rent_lostandfound" onchange="window.saveField('meeting1','rent_lostandfound',this.checked)"><span>Lost and Found Rentals</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.rent_pr" onchange="window.saveField('meeting1','rent_pr',this.checked)"><span>PR Rentals</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.rent_partyplus" onchange="window.saveField('meeting1','rent_partyplus',this.checked)"><span>Party Plus</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.rent_personal" onchange="window.saveField('meeting1','rent_personal',this.checked)"><span>Personal Touch Party Rentals</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.rent_other" onchange="window.saveField('meeting1','rent_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Food Truck / Late Night Snack(s)</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.food_johnson" onchange="window.saveField('meeting1','food_johnson',this.checked)"><span>Johnson's Real Ice Cream</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.food_pizza" onchange="window.saveField('meeting1','food_pizza',this.checked)"><span>Pizza Crossing</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.food_roosters" onchange="window.saveField('meeting1','food_roosters',this.checked)"><span>Roosters</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.food_other" onchange="window.saveField('meeting1','food_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rehearsal Dinner</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.reh_rhonemus" onchange="window.saveField('meeting1','reh_rhonemus',this.checked)"><span>Rhonemus Cellars</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.reh_hocking" onchange="window.saveField('meeting1','reh_hocking',this.checked)"><span>Hocking Hills Lodge &amp; Conference Center</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.reh_cedar" onchange="window.saveField('meeting1','reh_cedar',this.checked)"><span>Inn &amp; Spa at Cedar Falls</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.reh_millstone" onchange="window.saveField('meeting1','reh_millstone',this.checked)"><span>Millstone BBQ</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.reh_58west" onchange="window.saveField('meeting1','reh_58west',this.checked)"><span>58 West</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.reh_other" onchange="window.saveField('meeting1','reh_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Lodging &amp; Hotels</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodge_boxhop" onchange="window.saveField('meeting1','lodge_boxhop',this.checked)"><span>The Box Hop</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodge_cliffs" onchange="window.saveField('meeting1','lodge_cliffs',this.checked)"><span>The Cliffs</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodge_dunlap" onchange="window.saveField('meeting1','lodge_dunlap',this.checked)"><span>Dunlap Hollow</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodge_hampton" onchange="window.saveField('meeting1','lodge_hampton',this.checked)"><span>Hampton Inn - Lancaster</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodge_holiday" onchange="window.saveField('meeting1','lodge_holiday',this.checked)"><span>Holiday Inn Express &amp; Suites - Logan</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodge_sleep" onchange="window.saveField('meeting1','lodge_sleep',this.checked)"><span>Sleep Inn - Logan</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodge_other" onchange="window.saveField('meeting1','lodge_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 4: Ceremony Dreams -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Ceremony <em>Dreams</em></h2>
+      <p class="form-section-intro">Tell us about the ceremony you're envisioning. Outdoor ceremonies will be based on weather forecast.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Where do you picture your ceremony?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cer_outdoor_pad" onchange="window.saveField('meeting1','cer_outdoor_pad',this.checked)"><span>Outdoor Ceremony Pad</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cer_outdoor_other" onchange="window.saveField('meeting1','cer_outdoor_other',this.checked)"><span>Outdoors - Other</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cer_indoor_main" onchange="window.saveField('meeting1','cer_indoor_main',this.checked)"><span>Indoors - Main Reception Room</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cer_indoor_other" onchange="window.saveField('meeting1','cer_indoor_other',this.checked)"><span>Indoors - Other</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.cer_notsure" onchange="window.saveField('meeting1','cer_notsure',this.checked)"><span>Not sure yet</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony backdrop you're envisioning <span class="form-label-note">Let us know if you'd like recommendations based on past clients!</span></label>
+          <textarea class="form-textarea" data-field="meeting1.ceremonyBackdrop" placeholder="Describe your ideal backdrop..." oninput="window.saveField('meeting1','ceremonyBackdrop',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Must-have traditions for ceremony <span class="form-label-note">Helps us know which extra tables/linens are needed</span></label>
+          <textarea class="form-textarea" data-field="meeting1.mustHaveTraditions" placeholder="e.g. Unity candle table, memorial table..." oninput="window.saveField('meeting1','mustHaveTraditions',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Private moments pre-ceremony</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.priv_vows" onchange="window.saveField('meeting1','priv_vows',this.checked)"><span>Private Vows</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.priv_gifts" onchange="window.saveField('meeting1','priv_gifts',this.checked)"><span>Private Gift Exchanges</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.priv_letters" onchange="window.saveField('meeting1','priv_letters',this.checked)"><span>Private Letter Readings</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.priv_other" onchange="window.saveField('meeting1','priv_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">What is your ideal ceremony vibe? <span class="form-label-note">Romantic, formal, classic, fun &amp; laid back, etc.</span></label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyVibe" placeholder="e.g. Romantic and intimate" oninput="window.saveField('meeting1','ceremonyVibe',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">How do you imagine guest seating? <span class="form-label-note">Traditional, curved, standing only</span></label>
+          <input type="text" class="form-input" data-field="meeting1.guestSeating" placeholder="e.g. Traditional rows" oninput="window.saveField('meeting1','guestSeating',this.value)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Venue open prior to ceremony?</label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.venue_notAtAll" onchange="window.saveField('meeting1','venue_notAtAll',this.checked)"><span>Not at all — send guests straight to ceremony seats</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.venue_cocktailOnly" onchange="window.saveField('meeting1','venue_cocktailOnly',this.checked)"><span>Only the cocktail area</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.venue_wholeVenue" onchange="window.saveField('meeting1','venue_wholeVenue',this.checked)"><span>Whole venue can be open</span></label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Who is walking in the ceremony? <span class="form-label-note">Check all that apply</span></label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.walk_grandparents" onchange="window.saveField('meeting1','walk_grandparents',this.checked)"><span>Grandparents on either side</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.walk_parents" onchange="window.saveField('meeting1','walk_parents',this.checked)"><span>Parents on either side</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.walk_groomsmen" onchange="window.saveField('meeting1','walk_groomsmen',this.checked)"><span>Groomsmen</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.walk_bridesmaids" onchange="window.saveField('meeting1','walk_bridesmaids',this.checked)"><span>Bridesmaids</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.walk_ringbearer" onchange="window.saveField('meeting1','walk_ringbearer',this.checked)"><span>Ringbearer</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.walk_flowergirl" onchange="window.saveField('meeting1','walk_flowergirl',this.checked)"><span>Flower Girl</span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 5: Booking the Box Hops -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Booking the <em>Box Hops</em></h2>
+      <p class="form-section-intro">Your exclusive Box Hop experience will be available for booking shortly! You'll receive the link to reserve your spot 6 months prior to your wedding date, and you have 7 days to confirm. After that, it moves to the next priority or the public.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Are you thinking about booking any of the Box Hops? <span class="form-label-note">On or off 75 property</span></label>
+          <textarea class="form-textarea" data-field="meeting1.boxHopsInterest" placeholder="Tell us which ones you're considering..." oninput="window.saveField('meeting1','boxHopsInterest',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Do you need info for alternative lodging?</label>
+          <textarea class="form-textarea" data-field="meeting1.alternativeLodging" placeholder="Any other lodging questions or needs..." oninput="window.saveField('meeting1','alternativeLodging',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Where are you in the process of booking lodging?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodging_booked" onchange="window.saveField('meeting1','lodging_booked',this.checked)"><span>Already booked our Box Hops and Lodging!</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodging_needalt" onchange="window.saveField('meeting1','lodging_needalt',this.checked)"><span>Box Hops not needed, but need alternative lodging recommendations</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodging_taken" onchange="window.saveField('meeting1','lodging_taken',this.checked)"><span>We have lodging taken care of already</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting1.lodging_6month" onchange="window.saveField('meeting1','lodging_6month',this.checked)"><span>Not sure yet, but we will know by the 6 month mark!</span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- Extra Notes -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Extra <em>Notes</em></h2>
+      <div class="form-grid single">
+        <div class="form-group">
+          <label class="form-label">Anything else you'd like us to know?</label>
+          <textarea class="form-textarea tall" data-field="meeting1.extraNotes" placeholder="Questions, concerns, ideas — anything at all..." oninput="window.saveField('meeting1','extraNotes',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-save-row">
+      <button class="btn-save" id="save-btn-meeting1" onclick="window.saveSection('meeting1')">Save Progress</button>
+      <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+    </div>
+  </div>
+</div><!-- end page-meeting1 -->
+
+
+<!-- ══════════════════ MEETING 2 ══════════════════ -->
+<div id="page-meeting2" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Meeting Two &middot; In Person at The Seventy Five &middot; Halfway Point</span>
+      <h1>Second Planning<br><em>Meeting</em></h1>
+      <p>This is your &ldquo;locking it in&rdquo; meeting.</p>
+    </div>
+  </div>
+  <div class="meeting-progress-bar">
+    <div class="progress-track"><div class="progress-fill" id="progress-bar-meeting2"></div></div>
+    <span class="progress-text" id="progress-label-meeting2">0% Complete</span>
+    <span class="autosave-indicator" id="autosave-meeting2"></span>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:48px;line-height:1.8;font-style:italic;">"Welcome back! Today is all about bringing your wedding vision to life. We'll dive into every detail, from décor and linens to your vendors and timeline, so you can see exactly how your day will come together. Think of this as your 'locking it in' meeting."</p>
+
+    <!-- SECTION 1: Design & Decor -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Design &amp; <em>Decor</em></h2>
+      <p class="form-section-intro">Let's lock in the look and feel of your wedding day. Bring décor pieces you want to see in the space!</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Dinner Table Place Setting <span class="form-label-note">Include dinner/salad plates, champagne glasses, etc.</span></label>
+          <textarea class="form-textarea" data-field="meeting2.placeSettings" placeholder="e.g. China dinner plates, charger plates, champagne flutes..." oninput="window.saveField('meeting2','placeSettings',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Decor items from The 75 <span class="form-label-note">List which items and quantity of each</span></label>
+          <textarea class="form-textarea tall" data-field="meeting2.decor75Items" placeholder="e.g.&#10;10 in. Hurricane Vase - 26&#10;6 in. Hurricane Vase - 26&#10;Glass Tealight Votives - 32" oninput="window.saveField('meeting2','decor75Items',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Decor from The 75 going on each table <span class="form-label-note">Helps us in the set-up process</span></label>
+          <textarea class="form-textarea tall" data-field="meeting2.decorPerTable" placeholder="e.g.&#10;10 in. Hurricane Vase - 1&#10;6 in. Hurricane Vase - 1&#10;Glass Tealight Votives - 3" oninput="window.saveField('meeting2','decorPerTable',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Table decor items being brought in <span class="form-label-note">To help us differentiate what belongs to you vs. what belongs to The 75. You don't need to list every piece — just items being mixed with our decor.</span></label>
+          <textarea class="form-textarea" data-field="meeting2.decorBroughtIn" placeholder="List any personal decor items being mixed with The 75 decor..." oninput="window.saveField('meeting2','decorBroughtIn',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Add-ons &amp; Bundles</label>
+          <textarea class="form-textarea" data-field="meeting2.addOns" placeholder="Any add-ons or bundles you're adding..." oninput="window.saveField('meeting2','addOns',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Will you be adding decor staff for set-up/break-down? <span class="form-label-note">Deadline is 4 weeks prior to event date</span></label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.staff_tier1" onchange="window.saveField('meeting2','staff_tier1',this.checked)"><span>Yes, Tier 1</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.staff_tier2" onchange="window.saveField('meeting2','staff_tier2',this.checked)"><span>Yes, Tier 2</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.staff_tier3" onchange="window.saveField('meeting2','staff_tier3',this.checked)"><span>Yes, Tier 3</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.staff_no" onchange="window.saveField('meeting2','staff_no',this.checked)"><span>No, we will handle it</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.staff_unsure" onchange="window.saveField('meeting2','staff_unsure',this.checked)"><span>Not sure yet, will let you know by Final Planning meeting</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Are you using candles?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.candles_yes" onchange="window.saveField('meeting2','candles_yes',this.checked)"><span>Yes (Smokeless Only)</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.candles_no" onchange="window.saveField('meeting2','candles_no',this.checked)"><span>No real flame candles will be used</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.candles_deciding" onchange="window.saveField('meeting2','candles_deciding',this.checked)"><span>Still Deciding</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.candles_75provide" onchange="window.saveField('meeting2','candles_75provide',this.checked)"><span>We want The 75 to provide candles and send us an invoice</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Dropping off decor prior to day-of? <span class="form-label-note">Who is dropping what off?</span></label>
+          <textarea class="form-textarea" data-field="meeting2.decorDropoff" placeholder="e.g. MOH dropping off centerpieces Thursday at 2pm..." oninput="window.saveField('meeting2','decorDropoff',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Linen Napkin Color</label>
+          <input type="text" class="form-input" data-field="meeting2.napkinColor" placeholder="e.g. Ivory, dusty rose..." oninput="window.saveField('meeting2','napkinColor',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Napkin Fold Style <span class="form-label-note">Knotted, Pocket, Three-Fold, Draping, Other</span></label>
+          <input type="text" class="form-input" data-field="meeting2.napkinFold" placeholder="e.g. Knotted" oninput="window.saveField('meeting2','napkinFold',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Linen Napkin Quantity</label>
+          <input type="text" class="form-input" data-field="meeting2.napkinQty" placeholder="e.g. 150" oninput="window.saveField('meeting2','napkinQty',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cocktail Table Linen Color + Material</label>
+          <input type="text" class="form-input" data-field="meeting2.cocktailLinen" placeholder="e.g. 120&quot; - Solid Ivory" oninput="window.saveField('meeting2','cocktailLinen',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Guest Table Linen Color/Material + Quantity</label>
+          <textarea class="form-textarea" data-field="meeting2.guestTableLinen" placeholder="e.g.&#10;(8) - Long - 90x156 - Solid Ivory&#10;(8) - Round - 132 - Solid Moss Green" oninput="window.saveField('meeting2','guestTableLinen',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Head Table / Bridal Party Linen Color + Material</label>
+          <textarea class="form-textarea" data-field="meeting2.headTableLinen" placeholder="e.g.&#10;(1) - Sweetheart Table - 90x136 - Solid Ivory&#10;(2) - Long - 90x156 - Solid Ivory" oninput="window.saveField('meeting2','headTableLinen',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Any changes to the theme/style since the previous meeting?</label>
+          <textarea class="form-textarea" data-field="meeting2.styleChanges" placeholder="Share any updates to your vision..." oninput="window.saveField('meeting2','styleChanges',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 2: Vendor Check-In -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Vendor <em>Check-In</em></h2>
+      <p class="form-section-intro">Let's confirm who you've booked and lock in all arrival and pickup times.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Who has been booked? <span class="form-label-note">List vendor categories booked</span></label>
+          <textarea class="form-textarea" data-field="meeting2.vendorsBooked" placeholder="e.g.&#10;- Caterer&#10;- DJ&#10;- Florist&#10;- Photographer" oninput="window.saveField('meeting2','vendorsBooked',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Please list the name of each vendor</label>
+          <textarea class="form-textarea" data-field="meeting2.vendorNames" placeholder="e.g.&#10;- Cameron Mitchell&#10;- Josh Staley&#10;- Dashing Designs" oninput="window.saveField('meeting2','vendorNames',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Arrival time of each vendor</label>
+          <textarea class="form-textarea" data-field="meeting2.vendorArrival" placeholder="e.g.&#10;- Cameron Mitchell - 2:30PM&#10;- Josh Staley - 2:00PM&#10;- Dashing Designs - 12:00PM" oninput="window.saveField('meeting2','vendorArrival',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Pick-up time and item(s) of each vendor</label>
+          <textarea class="form-textarea" data-field="meeting2.vendorPickup" placeholder="e.g.&#10;- Dashing Designs - ceremony arch @ 8:30PM&#10;- Florist - table centerpieces @ 10:30PM" oninput="window.saveField('meeting2','vendorPickup',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Catering Plan</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.catering_plated" onchange="window.saveField('meeting2','catering_plated',this.checked)"><span>Plated</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.catering_buffet_cat" onchange="window.saveField('meeting2','catering_buffet_cat',this.checked)"><span>Buffet - Caterer supplying buffet table linens</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.catering_buffet_75" onchange="window.saveField('meeting2','catering_buffet_75',this.checked)"><span>Buffet - The 75 supplying buffet table linens</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.catering_family" onchange="window.saveField('meeting2','catering_family',this.checked)"><span>Family Style</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Will there be a separate cake to serve to guests?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.cake_toptierhome" onchange="window.saveField('meeting2','cake_toptierhome',this.checked)"><span>Top tier goes home with Bride &amp; Groom, rest served to guests</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.cake_fullserve" onchange="window.saveField('meeting2','cake_fullserve',this.checked)"><span>Full cake will be served to guests</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.cake_sheetcakes" onchange="window.saveField('meeting2','cake_sheetcakes',this.checked)"><span>Show cake is not to be cut, sheet cakes served to guests</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Which vendors are still pending booking?</label>
+          <textarea class="form-textarea" data-field="meeting2.vendorsPending" placeholder="List any vendors not yet confirmed..." oninput="window.saveField('meeting2','vendorsPending',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Do you need recommendations for any other vendors?</label>
+          <textarea class="form-textarea" data-field="meeting2.vendorRecs" placeholder="Tell us what you still need help finding..." oninput="window.saveField('meeting2','vendorRecs',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Appetizers / Charcuterie? <span class="form-label-note">Indicate if one or more tables, and any table flips (e.g. appetizer to dessert table)</span></label>
+          <textarea class="form-textarea" data-field="meeting2.appetizers" placeholder="Describe your appetizer/charcuterie setup..." oninput="window.saveField('meeting2','appetizers',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Appetizers/drinks waiting for you post-ceremony <span class="form-label-note">Please list dietary restrictions/allergies as well</span></label>
+          <textarea class="form-textarea" data-field="meeting2.postCeremonySnacks" placeholder="Bride:&#10;Groom:" oninput="window.saveField('meeting2','postCeremonySnacks',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Late Night Snacks <span class="form-label-note">Please list arrival time and name of vendor</span></label>
+          <textarea class="form-textarea" data-field="meeting2.lateNightSnacks" placeholder="e.g. Johnson's Ice Cream arriving at 9:00PM..." oninput="window.saveField('meeting2','lateNightSnacks',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 3: Your People + Flow -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your People &amp; <em>Flow of the Day</em></h2>
+      <p class="form-section-intro">These will be the people who are authorized to make decisions day-of. Please include first + last name, contact number, and relation to the couple.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Finance Person <span class="form-label-note">Who will have authority to make financial decisions</span></label>
+          <textarea class="form-textarea" data-field="meeting2.financePerson" placeholder="e.g. Jane Doe - 714.111.1234 - Mother of the Bride" oninput="window.saveField('meeting2','financePerson',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Matron of Honor</label>
+          <input type="text" class="form-input" data-field="meeting2.matronOfHonor" placeholder="Name - Phone" oninput="window.saveField('meeting2','matronOfHonor',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Best Man</label>
+          <input type="text" class="form-input" data-field="meeting2.bestMan" placeholder="Name - Phone" oninput="window.saveField('meeting2','bestMan',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Who is taking the food home?</label>
+          <textarea class="form-textarea" data-field="meeting2.foodHome" placeholder="e.g. Bob Smith - 714.222.2234 - Father of the Groom" oninput="window.saveField('meeting2','foodHome',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Who is taking the cake/desserts home?</label>
+          <textarea class="form-textarea" data-field="meeting2.cakeHome" placeholder="e.g. Barbara Smith - 714.222.2235 - Mother of the Groom" oninput="window.saveField('meeting2','cakeHome',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Who is taking leftover alcohol home? <span class="form-label-note">This is the only person we will release the alcohol to. Must be over 21.</span></label>
+          <textarea class="form-textarea" data-field="meeting2.alcoholHome" placeholder="e.g. Jake Smith - 714.999.9989 - Uncle of the Groom" oninput="window.saveField('meeting2','alcoholHome',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Who is taking decor home?</label>
+          <textarea class="form-textarea" data-field="meeting2.decorHome" placeholder="e.g. Jen Doe - 714.111.1236 - Matron of Honor" oninput="window.saveField('meeting2','decorHome',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Number of Bridesmaids</label>
+          <input type="text" class="form-input" data-field="meeting2.numBridesmaids" placeholder="e.g. 5" oninput="window.saveField('meeting2','numBridesmaids',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Number of Groomsmen</label>
+          <input type="text" class="form-input" data-field="meeting2.numGroomsmen" placeholder="e.g. 5" oninput="window.saveField('meeting2','numGroomsmen',this.value)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Guests needing accessibility assistance <span class="form-label-note">List of people who will need transportation on the golf cart</span></label>
+          <textarea class="form-textarea" data-field="meeting2.accessibilityGuests" placeholder="e.g. Karen Doe - Grandmother of Bride&#10;Ken Doe - Grandfather of Groom" oninput="window.saveField('meeting2','accessibilityGuests',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Shuttle service? <span class="form-label-note">Name of service + point person name and contact</span></label>
+          <textarea class="form-textarea" data-field="meeting2.shuttleService" placeholder="e.g. Fun Bus Adventures - Melissa Straight - 111.111.1111" oninput="window.saveField('meeting2','shuttleService',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Number of Shuttles/Buses + Arrival &amp; Pickup Times</label>
+          <textarea class="form-textarea" data-field="meeting2.shuttleTimes" placeholder="e.g.&#10;First Bus Arriving @ 4:00PM&#10;Second Trolley Car Arriving @ 4:15PM" oninput="window.saveField('meeting2','shuttleTimes',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Special Send Off <span class="form-label-note">Faux or real, limited guests or all guests, and any other special details</span></label>
+          <textarea class="form-textarea" data-field="meeting2.specialSendOff" placeholder="Describe your send-off..." oninput="window.saveField('meeting2','specialSendOff',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">People to Note <span class="form-label-note">Other people our team should refer to if necessary — list relation to couple</span></label>
+          <textarea class="form-textarea" data-field="meeting2.peopleToNote" placeholder="e.g. Sarah Jones - Sister of Bride, emergency contact" oninput="window.saveField('meeting2','peopleToNote',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Events for the Evening <span class="form-label-note">To help us prepare a timeline — select all that apply</span></label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_grandentrance" onchange="window.saveField('meeting2','evt_grandentrance',this.checked)"><span>Grand Entrance</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_speeches" onchange="window.saveField('meeting2','evt_speeches',this.checked)"><span>Speeches + Toasts</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_cakecutting" onchange="window.saveField('meeting2','evt_cakecutting',this.checked)"><span>Cake Cutting</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_firstdance" onchange="window.saveField('meeting2','evt_firstdance',this.checked)"><span>First Dance</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_fatherdaughter" onchange="window.saveField('meeting2','evt_fatherdaughter',this.checked)"><span>Father + Daughter Dance</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_motherson" onchange="window.saveField('meeting2','evt_motherson',this.checked)"><span>Mother + Son Dance</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_anniversary" onchange="window.saveField('meeting2','evt_anniversary',this.checked)"><span>Anniversary Dance</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_bouquet" onchange="window.saveField('meeting2','evt_bouquet',this.checked)"><span>Bouquet Toss</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_garter" onchange="window.saveField('meeting2','evt_garter',this.checked)"><span>Garter Toss</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_latenight" onchange="window.saveField('meeting2','evt_latenight',this.checked)"><span>Late Night Snacks</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_newlywed" onchange="window.saveField('meeting2','evt_newlywed',this.checked)"><span>Newlywed Game(s)</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_specialdances" onchange="window.saveField('meeting2','evt_specialdances',this.checked)"><span>Special Dances</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_sendoff" onchange="window.saveField('meeting2','evt_sendoff',this.checked)"><span>Special Send Off</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_sunset" onchange="window.saveField('meeting2','evt_sunset',this.checked)"><span>Sunset Pictures</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_privatelastdance" onchange="window.saveField('meeting2','evt_privatelastdance',this.checked)"><span>Private Last Dance</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_welcome" onchange="window.saveField('meeting2','evt_welcome',this.checked)"><span>Welcome Speech</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.evt_other" onchange="window.saveField('meeting2','evt_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes on events above</label>
+          <textarea class="form-textarea" data-field="meeting2.eventsNotes" placeholder="Any specific notes about the evening's events..." oninput="window.saveField('meeting2','eventsNotes',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Preference in the order of events?</label>
+          <textarea class="form-textarea" data-field="meeting2.orderOfEvents" placeholder="e.g. Ceremony, Cocktail Hour, Grand Entrance into first dance, cake cutting after speeches..." oninput="window.saveField('meeting2','orderOfEvents',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Grand Entrance</label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.ge_coupleonly" onchange="window.saveField('meeting2','ge_coupleonly',this.checked)"><span>Bride + Groom Only</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.ge_bridalparty" onchange="window.saveField('meeting2','ge_bridalparty',this.checked)"><span>Bridal Party + Parents Included</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.ge_curtains" onchange="window.saveField('meeting2','ge_curtains',this.checked)"><span>Enter through curtains from cocktail area</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.ge_fireplace" onchange="window.saveField('meeting2','ge_fireplace',this.checked)"><span>Enter through doors by the fireplace</span></label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Rain Plan <span class="form-label-note">Choose which indoor setup you'd like in the event of bad weather</span></label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.rain_halfflip" onchange="window.saveField('meeting2','rain_halfflip',this.checked)"><span>Half flip — Guest tables pushed to back of the room and traditional ceremony setup</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.rain_california" onchange="window.saveField('meeting2','rain_california',this.checked)"><span>California Style — Guests sit at assigned tables with two family rows set up in front</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.rain_alltables" onchange="window.saveField('meeting2','rain_alltables',this.checked)"><span>All guests including family sit at their tables</span></label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Booked Box Hops</label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_og" onchange="window.saveField('meeting2','bh_og',this.checked)"><span>The OG</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_hygge" onchange="window.saveField('meeting2','bh_hygge',this.checked)"><span>The Hygge</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_roca" onchange="window.saveField('meeting2','bh_roca',this.checked)"><span>The Roca</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_ellwood" onchange="window.saveField('meeting2','bh_ellwood',this.checked)"><span>The Ellwood</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_boho" onchange="window.saveField('meeting2','bh_boho',this.checked)"><span>The Boho</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_overlook" onchange="window.saveField('meeting2','bh_overlook',this.checked)"><span>The Overlook</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_none" onchange="window.saveField('meeting2','bh_none',this.checked)"><span>Not Booking any Box Hops</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting2.bh_6month" onchange="window.saveField('meeting2','bh_6month',this.checked)"><span>Going to book at the 6-month mark</span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- Extra Notes -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Extra <em>Notes</em></h2>
+      <div class="form-grid single">
+        <div class="form-group">
+          <label class="form-label">Anything else you'd like us to know?</label>
+          <textarea class="form-textarea tall" data-field="meeting2.extraNotes" placeholder="Questions, concerns, ideas — anything at all..." oninput="window.saveField('meeting2','extraNotes',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-save-row">
+      <button class="btn-save" id="save-btn-meeting2" onclick="window.saveSection('meeting2')">Save Progress</button>
+      <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+    </div>
+  </div>
+</div><!-- end page-meeting2 -->
+
+
+<!-- ══════════════════ MEETING 3 ══════════════════ -->
+<div id="page-meeting3" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting3-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Meeting Three &middot; Virtual Google Meet &middot; 4&ndash;6 Weeks Before Your Wedding</span>
+      <h1>Final Planning<br><em>Meeting</em></h1>
+      <p>The alignment call that brings everyone to the table.</p>
+    </div>
+  </div>
+  <div class="meeting-progress-bar">
+    <div class="progress-track"><div class="progress-fill" id="progress-bar-meeting3"></div></div>
+    <span class="progress-text" id="progress-label-meeting3">0% Complete</span>
+    <span class="autosave-indicator" id="autosave-meeting3"></span>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:48px;line-height:1.8;font-style:italic;">"Welcome to your final planning meeting! This call is designed to bring clarity and peace of mind as we walk through your wedding day step by step. Together, we'll confirm your timeline, vendor details, ceremony flow, and rain plan, ensuring every piece is in place."</p>
+
+    <!-- SECTION 1: Setup & Arrival Times -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Setup &amp; Arrival <em>Times</em></h2>
+      <p class="form-section-intro">Every vendor, every person, timed to the minute. Fill in what you know and we'll finalize the rest together on the call.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Final Guest Count</label>
+          <input type="text" class="form-input" data-field="meeting3.finalGuestCount" placeholder="e.g. 148" oninput="window.saveField('meeting3','finalGuestCount',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rehearsal Start Time</label>
+          <input type="text" class="form-input" data-field="meeting3.rehearsalTime" placeholder="e.g. 5:00 PM Friday" oninput="window.saveField('meeting3','rehearsalTime',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bride + Bridal Party Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.brideArrival" placeholder="e.g. 8:30 AM" oninput="window.saveField('meeting3','brideArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Groom + Groomsmen Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.groomArrival" placeholder="e.g. 12:00 PM" oninput="window.saveField('meeting3','groomArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Caterer Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.catererArrival" placeholder="e.g. 2:30 PM" oninput="window.saveField('meeting3','catererArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Florist / Designer Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.floristArrival" placeholder="e.g. 12:00 PM" oninput="window.saveField('meeting3','floristArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Photographer / Videographer Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.photoArrival" placeholder="e.g. 2:00 PM" oninput="window.saveField('meeting3','photoArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cake / Dessert Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.cakeArrival" placeholder="e.g. 1:00 PM" oninput="window.saveField('meeting3','cakeArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Decor Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.decorArrival" placeholder="e.g. 10:00 AM" oninput="window.saveField('meeting3','decorArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">DJ / Band Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.djArrival" placeholder="e.g. 2:00 PM" oninput="window.saveField('meeting3','djArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Guest Arrival Time</label>
+          <input type="text" class="form-input" data-field="meeting3.guestArrival" placeholder="e.g. 4:00 PM" oninput="window.saveField('meeting3','guestArrival',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony Start Time</label>
+          <input type="text" class="form-input" data-field="meeting3.ceremonyStart" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting3','ceremonyStart',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Estimated Length of Ceremony</label>
+          <input type="text" class="form-input" data-field="meeting3.ceremonyLength" placeholder="e.g. 30 minutes" oninput="window.saveField('meeting3','ceremonyLength',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cocktail Hour Start Time</label>
+          <input type="text" class="form-input" data-field="meeting3.cocktailStart" placeholder="e.g. 5:00 PM" oninput="window.saveField('meeting3','cocktailStart',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reception Start Time</label>
+          <input type="text" class="form-input" data-field="meeting3.receptionStart" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting3','receptionStart',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Dinner Start Time</label>
+          <input type="text" class="form-input" data-field="meeting3.dinnerStart" placeholder="e.g. 6:40 PM" oninput="window.saveField('meeting3','dinnerStart',this.value)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Shuttle / Bus Arrival Times</label>
+          <textarea class="form-textarea" data-field="meeting3.shuttleTimes" placeholder="e.g.&#10;First Bus Arriving @ 4:00PM&#10;Second Trolley Car Arriving @ 4:15PM" oninput="window.saveField('meeting3','shuttleTimes',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Other Vendor Arrival Times <span class="form-label-note">List name and arrival time of all other vendors</span></label>
+          <textarea class="form-textarea" data-field="meeting3.otherVendorTimes" placeholder="e.g.&#10;Photobooth - 2:30PM&#10;Arch - 12:00PM&#10;Late Night Snacks - 8:00PM" oninput="window.saveField('meeting3','otherVendorTimes',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 2: Ceremony Lineup -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Ceremony <em>Lineup</em></h2>
+      <p class="form-section-intro">This is the lineup our team will use to run through the rehearsal walk.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Groom is walking down the aisle with <span class="form-label-note">Name and relation</span></label>
+          <input type="text" class="form-input" data-field="meeting3.groomWalkWith" placeholder="e.g. Jane Doe - Mother of the Groom" oninput="window.saveField('meeting3','groomWalkWith',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bride is walking down the aisle with <span class="form-label-note">Name and relation</span></label>
+          <input type="text" class="form-input" data-field="meeting3.brideWalkWith" placeholder="e.g. John Smith - Father of the Bride" oninput="window.saveField('meeting3','brideWalkWith',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bridesmaids are walking down the aisle...</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.bm_individually" onchange="window.saveField('meeting3','bm_individually',this.checked)"><span>Individually</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.bm_withgroomsmen" onchange="window.saveField('meeting3','bm_withgroomsmen',this.checked)"><span>With corresponding groomsmen</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.bm_other" onchange="window.saveField('meeting3','bm_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Groomsmen are walking down the aisle...</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.gm_individually" onchange="window.saveField('meeting3','gm_individually',this.checked)"><span>Individually</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.gm_withbridesmaids" onchange="window.saveField('meeting3','gm_withbridesmaids',this.checked)"><span>With bridesmaids</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.gm_other" onchange="window.saveField('meeting3','gm_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Bridesmaids walking order <span class="form-label-note">First to go → last walking</span></label>
+          <textarea class="form-textarea" data-field="meeting3.bridesmaidsOrder" placeholder="- Walking first (Matron of Honor)&#10;- Walking Second&#10;- Walking Third" oninput="window.saveField('meeting3','bridesmaidsOrder',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Groomsmen walking order <span class="form-label-note">First to go → last walking</span></label>
+          <textarea class="form-textarea" data-field="meeting3.groomsmenOrder" placeholder="- Walking first (Best Man)&#10;- Walking Second&#10;- Walking Third" oninput="window.saveField('meeting3','groomsmenOrder',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Grandparents walking down the aisle?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.gp_topstairs" onchange="window.saveField('meeting3','gp_topstairs',this.checked)"><span>Yes, starting at top of stairs</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.gp_ramp" onchange="window.saveField('meeting3','gp_ramp',this.checked)"><span>Yes, starting from ramp</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.gp_seated" onchange="window.saveField('meeting3','gp_seated',this.checked)"><span>No, grandparents will be seated with guests</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Will anyone be following the bridal party?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.following_flowergirl" onchange="window.saveField('meeting3','following_flowergirl',this.checked)"><span>Flower Girl</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.following_ringbearer" onchange="window.saveField('meeting3','following_ringbearer',this.checked)"><span>Ring Bearer</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.following_pet" onchange="window.saveField('meeting3','following_pet',this.checked)"><span>Pet</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.following_other" onchange="window.saveField('meeting3','following_other',this.checked)"><span>Other</span></label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Family Ceremony Seating</label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.seating_brideleft" onchange="window.saveField('meeting3','seating_brideleft',this.checked)"><span>Bride side seated on left (Bride standing on left)</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.seating_brideright" onchange="window.saveField('meeting3','seating_brideright',this.checked)"><span>Bride side seated on right (Bride standing on right)</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.seating_mixed" onchange="window.saveField('meeting3','seating_mixed',this.checked)"><span>Mixed guest seating, family seating reserved in front</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.seating_freeforall" onchange="window.saveField('meeting3','seating_freeforall',this.checked)"><span>Free for all seating</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Officiant Name &amp; Denomination</label>
+          <textarea class="form-textarea" data-field="meeting3.officiant" placeholder="Name and denomination/title..." oninput="window.saveField('meeting3','officiant',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Movement of decor items from Ceremony to Reception</label>
+          <textarea class="form-textarea" data-field="meeting3.decorMovement" placeholder="Which items move and who moves them..." oninput="window.saveField('meeting3','decorMovement',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Who will help move ceremony decor in the event of a rain plan?</label>
+          <textarea class="form-textarea" data-field="meeting3.rainPlanDecor" placeholder="List bridal party or guest names who can help..." oninput="window.saveField('meeting3','rainPlanDecor',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Guests needing golf cart assistance <span class="form-label-note">Include relation to couple</span></label>
+          <textarea class="form-textarea" data-field="meeting3.golfCartGuests" placeholder="e.g. Karen Doe - Grandmother of Bride" oninput="window.saveField('meeting3','golfCartGuests',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Final Rain Plan Confirmation</label>
+          <textarea class="form-textarea" data-field="meeting3.rainPlanFinal" placeholder="Confirm your indoor backup plan..." oninput="window.saveField('meeting3','rainPlanFinal',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 3: Special Logistics -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Special <em>Logistics</em></h2>
+      <p class="form-section-intro">The details that make your day run seamlessly — from the moment guests arrive to the final send-off.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Guests allowed in building prior to ceremony?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.guests_cocktailarea" onchange="window.saveField('meeting3','guests_cocktailarea',this.checked)"><span>Yes, in cocktail area</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.guests_cocktailreception" onchange="window.saveField('meeting3','guests_cocktailreception',this.checked)"><span>Yes, in cocktail &amp; reception area</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.guests_bathrooms" onchange="window.saveField('meeting3','guests_bathrooms',this.checked)"><span>Yes, only to use the bathrooms</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.guests_straightto" onchange="window.saveField('meeting3','guests_straightto',this.checked)"><span>No, straight to ceremony seating</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reception Curtain</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.curtain_closed" onchange="window.saveField('meeting3','curtain_closed',this.checked)"><span>Curtain closed during cocktail hour</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.curtain_open" onchange="window.saveField('meeting3','curtain_open',this.checked)"><span>Curtain open during cocktail hour</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bar closed after cocktail hour during grand entrance, speeches, and first dances? <span class="form-label-note">Highly suggested so guests are seated during dances</span></label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="radio" name="m3_barclosed" data-field="meeting3.barClosed" value="Yes" onchange="window.saveField('meeting3','barClosed','Yes')"><span>Yes</span></label>
+            <label class="check-item"><input type="radio" name="m3_barclosed" data-field="meeting3.barClosed" value="No" onchange="window.saveField('meeting3','barClosed','No')"><span>No</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Private moment after ceremony in bridal suite? <span class="form-label-note">We typically give ~10-15 minutes</span></label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.privateMoment_yes" onchange="window.saveField('meeting3','privateMoment_yes',this.checked)"><span>Yes</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.privateMoment_no" onchange="window.saveField('meeting3','privateMoment_no',this.checked)"><span>No</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Who is permitted to interrupt your private moment?</label>
+          <input type="text" class="form-input" data-field="meeting3.privateMomentInterrupt" placeholder="e.g. Photographer or Matron of Honor" oninput="window.saveField('meeting3','privateMomentInterrupt',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Will champagne be served? If yes, when?</label>
+          <input type="text" class="form-input" data-field="meeting3.champagneWhen" placeholder="e.g. During grand entrance toast" oninput="window.saveField('meeting3','champagneWhen',this.value)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">How will champagne be served?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.champ_walkfill" onchange="window.saveField('meeting3','champ_walkfill',this.checked)"><span>Champagne glasses at table, caterer will walk around and fill (keep in mind this usually takes longer)</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.champ_kitchen" onchange="window.saveField('meeting3','champ_kitchen',this.checked)"><span>Caterer will pour champagne in kitchen, then pass out to each table</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Snacks &amp; drinks waiting for you after the ceremony</label>
+          <textarea class="form-textarea" data-field="meeting3.postCeremonySnacks" placeholder="Bride:&#10;Groom:" oninput="window.saveField('meeting3','postCeremonySnacks',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Drinks at your table before Grand Entrance?</label>
+          <textarea class="form-textarea" data-field="meeting3.preEntranceDrinks" placeholder="Bride:&#10;Groom:" oninput="window.saveField('meeting3','preEntranceDrinks',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Couple being served dinner at their seats? <span class="form-label-note">Even if buffet style for guests, we can accommodate couple's plates being made for them</span></label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="radio" name="m3_coupleplate" data-field="meeting3.couplePlate" value="Yes, please make a plate for us" onchange="window.saveField('meeting3','couplePlate','Yes, please make a plate for us')"><span>Yes, please make a plate for us</span></label>
+            <label class="check-item"><input type="radio" name="m3_coupleplate" data-field="meeting3.couplePlate" value="No, we will get our own plates" onchange="window.saveField('meeting3','couplePlate','No, we will get our own plates')"><span>No, we will get our own plates</span></label>
+          </div>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Food preferences if plates are made for you</label>
+          <textarea class="form-textarea" data-field="meeting3.foodPreferences" placeholder="Bride: &#10;Groom:" oninput="window.saveField('meeting3','foodPreferences',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Breaking down tables after dinner for the dance floor?</label>
+          <textarea class="form-textarea" data-field="meeting3.tableBreakdown" placeholder="Which tables, and when..." oninput="window.saveField('meeting3','tableBreakdown',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Prismm Floor Plan is Finalized?</label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="radio" name="m3_prismm" data-field="meeting3.prismmFinalized" value="Yes" onchange="window.saveField('meeting3','prismmFinalized','Yes')"><span>Yes</span></label>
+            <label class="check-item"><input type="radio" name="m3_prismm" data-field="meeting3.prismmFinalized" value="No" onchange="window.saveField('meeting3','prismmFinalized','No')"><span>No</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Using Sparklers for Send-off? <span class="form-label-note">Recommend using extra-long sparklers that burn longer for photos</span></label>
+          <div class="check-group inline">
+            <label class="check-item"><input type="radio" name="m3_sparklers" data-field="meeting3.sparklers" value="Yes" onchange="window.saveField('meeting3','sparklers','Yes')"><span>Yes</span></label>
+            <label class="check-item"><input type="radio" name="m3_sparklers" data-field="meeting3.sparklers" value="No" onchange="window.saveField('meeting3','sparklers','No')"><span>No</span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- SECTION 4: Vendor Confirmation -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Vendor <em>Confirmation</em></h2>
+      <p class="form-section-intro">Final confirmation of all booked vendors, what each is bringing, and pickup times.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Name of Caterer(s)</label>
+          <textarea class="form-textarea" data-field="meeting3.catererName" placeholder="Caterer name and contact..." oninput="window.saveField('meeting3','catererName',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">What is Caterer bringing?</label>
+          <div class="check-group">
+            <label class="check-item"><input type="checkbox" data-field="meeting3.cat_breakfast" onchange="window.saveField('meeting3','cat_breakfast',this.checked)"><span>Breakfast</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.cat_charcuterie" onchange="window.saveField('meeting3','cat_charcuterie',this.checked)"><span>Charcuterie board</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.cat_appetizers" onchange="window.saveField('meeting3','cat_appetizers',this.checked)"><span>Appetizers</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.cat_dinner" onchange="window.saveField('meeting3','cat_dinner',this.checked)"><span>Dinner</span></label>
+            <label class="check-item"><input type="checkbox" data-field="meeting3.cat_dessert" onchange="window.saveField('meeting3','cat_dessert',this.checked)"><span>Dessert</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Desserts / Cake <span class="form-label-note">Include pickup time if not going home with your point person</span></label>
+          <textarea class="form-textarea" data-field="meeting3.dessertsCake" placeholder="Vendor name, details, and pickup time if applicable..." oninput="window.saveField('meeting3','dessertsCake',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">DJ / Band</label>
+          <textarea class="form-textarea" data-field="meeting3.djBandConfirm" placeholder="Name and any final details..." oninput="window.saveField('meeting3','djBandConfirm',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Florist <span class="form-label-note">Include pickup time if florals/decor not going home with your guest list point person</span></label>
+          <textarea class="form-textarea" data-field="meeting3.floristConfirm" placeholder="Name, details, and pickup time..." oninput="window.saveField('meeting3','floristConfirm',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Food Truck / Late Night Snack(s)</label>
+          <textarea class="form-textarea" data-field="meeting3.foodTruck" placeholder="Vendor name and arrival time..." oninput="window.saveField('meeting3','foodTruck',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Photographer(s) / Videographer(s)</label>
+          <textarea class="form-textarea" data-field="meeting3.photoConfirm" placeholder="Names and any final details..." oninput="window.saveField('meeting3','photoConfirm',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Transportation</label>
+          <textarea class="form-textarea" data-field="meeting3.transportConfirm" placeholder="Service name, contact, arrival and pickup times..." oninput="window.saveField('meeting3','transportConfirm',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Other Vendors</label>
+          <textarea class="form-textarea" data-field="meeting3.otherVendors" placeholder="Any other vendors and their details..." oninput="window.saveField('meeting3','otherVendors',this.value)"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Special deliveries and/or pickups scheduled? <span class="form-label-note">e.g. slushie machine, photobooth, mechanical bull</span></label>
+          <textarea class="form-textarea" data-field="meeting3.specialDeliveries" placeholder="List any special deliveries or pickups..." oninput="window.saveField('meeting3','specialDeliveries',this.value)"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">End of Night Pickup Plan for decor</label>
+          <textarea class="form-textarea" data-field="meeting3.endNightPickup" placeholder="Who is picking up what and when..." oninput="window.saveField('meeting3','endNightPickup',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-divider"></div>
+
+    <!-- Extra Notes -->
+    <div class="form-section-block">
+      <h2 class="form-section-title">Extra <em>Notes</em></h2>
+      <div class="form-grid single">
+        <div class="form-group">
+          <label class="form-label">Anything else you'd like us to know?</label>
+          <textarea class="form-textarea tall" data-field="meeting3.extraNotes" placeholder="Final questions, concerns, or details..." oninput="window.saveField('meeting3','extraNotes',this.value)"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-save-row">
+      <button class="btn-save" id="save-btn-meeting3" onclick="window.saveSection('meeting3')">Save Progress</button>
+      <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+    </div>
+  </div>
+</div><!-- end page-meeting3 -->
+
+</div><!-- end portal-root -->
+
+<script>
+  window.showPage = function(pageId) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    const target = document.getElementById('page-' + pageId);
+    if (target) { target.classList.add('active'); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  };
+</script>
+
+</body>
+</html>
