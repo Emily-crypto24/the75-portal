@@ -243,9 +243,11 @@
     }
 
     function calcPct(data) {
-      const vals = Object.values(data);
-      if (!vals.length) return 0;
-      return Math.round(vals.filter(v => v !== "" && v !== false && v !== null && v !== undefined).length / vals.length * 100);
+      // Only count text/textarea fields (strings), not checkboxes (booleans)
+      const textVals = Object.values(data).filter(v => typeof v === "string");
+      if (!textVals.length) return 0;
+      const filled = textVals.filter(v => v.trim() !== "").length;
+      return Math.round((filled / textVals.length) * 100);
     }
 
     function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
@@ -269,14 +271,117 @@
         {label:"Meeting 3 — Final Alignment", key:"meeting3"}
       ];
       const sections = meetings.map(m => {
-        const entries = Object.entries(data[m.key]||{}).filter(([k,v]) => v !== "" && v !== false && v !== null && v !== undefined);
-        if (!entries.length) return `<div class="amd-section"><div class="amd-stitle">${m.label}</div><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No answers recorded yet.</p></div>`;
-        return `<div class="amd-section"><div class="amd-stitle">${m.label}</div>${entries.map(([k,v]) => `<div class="amd-row"><div class="amd-key">${fmtKey(k)}</div><div class="amd-val">${typeof v==="boolean"?(v?"&#10003; Yes":""):(esc(String(v)))}</div></div>`).join("")}</div>`;
+        const mData = data[m.key] || {};
+        const textEntries = Object.entries(mData).filter(([k,v]) => typeof v === "string");
+        const boolEntries = Object.entries(mData).filter(([k,v]) => typeof v === "boolean" && v === true);
+        if (!textEntries.length && !boolEntries.length) {
+          return `<div class="amd-section"><div class="amd-stitle">${m.label}</div><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No answers recorded yet.</p></div>`;
+        }
+        const textRows = textEntries.map(([k,v]) => `
+          <div class="amd-row amd-row-edit">
+            <div class="amd-key">${fmtKey(k)}</div>
+            <div class="amd-val">
+              ${v.length > 80 ?
+                `<textarea class="amd-input amd-textarea" data-meeting="${m.key}" data-field="${k}">${esc(v)}</textarea>` :
+                `<input class="amd-input" type="text" data-meeting="${m.key}" data-field="${k}" value="${esc(v)}">`
+              }
+            </div>
+          </div>`).join("");
+        const checkRows = boolEntries.length ? `
+          <div class="amd-row">
+            <div class="amd-key" style="color:var(--mid-gray);">Selections</div>
+            <div class="amd-val" style="display:flex;flex-wrap:wrap;gap:6px;">
+              ${boolEntries.map(([k]) => `<span class="amd-chip">&#10003; ${fmtKey(k)}</span>`).join("")}
+            </div>
+          </div>` : "";
+        return `<div class="amd-section">
+          <div class="amd-stitle">${m.label}</div>
+          ${textRows}${checkRows}
+          <div style="text-align:right;margin-top:12px;">
+            <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveAdminSection('${uid}','${m.key}')">Save ${m.label.split("—")[0].trim()}</button>
+          </div>
+        </div>`;
       }).join("");
-      return sections + `<div style="text-align:center;margin-top:32px;padding-bottom:16px;"><button class="acc-btn-export" style="padding:14px 40px;font-size:11px;" onclick="window.exportCouple('${uid}','couple')">&#8595; Export This Couple to CSV</button></div>`;
+      return sections + `<div style="text-align:center;margin-top:24px;padding-bottom:16px;border-top:1px solid var(--border);padding-top:24px;">
+        <button class="acc-btn-export" style="padding:14px 40px;font-size:11px;" onclick="window.exportCouple('${uid}','couple')">&#8595; Export This Couple to CSV</button>
+      </div>`;
     }
 
-    function fmtKey(k) { return k.replace(/^m[123]_/,"").replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()); }
+    window.saveAdminSection = async function(uid, meetingKey) {
+      const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const inputs = document.querySelectorAll(`[data-meeting="${meetingKey}"]`);
+      const updates = {};
+      inputs.forEach(el => {
+        updates[`${meetingKey}.${el.getAttribute("data-field")}`] = el.value;
+      });
+      try {
+        await ud(dc(db,"couples",uid), updates);
+        // Flash the button green
+        const btns = document.querySelectorAll(`button[onclick*="saveAdminSection('${uid}','${meetingKey}')"]`);
+        btns.forEach(b => { b.textContent = "✓ Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = `Save ${meetingKey.replace("meeting","Meeting ")}`; b.style.background=""; },2000); });
+        // Refresh dashboard in background
+        await loadAdminDashboard();
+      } catch(e) { alert("Save failed: " + e.message); }
+    };
+
+    const FIELD_LABELS = {
+      m1_names:"Couple Names",m1_bride_phone:"Bride's Phone",m1_groom_phone:"Groom's Phone",
+      m1_wedding_date:"Wedding Date",m1_planner:"Wedding Planner",m1_ceremony_time:"Ceremony Time",
+      m1_reception_time:"Reception Start Time",m1_ceremony_location:"Ceremony Location",
+      m1_guest_arrival:"Guest Arrival Time",m1_guest_count:"Estimated Guest Count",
+      m1_family_dynamic:"Family Dynamic",m1_accessibility:"Accessibility Needs",
+      m1_style_theme:"Style & Theme",m1_feeling:"Wedding Feeling/Vibe",m1_colors:"Color Palette",
+      m1_specific_theme:"Specific Theme",m1_addons:"Add-ons & Bundles",
+      m1_traditions_ceremony:"Ceremony Traditions",m1_traditions_post:"Post-Ceremony Traditions",
+      m1_guest_priority:"Most Important to Guests",m1_backdrop:"Ceremony Backdrop",
+      m1_cer_traditions:"Must-Have Ceremony Traditions",m1_cer_vibe:"Ceremony Vibe",
+      m1_seating:"Guest Seating Style",m1_boxhop_interest:"Box Hop Interest",m1_alt_lodging:"Alternative Lodging",
+      m1_notes:"Extra Notes",
+      m2_place_setting:"Dinner Table Place Setting",m2_decor_from75:"Décor from The 75",
+      m2_decor_per_table:"Décor Per Table",m2_decor_brought_in:"Décor Being Brought In",
+      m2_addons:"Add-ons & Bundles",m2_napkin_color:"Napkin Color",m2_napkin_fold:"Napkin Fold Style",
+      m2_napkin_qty:"Napkin Quantity",m2_cocktail_linen:"Cocktail Table Linen",
+      m2_guest_linen:"Guest Table Linen",m2_head_linen:"Head Table Linen",
+      m2_theme_changes:"Theme Changes Since M1",m2_decor_dropoff:"Décor Drop-off Plan",
+      m2_booked_who:"Vendors Booked",m2_vendor_names:"Vendor Names",
+      m2_vendor_arrival:"Vendor Arrival Times",m2_vendor_pickup:"Vendor Pickup Times",
+      m2_vendors_pending:"Vendors Still Pending",m2_vendor_recs:"Vendor Recommendations Needed",
+      m2_appetizers:"Appetizers / Charcuterie",m2_post_ceremony_snacks:"Post-Ceremony Snacks for Couple",
+      m2_late_night:"Late Night Snacks",m2_finance_person:"Finance Person",
+      m2_moh:"Matron / Maid of Honor",m2_bestman:"Best Man",m2_food_home:"Who Takes Food Home",
+      m2_cake_home:"Who Takes Cake Home",m2_alcohol_home:"Who Takes Alcohol Home",
+      m2_decor_home:"Who Takes Décor Home",m2_bridesmaid_count:"Number of Bridesmaids",
+      m2_groomsmen_count:"Number of Groomsmen",m2_accessibility:"Accessibility / Golf Cart",
+      m2_shuttle:"Shuttle Service",m2_shuttle_times:"Shuttle Times",m2_sendoff:"Special Send Off",
+      m2_people_note:"People to Note",m2_evt_notes:"Event Notes",m2_evt_order:"Order of Events",
+      m2_notes:"Extra Notes",
+      m3_bride_arrival:"Bride + Party Arrival",m3_groom_arrival:"Groom + Party Arrival",
+      m3_caterer_arrival:"Caterer Arrival",m3_florist_arrival:"Florist Arrival",
+      m3_photo_arrival:"Photographer Arrival",m3_cake_arrival:"Cake Arrival",
+      m3_decor_arrival:"Décor Arrival",m3_dj_arrival:"DJ/Band Arrival",
+      m3_guest_arrival:"Guest Arrival",m3_rehearsal_time:"Rehearsal Time",
+      m3_guest_count:"Final Guest Count",m3_ceremony_start:"Ceremony Start",
+      m3_ceremony_length:"Ceremony Length",m3_cocktail_start:"Cocktail Hour Start",
+      m3_reception_start:"Reception Start",m3_dinner_start:"Dinner Start",
+      m3_shuttle_times:"Shuttle Times",m3_other_vendors:"Other Vendor Arrival Times",
+      m3_groom_walk:"Groom Walking With",m3_bride_walk:"Bride Walking With",
+      m3_bridesmaids_order:"Bridesmaids Walking Order",m3_groomsmen_order:"Groomsmen Walking Order",
+      m3_officiant:"Officiant",m3_decor_movement:"Ceremony→Reception Décor Movement",
+      m3_rain_decor_help:"Rain Plan Décor Help",m3_golf_cart:"Golf Cart Assistance List",
+      m3_rain_plan:"Final Rain Plan",m3_interrupt_who:"Permitted to Interrupt Private Moment",
+      m3_champagne_when:"Champagne Timing",m3_post_cer_snacks:"Post-Ceremony Snacks",
+      m3_entrance_drinks:"Grand Entrance Drinks",m3_food_prefs:"Couple Food Preferences",
+      m3_table_breakdown:"Table Breakdown for Dance Floor",m3_caterer_name:"Caterer Name",
+      m3_desserts:"Desserts / Cake",m3_dj_confirm:"DJ / Band",m3_florist_confirm:"Florist",
+      m3_lns_confirm:"Late Night Snacks",m3_photo_confirm:"Photographer / Videographer",
+      m3_transport_confirm:"Transportation",m3_other_confirm:"Other Vendors",
+      m3_special_deliveries:"Special Deliveries",m3_eod_pickup:"End of Night Pickup Plan",
+      m3_notes:"Extra Notes"
+    };
+    function fmtKey(k) {
+      if (FIELD_LABELS[k]) return FIELD_LABELS[k];
+      return k.replace(/^m[123]_/,"").replace(/_/g," ").replace(/\w/g,c=>c.toUpperCase());
+    }
 
     window.exportCouple = async function(uid, name) {
       const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -612,6 +717,12 @@
       .admin-nav{padding:0 24px;}
       .amd-row{grid-template-columns:1fr;}
     }
+
+
+    .amd-input{width:100%;padding:8px 10px;border:1px solid var(--border);background:var(--cream);font-family:var(--font-body);font-size:13px;font-weight:300;color:var(--charcoal);outline:none;border-radius:1px;transition:border-color 0.2s;}
+    .amd-input:focus{border-color:var(--gold);}
+    .amd-textarea{min-height:70px;resize:vertical;line-height:1.5;}
+    .amd-chip{display:inline-flex;align-items:center;padding:4px 10px;background:rgba(184,150,90,0.1);border:1px solid rgba(184,150,90,0.3);font-size:11px;color:var(--gold-dark);border-radius:2px;}
 
   </style>
 </head>
