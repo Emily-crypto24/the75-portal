@@ -211,6 +211,18 @@
     });
 
     // ── LOAD SAVED DATA ─────────────────────────────────────────
+    function slugBaseFromExistingData(data) {
+      const names = (data.meeting1 && data.meeting1.coupleNames) || "";
+      if (names.includes("&")) {
+        const parts = names.split("&").map(s => s.trim());
+        return firstNameSlug(parts[0]) + "and" + firstNameSlug(parts[1] || "");
+      }
+      if (names) return firstNameSlug(names);
+      if (data.displayName) return firstNameSlug(data.displayName);
+      if (data.email) return firstNameSlug(data.email.split("@")[0]);
+      return "";
+    }
+
     async function loadAllForms(uid) {
       const snap = await getDoc(doc(db, "couples", uid));
       if (!snap.exists()) return;
@@ -226,7 +238,17 @@
         });
       });
       renderLeadCoordinator(data.leadCoordinator);
-      renderGuestPageLink(data.slug);
+
+      let slug = data.slug;
+      if (!slug) {
+        // Backfills a slug for couples who created their account before this feature existed.
+        try {
+          slug = await resolveUniqueSlug(slugBaseFromExistingData(data));
+          await updateDoc(doc(db, "couples", uid), { slug });
+          await syncPublicProfile(uid);
+        } catch(e) { slug = null; }
+      }
+      renderGuestPageLink(slug);
     }
 
     function renderGuestPageLink(slug) {
