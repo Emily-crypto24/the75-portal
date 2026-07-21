@@ -123,11 +123,11 @@
       }
 
       document.getElementById("guest-gate").style.display = "none";
-      document.getElementById("guest-content").style.display = "flex";
-      renderGuestContent(guestGateData);
+      document.getElementById("guest-content").style.display = "block";
+      renderGuestContent(guestGateData, name);
     };
 
-    function renderGuestContent(data) {
+    function renderGuestContent(data, guestName) {
       const namesEl = document.getElementById("guest-view-names");
       const countdownEl = document.getElementById("guest-view-countdown");
       const detailsEl = document.getElementById("guest-view-details");
@@ -159,7 +159,105 @@
       if (data.ceremonyTime) detailLines.push(`Ceremony begins ${esc(data.ceremonyTime)}`);
       if (data.receptionTime) detailLines.push(`Reception to follow at ${esc(data.receptionTime)}`);
       detailsEl.innerHTML = detailLines.length ? detailLines.map(l => `<p>${l}</p>`).join("") : `<p>More details coming soon!</p>`;
+
+      renderGuestRSVPForm(data, guestName);
     }
+
+    function renderGuestRSVPForm(data, guestName) {
+      const wrap = document.getElementById("guest-rsvp-form");
+      if (!wrap) return;
+      const roster = Array.isArray(data.guestRoster) ? data.guestRoster : [];
+      const match = roster.find(g => (g.name || "").trim().toLowerCase() === guestName.trim().toLowerCase());
+      const plusOneAllowed = match ? !!match.plusOneAllowed : false;
+      const isPlated = data.dinnerStyle === "Plated";
+      const mealOptions = Array.isArray(data.mealOptions) ? data.mealOptions : [];
+      const mealOptionsHtml = '<option value="">Select a meal...</option>' + mealOptions.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+
+      const notFoundNote = !match ? `<p style="font-size:12px;color:var(--mid-gray);font-style:italic;margin-bottom:20px;">We couldn't find your exact name on our list — no problem, submit your RSVP below and the couple will follow up to confirm details.</p>` : "";
+
+      wrap.innerHTML = `
+        ${notFoundNote}
+        <div class="form-grid">
+          <div class="form-group full">
+            <label class="form-label">Your Name</label>
+            <input type="text" class="form-input" id="rsvp-guestName" value="${esc(guestName)}">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Will you be attending?</label>
+            <div style="display:flex;gap:24px;padding-top:10px;">
+              <label class="check-item"><input type="radio" name="rsvp-status" value="Attending"><span>Joyfully Attending</span></label>
+              <label class="check-item"><input type="radio" name="rsvp-status" value="Not Attending"><span>Regretfully Declining</span></label>
+            </div>
+          </div>
+          ${plusOneAllowed ? `
+          <div class="form-group full" id="rsvp-plusOne-block">
+            <label class="form-label">Plus One</label>
+            <input type="text" class="form-input" id="rsvp-plusOneName" placeholder="Your plus one's name (leave blank if not bringing one)">
+          </div>` : ""}
+          ${isPlated ? `
+          <div class="form-group">
+            <label class="form-label">Your Meal Choice</label>
+            <select class="form-input" id="rsvp-mealChoice">${mealOptionsHtml}</select>
+          </div>` : ""}
+          <div class="form-group full">
+            <label class="form-label">Allergies / Dietary Restrictions</label>
+            <input type="text" class="form-input" id="rsvp-allergies" placeholder="e.g. Peanut allergy, gluten-free">
+          </div>
+          ${(isPlated && plusOneAllowed) ? `
+          <div class="form-group">
+            <label class="form-label">Plus One's Meal Choice</label>
+            <select class="form-input" id="rsvp-plusOneMealChoice">${mealOptionsHtml}</select>
+          </div>` : ""}
+          ${plusOneAllowed ? `
+          <div class="form-group full">
+            <label class="form-label">Plus One's Allergies / Dietary Restrictions</label>
+            <input type="text" class="form-input" id="rsvp-plusOneAllergies" placeholder="e.g. Peanut allergy, gluten-free">
+          </div>` : ""}
+        </div>
+        <div class="form-save-row" style="margin-top:24px;">
+          <button class="btn-save" id="rsvp-submit-btn" onclick="window.submitGuestRSVP('${esc(data.slug)}')">Submit RSVP</button>
+        </div>
+        <div id="rsvp-submit-error" style="display:none;margin-top:14px;font-size:12px;color:#c0392b;"></div>`;
+    }
+
+    window.submitGuestRSVP = async function(coupleSlug) {
+      const btn = document.getElementById("rsvp-submit-btn");
+      const errorEl = document.getElementById("rsvp-submit-error");
+      errorEl.style.display = "none";
+      const guestName = document.getElementById("rsvp-guestName").value.trim();
+      const statusEl = document.querySelector('input[name="rsvp-status"]:checked');
+      if (!guestName) { errorEl.textContent = "Please enter your name."; errorEl.style.display = "block"; return; }
+      if (!statusEl) { errorEl.textContent = "Please let us know if you'll be attending."; errorEl.style.display = "block"; return; }
+
+      const plusOneNameEl = document.getElementById("rsvp-plusOneName");
+      const mealChoiceEl = document.getElementById("rsvp-mealChoice");
+      const plusOneMealChoiceEl = document.getElementById("rsvp-plusOneMealChoice");
+      const allergiesEl = document.getElementById("rsvp-allergies");
+      const plusOneAllergiesEl = document.getElementById("rsvp-plusOneAllergies");
+
+      const submission = {
+        coupleSlug,
+        guestName,
+        rsvpStatus: statusEl.value,
+        plusOneName: plusOneNameEl ? plusOneNameEl.value.trim() : "",
+        mealChoice: mealChoiceEl ? mealChoiceEl.value : "",
+        plusOneMealChoice: plusOneMealChoiceEl ? plusOneMealChoiceEl.value : "",
+        allergies: allergiesEl ? allergiesEl.value.trim() : "",
+        plusOneAllergies: plusOneAllergiesEl ? plusOneAllergiesEl.value.trim() : "",
+        submittedAt: new Date().toISOString(),
+        status: "pending"
+      };
+
+      btn.textContent = "Submitting…"; btn.disabled = true;
+      try {
+        await setDoc(doc(collection(db, "rsvpSubmissions")), submission);
+        document.getElementById("guest-rsvp-form").innerHTML = `<div style="text-align:center;padding:20px 0;"><p style="font-family:var(--font-heading);font-size:24px;font-weight:300;color:var(--charcoal);margin-bottom:10px;">Thank You!</p><p style="font-size:13px;color:var(--mid-gray);line-height:1.7;">Your RSVP has been received.</p></div>`;
+      } catch(e) {
+        errorEl.textContent = "Something went wrong submitting your RSVP. Please try again.";
+        errorEl.style.display = "block";
+        btn.textContent = "Submit RSVP"; btn.disabled = false;
+      }
+    };
 
     // ── AUTH STATE ──────────────────────────────────────────────
     onAuthStateChanged(auth, async (user) => {
@@ -184,7 +282,8 @@
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
-                ceremonyTime: "", receptionTime: "", ceremonyLocation: "", blockedGuestNames: []
+                ceremonyTime: "", receptionTime: "", ceremonyLocation: "", blockedGuestNames: [],
+                guestRoster: [], dinnerStyle: "Buffet", mealOptions: []
               });
             } catch(e) {}
           }
@@ -230,11 +329,12 @@
       ["meeting1","meeting2","meeting3"].forEach(meeting => {
         const saved = data[meeting] || {};
         Object.entries(saved).forEach(([key, val]) => {
-          const el = document.querySelector(`[data-field="${meeting}.${key}"]`);
-          if (!el) return;
-          if (el.type === "checkbox") { el.checked = val; }
-          else if (el.type === "radio") { el.checked = val; }
-          else { el.value = val; }
+          const els = document.querySelectorAll(`[data-field="${meeting}.${key}"]`);
+          els.forEach(el => {
+            if (el.type === "checkbox") { el.checked = val; }
+            else if (el.type === "radio") { el.checked = val; }
+            else { el.value = val; }
+          });
         });
       });
       renderLeadCoordinator(data.leadCoordinator);
@@ -252,11 +352,25 @@
     }
 
     function renderGuestPageLink(slug) {
-      const wrap = document.getElementById("guest-page-link");
-      if (!wrap) return;
-      if (!slug) { wrap.innerHTML = ""; return; }
-      const url = `${window.location.origin}/${slug}`;
-      wrap.innerHTML = `<p style="font-size:11px;letter-spacing:0.06em;color:rgba(253,250,246,0.45);">Your guest page: <a href="${esc(url)}" target="_blank" style="color:var(--gold-light);text-decoration:underline;">${esc(url)}</a> <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy';},1500);" style="background:none;border:1px solid rgba(253,250,246,0.25);color:rgba(253,250,246,0.6);font-size:10px;padding:2px 10px;margin-left:8px;cursor:pointer;border-radius:1px;">Copy</button></p>`;
+      const slots = document.querySelectorAll(".guest-page-link-slot");
+      if (!slots.length) return;
+      let html;
+      if (!slug) {
+        html = `
+          <span class="section-label">Your Guest Page</span>
+          <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:8px 0 10px;">Coming Soon</h3>
+          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;">Your personal guest link will appear here shortly.</p>`;
+      } else {
+        const url = `${window.location.origin}/${slug}`;
+        html = `
+          <span class="section-label">Your Guest Page</span>
+          <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:8px 0 10px;">Share This Link</h3>
+          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;word-break:break-all;">
+            <a href="${esc(url)}" target="_blank" style="color:var(--gold-dark);">${esc(url)}</a>
+          </p>
+          <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy Link';},1500);" style="margin-top:10px;background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;cursor:pointer;border-radius:1px;">Copy Link</button>`;
+      }
+      slots.forEach(slot => { slot.innerHTML = html; });
     }
 
     function renderLeadCoordinator(lc) {
@@ -713,6 +827,8 @@
 
     let blockedGuestsCache = [];
 
+    let currentCoupleSlug = "";
+
     async function loadGuestList(uid) {
       try {
         const snap = await getDoc(doc(db, "couples", uid));
@@ -722,12 +838,113 @@
           ? { dinnerStyle: data.guestListSettings.dinnerStyle || "Buffet", mealOptions: Array.isArray(data.guestListSettings.mealOptions) ? data.guestListSettings.mealOptions : [] }
           : { dinnerStyle: "Buffet", mealOptions: [] };
         blockedGuestsCache = Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [];
+        currentCoupleSlug = data.slug || "";
       } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
       window.resetGuestForm();
       window.renderGuestList();
+      loadPendingRSVPs();
     }
+
+    let pendingRSVPsCache = [];
+
+    async function loadPendingRSVPs() {
+      const wrap = document.getElementById("pending-rsvp-list");
+      if (!wrap) return;
+      if (!currentCoupleSlug) { wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No pending responses.</p>'; return; }
+      try {
+        const q = query(collection(db, "rsvpSubmissions"), where("coupleSlug", "==", currentCoupleSlug));
+        const snap = await getDocs(q);
+        pendingRSVPsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch(e) { console.error("Couldn't load pending RSVPs:", e); pendingRSVPsCache = []; }
+      renderPendingRSVPs();
+    }
+
+    function renderPendingRSVPs() {
+      const wrap = document.getElementById("pending-rsvp-list");
+      if (!wrap) return;
+      if (!pendingRSVPsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No pending responses.</p>';
+        return;
+      }
+      const guestOptionsHtml = '<option value="">— Add as New Guest —</option>' + guestListCache.map(g => `<option value="${g.id}">${esc(g.guestName || "Unnamed")}</option>`).join("");
+      wrap.innerHTML = pendingRSVPsCache.map(r => `
+        <div class="note-item" style="padding:16px 0;">
+          <div style="font-size:15px;color:var(--charcoal);">${esc(r.guestName||"Unnamed")}</div>
+          <div style="font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:${r.rsvpStatus==="Attending"?"var(--gold-dark)":"var(--mid-gray)"};margin-top:4px;">${esc(r.rsvpStatus||"")}</div>
+          ${r.plusOneName ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">Plus One: ${esc(r.plusOneName)}</div>` : ""}
+          ${r.mealChoice ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Meal: ${esc(r.mealChoice)}</div>` : ""}
+          ${r.plusOneMealChoice ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Plus One Meal: ${esc(r.plusOneMealChoice)}</div>` : ""}
+          ${r.allergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:2px;">Allergies: ${esc(r.allergies)}</div>` : ""}
+          ${r.plusOneAllergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:2px;">Plus One Allergies: ${esc(r.plusOneAllergies)}</div>` : ""}
+          <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center;">
+            <select class="form-input" id="pending-match-${r.id}" style="flex:1;min-width:200px;">${guestOptionsHtml}</select>
+            <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.applyRSVPSubmission('${r.id}')">Apply</button>
+            <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.dismissRSVPSubmission('${r.id}')">Dismiss</button>
+          </div>
+        </div>`).join("");
+    }
+
+    window.applyRSVPSubmission = async function(submissionId) {
+      if (!currentUser) return;
+      const r = pendingRSVPsCache.find(x => x.id === submissionId);
+      if (!r) return;
+      const select = document.getElementById(`pending-match-${submissionId}`);
+      const targetId = select.value;
+
+      const rsvpFields = {
+        rsvpStatus: r.rsvpStatus || "Pending",
+        plusOneName: r.plusOneName || "",
+        mealChoice: r.mealChoice || "",
+        plusOneMealChoice: r.plusOneMealChoice || "",
+        allergies: r.allergies || "",
+        plusOneAllergies: r.plusOneAllergies || ""
+      };
+
+      if (targetId) {
+        const idx = guestListCache.findIndex(g => g.id === targetId);
+        if (idx > -1) {
+          const existing = guestListCache[idx];
+          guestListCache[idx] = {
+            ...existing,
+            ...rsvpFields,
+            plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName
+          };
+        }
+      } else {
+        guestListCache.push({
+          id: Date.now().toString(),
+          guestName: r.guestName,
+          address: "",
+          plusOneAllowed: !!rsvpFields.plusOneName,
+          tableNumber: "",
+          notes: "Added from guest RSVP submission",
+          children: [],
+          ...rsvpFields
+        });
+      }
+
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
+        const { doc: dc, deleteDoc: dd } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await dd(dc(db, "rsvpSubmissions", submissionId));
+        pendingRSVPsCache = pendingRSVPsCache.filter(x => x.id !== submissionId);
+        window.renderGuestList();
+        renderPendingRSVPs();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't apply this RSVP: " + e.message); }
+    };
+
+    window.dismissRSVPSubmission = async function(submissionId) {
+      if (!confirm("Dismiss this response without applying it?")) return;
+      try {
+        const { doc: dc, deleteDoc: dd } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await dd(dc(db, "rsvpSubmissions", submissionId));
+        pendingRSVPsCache = pendingRSVPsCache.filter(x => x.id !== submissionId);
+        renderPendingRSVPs();
+      } catch(e) { alert("Couldn't dismiss: " + e.message); }
+    };
 
     function renderBlockedGuests() {
       const wrap = document.getElementById("blocked-guests-list");
@@ -809,6 +1026,7 @@
         await updateDoc(doc(db, "couples", currentUser.uid), { guestListSettings });
         updateGuestFormMealFields();
         window.renderGuestList();
+        syncPublicProfile(currentUser.uid);
         const btn = document.getElementById("gl-settings-save-btn");
         const original = btn.textContent;
         btn.textContent = "✓ Saved!";
@@ -1004,6 +1222,7 @@
         await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
         window.resetGuestForm();
         window.renderGuestList();
+        syncPublicProfile(currentUser.uid);
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
@@ -1014,6 +1233,7 @@
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
         window.renderGuestList();
+        syncPublicProfile(currentUser.uid);
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
@@ -1676,6 +1896,9 @@
         const data = snap.data();
         if (!data.slug) return;
         const m1 = data.meeting1 || {};
+        const guestList = Array.isArray(data.guestList) ? data.guestList : [];
+        const guestRoster = guestList.map(g => ({ name: g.guestName || "", plusOneAllowed: !!g.plusOneAllowed }));
+        const settings = data.guestListSettings || {};
         await setDoc(doc(db, "publicCouples", data.slug), {
           slug: data.slug,
           coupleNames: m1.coupleNames || "",
@@ -1683,7 +1906,10 @@
           ceremonyTime: m1.ceremonyTime || "",
           receptionTime: m1.receptionTime || "",
           ceremonyLocation: m1.ceremonyLocation || "",
-          blockedGuestNames: Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : []
+          blockedGuestNames: Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [],
+          guestRoster,
+          dinnerStyle: settings.dinnerStyle || "Buffet",
+          mealOptions: Array.isArray(settings.mealOptions) ? settings.mealOptions : []
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -2591,15 +2817,24 @@
   </div>
 
   <!-- CONTENT: revealed only after the gate is passed -->
-  <section class="hero" id="guest-content" style="height:100vh;display:none;">
-    <div class="hero-bg"></div>
-    <div class="hero-content">
-      <p class="hero-eyebrow" id="guest-view-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
-      <h1 class="hero-title" id="guest-view-names">Loading&hellip;</h1>
-      <div id="guest-view-countdown" style="margin-bottom:24px;"></div>
-      <div id="guest-view-details" style="font-size:13px;color:rgba(253,250,246,0.6);line-height:2;"></div>
-    </div>
-  </section>
+  <div id="guest-content" style="display:none;">
+    <section class="hero" style="height:100vh;">
+      <div class="hero-bg"></div>
+      <div class="hero-content">
+        <p class="hero-eyebrow" id="guest-view-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
+        <h1 class="hero-title" id="guest-view-names">Loading&hellip;</h1>
+        <div id="guest-view-countdown" style="margin-bottom:24px;"></div>
+        <div id="guest-view-details" style="font-size:13px;color:rgba(253,250,246,0.6);line-height:2;"></div>
+      </div>
+    </section>
+    <section style="background:var(--warm-white);padding:80px 24px;">
+      <div style="max-width:520px;margin:0 auto;">
+        <span class="section-label">RSVP</span>
+        <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Let us know <em style="color:var(--gold);font-style:italic;">you're coming</em></h2>
+        <div id="guest-rsvp-form"></div>
+      </div>
+    </section>
+  </div>
 </div>
 
 <!-- ══════════════════ LOGIN SCREEN ══════════════════ -->
@@ -2673,6 +2908,7 @@
         <a href="#" onclick="window.showPage('ideas');return false;">Ideas &amp; Inspiration Board</a>
       </div>
     </li>
+    <li><a href="#" onclick="window.showPage('guestportal');return false;">Guest Portal</a></li>
     <li><a href="#" onclick="window.showPage('home');setTimeout(()=>{document.getElementById('resources').scrollIntoView({behavior:'smooth'})},100);return false;">Resources</a></li>
     <li><a href="https://theseventyfive.hbportal.co/app/" target="_blank">Contact</a></li>
   </ul>
@@ -2690,8 +2926,7 @@
       <p class="hero-eyebrow">Welcome to Your Planning Portal</p>
       <h1 class="hero-title">Your dream day,<br><em>thoughtfully planned.</em></h1>
       <p class="hero-subtitle">The Seventy Five &middot; Rockbridge, Ohio</p>
-      <div id="wedding-countdown" style="margin-bottom:16px;"></div>
-      <div id="guest-page-link" style="margin-bottom:40px;"></div>
+      <div id="wedding-countdown" style="margin-bottom:40px;"></div>
       <a href="#welcome" class="hero-cta">Begin Your Journey</a>
     </div>
     <div class="hero-scroll"><div class="scroll-line"></div><span>Scroll</span></div>
@@ -2706,11 +2941,8 @@
       <p>Here you will find everything you need: your planning forms, resources, vendor guides, and direct access to your coordinator at every step. Your answers save automatically so you can always pick up right where you left off.</p>
     </div>
     <div class="welcome-right">
-      <div id="lead-coordinator-card" style="background:var(--cream);border:1px solid var(--border);padding:28px 32px;margin-bottom:28px;"></div>
-      <div class="welcome-signature">
-        &ldquo;We have poured our hearts into creating not just a venue, but a full planning experience that ensures your day is as perfect as you imagined.&rdquo;
-        <span class="welcome-sig-title">Emily Britt &middot; Co-Owner, The Seventy Five</span>
-      </div>
+      <div id="lead-coordinator-card" style="background:var(--cream);border:1px solid var(--border);padding:28px 32px;margin-bottom:20px;"></div>
+      <div class="guest-page-link-slot" style="background:var(--cream);border:1px solid var(--border);padding:28px 32px;"></div>
     </div>
   </div>
 
@@ -4160,16 +4392,6 @@
       </div>
       <div id="guest-list-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No guests added yet.</p></div>
     </div>
-
-    <div class="form-section-block">
-      <h2 class="form-section-title">Guest Page <em>Access</em></h2>
-      <p class="form-section-intro">Your guest page is protected by name + wedding date. In the rare case someone who shouldn't have access gets in, add their name here to block them — they'll see a message asking them to contact you directly.</p>
-      <div style="display:flex;gap:10px;margin-bottom:16px;">
-        <input type="text" class="form-input" id="blocked-guest-newName" placeholder="Name to block..." onkeypress="if(event.key==='Enter'){event.preventDefault();window.addBlockedGuest();}">
-        <button class="btn-save" style="white-space:nowrap;" onclick="window.addBlockedGuest()">+ Block</button>
-      </div>
-      <div id="blocked-guests-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No one is currently blocked.</p></div>
-    </div>
   </div>
 
   <div class="form-save-row">
@@ -4459,6 +4681,73 @@
     <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
   </div>
 </div><!-- end page-ideas -->
+
+<!-- ══════════════════ GUEST PORTAL ══════════════════ -->
+<div id="page-guestportal" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting3-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Guest Portal</span>
+      <h1>What Your <em>Guests See</em></h1>
+      <p>Edit here — guests just see it, and RSVP through it.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Think of this like a shared document — you have full editing access, and your guests get a read-only view of the details plus the ability to RSVP. Anything you update here goes live for your guests right away.</p>
+
+    <div class="form-section-block">
+      <div class="guest-page-link-slot" style="background:var(--cream);border:1px solid var(--border);padding:28px 32px;"></div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Wedding <em>Details</em></h2>
+      <p class="form-section-intro">These show up on your guest page automatically — same fields as your First Planning Meeting, just editable from here too.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Couple Names</label>
+          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Wedding Date</label>
+          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony Time</label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reception Time</label>
+          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony Location</label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Pending Guest <em>Responses</em></h2>
+      <p class="form-section-intro">RSVPs guests submit through your guest page land here first. Match each one to the right person on your list (or add them as new), and it'll update automatically.</p>
+      <div id="pending-rsvp-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No pending responses.</p></div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Guest Page <em>Access</em></h2>
+      <p class="form-section-intro">Your guest page is protected by name + wedding date. In the rare case someone who shouldn't have access gets in, add their name here to block them — they'll see a message asking them to contact you directly.</p>
+      <div style="display:flex;gap:10px;margin-bottom:16px;">
+        <input type="text" class="form-input" id="blocked-guest-newName" placeholder="Name to block..." onkeypress="if(event.key==='Enter'){event.preventDefault();window.addBlockedGuest();}">
+        <button class="btn-save" style="white-space:nowrap;" onclick="window.addBlockedGuest()">+ Block</button>
+      </div>
+      <div id="blocked-guests-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No one is currently blocked.</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-guestportal -->
 
 </div><!-- end portal-root -->
 
