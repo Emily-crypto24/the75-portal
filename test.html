@@ -54,7 +54,7 @@
           const userRef = doc(db, "couples", user.uid);
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [] });
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
@@ -62,6 +62,7 @@
           updateAllProgress();
           await loadResources();
           await loadVendorMeetings(user.uid);
+          await loadFinanceEntries(user.uid);
         }
       } else {
         currentUser = null;
@@ -308,6 +309,159 @@
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { vendorMeetings: vendorMeetingsCache });
         renderVendorMeetings();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    // ── FINANCE TRACKER (PLANNING TOOL) ──────────────────────────
+    let financeEntriesCache = [];
+    let editingFinanceId = null;
+
+    async function loadFinanceEntries(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        financeEntriesCache = Array.isArray(data.financeEntries) ? data.financeEntries : [];
+      } catch(e) { financeEntriesCache = []; }
+      populateVendorDatalist();
+      window.resetFinanceForm();
+      renderFinanceEntries();
+    }
+
+    function populateVendorDatalist() {
+      const list = document.getElementById("fin-vendor-datalist");
+      if (!list) return;
+      const names = [...new Set(vendorMeetingsCache.map(v => v.vendorName).filter(Boolean))];
+      list.innerHTML = names.map(n => `<option value="${esc(n)}">`).join("");
+    }
+
+    function formatMoney(n) {
+      const num = Number(n) || 0;
+      return "$" + num.toLocaleString("en-US", { minimumFractionDigits: num % 1 === 0 ? 0 : 2, maximumFractionDigits: 2 });
+    }
+
+    function renderFinanceEntries() {
+      const wrap = document.getElementById("finance-entries-list");
+      let totalCost = 0, totalPaid = 0;
+      financeEntriesCache.forEach(f => { totalCost += Number(f.totalCost)||0; totalPaid += Number(f.amountPaid)||0; });
+      const totalRemaining = totalCost - totalPaid;
+      document.getElementById("fin-total-contracted").textContent = formatMoney(totalCost);
+      document.getElementById("fin-total-paid").textContent = formatMoney(totalPaid);
+      document.getElementById("fin-total-remaining").textContent = formatMoney(totalRemaining);
+
+      if (!wrap) return;
+      if (!financeEntriesCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No vendors or expenses added yet.</p>';
+        return;
+      }
+      const sorted = financeEntriesCache.slice().sort((a,b) => {
+        const balA = (Number(a.totalCost)||0) - (Number(a.amountPaid)||0);
+        const balB = (Number(b.totalCost)||0) - (Number(b.amountPaid)||0);
+        const paidA = balA <= 0 && (Number(a.totalCost)||0) > 0;
+        const paidB = balB <= 0 && (Number(b.totalCost)||0) > 0;
+        if (paidA !== paidB) return paidA ? 1 : -1;
+        return (a.dueDate || "9999-12-31").localeCompare(b.dueDate || "9999-12-31");
+      });
+      wrap.innerHTML = sorted.map(f => {
+        const cost = Number(f.totalCost)||0;
+        const paid = Number(f.amountPaid)||0;
+        const balance = cost - paid;
+        const isPaidInFull = cost > 0 && balance <= 0;
+        const statusLabel = isPaidInFull ? "Paid in Full" : (paid > 0 ? "Partially Paid" : "Not Paid Yet");
+        const statusColor = isPaidInFull ? "var(--gold-dark)" : (paid > 0 ? "var(--charcoal)" : "var(--mid-gray)");
+        return `
+        <div class="note-item" style="padding:18px 0;${isPaidInFull ? "opacity:0.6;" : ""}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;">
+              <div style="font-size:15px;color:var(--charcoal);">${esc(f.vendorName||"Untitled")}${f.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(f.category)}</span>` : ""}</div>
+              <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">
+                Total: ${formatMoney(cost)} &middot; Paid: ${formatMoney(paid)} &middot; Balance: ${formatMoney(balance)}
+              </div>
+              <div style="font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:${statusColor};margin-top:4px;">${statusLabel}${f.dueDate ? " &middot; Due " + formatMeetingDate(f.dueDate) : ""}</div>
+              ${f.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(f.notes)}</div>` : ""}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editFinanceEntry('${f.id}')">Edit</button>
+              ${!isPaidInFull ? `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.markFinancePaidInFull('${f.id}')">&#10003; Mark Paid in Full</button>` : ""}
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteFinanceEntry('${f.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    window.resetFinanceForm = function() {
+      editingFinanceId = null;
+      document.getElementById("fin-vendorName").value = "";
+      document.getElementById("fin-category").value = "";
+      document.getElementById("fin-totalCost").value = "";
+      document.getElementById("fin-amountPaid").value = "";
+      document.getElementById("fin-dueDate").value = "";
+      document.getElementById("fin-notes").value = "";
+      document.getElementById("fin-form-title").innerHTML = 'Add a Vendor or <em>Expense</em>';
+      document.getElementById("fin-save-btn").textContent = "Add Entry";
+      document.getElementById("fin-cancel-btn").style.display = "none";
+    };
+
+    window.editFinanceEntry = function(id) {
+      const f = financeEntriesCache.find(x => x.id === id);
+      if (!f) return;
+      editingFinanceId = id;
+      document.getElementById("fin-vendorName").value = f.vendorName || "";
+      document.getElementById("fin-category").value = f.category || "";
+      document.getElementById("fin-totalCost").value = f.totalCost || "";
+      document.getElementById("fin-amountPaid").value = f.amountPaid || "";
+      document.getElementById("fin-dueDate").value = f.dueDate || "";
+      document.getElementById("fin-notes").value = f.notes || "";
+      document.getElementById("fin-form-title").innerHTML = 'Edit Vendor or <em>Expense</em>';
+      document.getElementById("fin-save-btn").textContent = "Save Changes";
+      document.getElementById("fin-cancel-btn").style.display = "inline-block";
+      document.getElementById("fin-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveFinanceEntry = async function() {
+      if (!currentUser) return;
+      const vendorName = document.getElementById("fin-vendorName").value.trim();
+      if (!vendorName) { alert("Please enter a vendor or expense name."); return; }
+      const entry = {
+        id: editingFinanceId || Date.now().toString(),
+        vendorName,
+        category: document.getElementById("fin-category").value,
+        totalCost: parseFloat(document.getElementById("fin-totalCost").value) || 0,
+        amountPaid: parseFloat(document.getElementById("fin-amountPaid").value) || 0,
+        dueDate: document.getElementById("fin-dueDate").value,
+        notes: document.getElementById("fin-notes").value.trim()
+      };
+      if (editingFinanceId) {
+        const idx = financeEntriesCache.findIndex(x => x.id === editingFinanceId);
+        if (idx > -1) financeEntriesCache[idx] = entry; else financeEntriesCache.push(entry);
+      } else {
+        financeEntriesCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { financeEntries: financeEntriesCache });
+        window.resetFinanceForm();
+        renderFinanceEntries();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.markFinancePaidInFull = async function(id) {
+      if (!currentUser) return;
+      const idx = financeEntriesCache.findIndex(x => x.id === id);
+      if (idx === -1) return;
+      financeEntriesCache[idx].amountPaid = financeEntriesCache[idx].totalCost;
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { financeEntries: financeEntriesCache });
+        renderFinanceEntries();
+      } catch(e) { alert("Couldn't update: " + e.message); }
+    };
+
+    window.deleteFinanceEntry = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this entry?")) return;
+      financeEntriesCache = financeEntriesCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { financeEntries: financeEntriesCache });
+        renderFinanceEntries();
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
@@ -1171,6 +1325,7 @@
       <a href="#">Planning Tools &#9662;</a>
       <div class="nav-dropdown-menu">
         <a href="#" onclick="window.showPage('vendors');return false;">Vendor Meetings</a>
+        <a href="#" onclick="window.showPage('finances');return false;">Finance Tracker</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('home');setTimeout(()=>{document.getElementById('resources').scrollIntoView({behavior:'smooth'})},100);return false;">Resources</a></li>
@@ -2431,6 +2586,99 @@
     <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
   </div>
 </div><!-- end page-vendors -->
+
+<!-- ══════════════════ FINANCE TRACKER (PLANNING TOOL) ══════════════════ -->
+<div id="page-finances" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting3-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Finance <em>Tracker</em></h1>
+      <p>Keep track of what's paid and what's still owed.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Log what each vendor or expense costs in total and what you've paid so far — the balance updates automatically. This is just for your own budgeting and doesn't affect your Seventy Five contract or payments.</p>
+
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:48px;">
+      <div style="background:var(--cream);border:1px solid var(--border);padding:20px 24px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:8px;">Total Contracted</div>
+        <div style="font-family:var(--font-heading);font-size:26px;color:var(--charcoal);" id="fin-total-contracted">$0</div>
+      </div>
+      <div style="background:var(--cream);border:1px solid var(--border);padding:20px 24px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:8px;">Total Paid</div>
+        <div style="font-family:var(--font-heading);font-size:26px;color:var(--gold-dark);" id="fin-total-paid">$0</div>
+      </div>
+      <div style="background:var(--cream);border:1px solid var(--border);padding:20px 24px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:8px;">Total Remaining</div>
+        <div style="font-family:var(--font-heading);font-size:26px;color:var(--charcoal);" id="fin-total-remaining">$0</div>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="fin-form-title">Add a Vendor or <em>Expense</em></h2>
+      <p class="form-section-intro">Fill in what you know — you can edit or remove this anytime.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Vendor / Expense Name</label>
+          <input type="text" class="form-input" id="fin-vendorName" list="fin-vendor-datalist" placeholder="e.g. Bloom &amp; Co Florist, Wedding Dress...">
+          <datalist id="fin-vendor-datalist"></datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select class="form-input" id="fin-category">
+            <option value="">Select a category...</option>
+            <option>Venue</option>
+            <option>Florist</option>
+            <option>Caterer</option>
+            <option>Photographer</option>
+            <option>Videographer</option>
+            <option>DJ / Band</option>
+            <option>Officiant</option>
+            <option>Hair &amp; Makeup</option>
+            <option>Baker / Cake</option>
+            <option>Rentals</option>
+            <option>Transportation</option>
+            <option>Stationery</option>
+            <option>Attire</option>
+            <option>Wedding Planner / Coordinator</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Total Cost</label>
+          <input type="number" class="form-input" id="fin-totalCost" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Amount Paid So Far</label>
+          <input type="number" class="form-input" id="fin-amountPaid" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Next Payment Due Date</label>
+          <input type="date" class="form-input" id="fin-dueDate">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Payment Notes</label>
+          <textarea class="form-textarea" id="fin-notes" placeholder="e.g. Deposit paid via check 3/2. Remaining balance due 30 days before the wedding."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="fin-save-btn" onclick="window.saveFinanceEntry()">Add Entry</button>
+        <button class="btn-back" id="fin-cancel-btn" style="display:none;" onclick="window.resetFinanceForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Vendors &amp; Expenses</em></h2>
+      <div id="finance-entries-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No vendors or expenses added yet.</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-finances -->
 
 </div><!-- end portal-root -->
 
