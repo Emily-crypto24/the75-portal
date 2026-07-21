@@ -59,6 +59,7 @@
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
           await loadAllForms(user.uid);
           updateAllProgress();
+          await loadResources();
         }
       } else {
         currentUser = null;
@@ -85,7 +86,44 @@
       });
     }
 
-    // ── SAVE FIELD ──────────────────────────────────────────────
+    // ── RESOURCES (CLIENT-FACING, DATA-DRIVEN) ───────────────────
+    const DEFAULT_RESOURCES = [
+      { id:"wedding-guide", title:"Wedding Guide", description:"Your comprehensive guide to planning at The Seventy Five — checklists, timelines, and everything you need to know.", linkUrl:"assets/docs/Wedding_Guide.pdf", buttonLabel:"Download Guide" },
+      { id:"preferred-vendors", title:"Preferred Vendors", description:"Our carefully curated list of trusted caterers, florists, photographers, DJs, and more — all familiar with The 75.", linkUrl:"assets/docs/Wedding_Guide.pdf#page=6", buttonLabel:"View Vendors" },
+      { id:"box-hops", title:"The Box Hops", description:"As a Seventy Five couple, you have priority access to our six stunning Box Hop Airbnbs — three on our property and three nearby.", linkUrl:"assets/docs/Reserving_The_Box_Hops.pdf", buttonLabel:"Explore Lodging" },
+      { id:"linen-showroom", title:"Linen Showroom", description:"Browse and design your custom linen color palette. Username: The 75 · Password: Events", linkUrl:"https://www.linenshowroom.com", buttonLabel:"Visit Linenshowroom.com" },
+      { id:"venue-layout", title:"Venue Layout", description:"Explore floor plan options for your ceremony and reception. Use Prismm to visualize your setup and send to your coordinator.", linkUrl:"https://venue.prismm.com/?extluid=88ec036c-d361-46bc-9f31-e4fb97d5fc1f", buttonLabel:"View Floor Plans" },
+      { id:"contact-coordinator", title:"Contact Your Coordinator", description:"Have a question between meetings? Reach out to your lead coordinator or venue manager directly. We are always here.", linkUrl:"https://theseventyfive.hbportal.co/app/", buttonLabel:"Open Client Portal" },
+      { id:"pricing-guide", title:"Pricing Guide", description:"Our current package pricing by season and day of week, plus everything included in every Seventy Five wedding.", linkUrl:"assets/docs/Pricing_Guide.pdf", buttonLabel:"View Pricing" },
+      { id:"micro-wedding", title:"Micro-Wedding", description:"An intimate, full-service wedding experience for smaller guest counts — full details on what's included.", linkUrl:"assets/docs/Micro_Wedding.pdf", buttonLabel:"Learn More" },
+      { id:"decor-catalog", title:"Décor Catalog", description:"Browse our full décor closet — tableware, glassware, candles, stands, and styling recommendations available to you.", linkUrl:"assets/docs/Decor_Catalog.pdf", buttonLabel:"View Décor Catalog" },
+      { id:"venue-policies", title:"Venue Policies & Guest Guidelines", description:"Important policies covering guest conduct, décor setup, fire safety, and more — please share with your wedding party and vendors.", linkUrl:"assets/docs/Venue_Policies_Guest_Guidelines.pdf", buttonLabel:"View Policies" }
+    ];
+
+    async function loadResources() {
+      const grid = document.getElementById("resources-grid");
+      if (!grid) return;
+      try {
+        const snap = await getDoc(doc(db, "settings", "resources"));
+        let items;
+        if (snap.exists() && Array.isArray(snap.data().items) && snap.data().items.length) {
+          items = snap.data().items;
+        } else {
+          items = DEFAULT_RESOURCES;
+          await setDoc(doc(db, "settings", "resources"), { items });
+        }
+        renderResourceCards(items);
+      } catch(e) {
+        renderResourceCards(DEFAULT_RESOURCES);
+      }
+    }
+
+    function renderResourceCards(items) {
+      const grid = document.getElementById("resources-grid");
+      if (!grid) return;
+      if (!items.length) { grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">No resources have been added yet.</p>'; return; }
+      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(r.linkUrl)}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${r.description}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
+    }
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
       const key = `${meeting}.${field}`;
@@ -480,11 +518,119 @@
 
     window.adminSignOut = async function() { await signOut(auth); };
 
+    // ── RESOURCE MANAGER (OWNER-ONLY, PIN GATED) ─────────────────
+    const RESOURCE_EDIT_PIN = "2023"; // Change this value and re-deploy to update the PIN.
+    let resourceEditCache = [];
+    let resourceRowSeq = 0;
+
+    window.openResourcePinGate = function() {
+      const modal = document.getElementById("resource-pin-modal");
+      const input = document.getElementById("resource-pin-input");
+      const err = document.getElementById("resource-pin-error");
+      if (input) input.value = "";
+      if (err) err.style.display = "none";
+      if (modal) modal.style.display = "flex";
+      if (input) setTimeout(() => input.focus(), 100);
+    };
+
+    window.closeResourcePinGate = function() {
+      const modal = document.getElementById("resource-pin-modal");
+      if (modal) modal.style.display = "none";
+    };
+
+    window.submitResourcePin = async function() {
+      const input = document.getElementById("resource-pin-input");
+      const err = document.getElementById("resource-pin-error");
+      const entered = input ? input.value.trim() : "";
+      if (entered !== RESOURCE_EDIT_PIN) {
+        if (err) { err.textContent = "Incorrect PIN. Please try again."; err.style.display = "block"; }
+        if (input) { input.value = ""; input.focus(); }
+        return;
+      }
+      window.closeResourcePinGate();
+      await window.openResourceManager();
+    };
+
+    window.openResourceManager = async function() {
+      const modal = document.getElementById("resource-manager-modal");
+      const body = document.getElementById("resource-manager-body");
+      if (body) body.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;text-align:center;padding:20px;">Loading…</p>';
+      if (modal) modal.style.display = "flex";
+      try {
+        const snap = await getDoc(doc(db, "settings", "resources"));
+        const items = (snap.exists() && Array.isArray(snap.data().items) && snap.data().items.length) ? snap.data().items : DEFAULT_RESOURCES;
+        resourceEditCache = items.map(r => ({ ...r, _rowId: "row" + (resourceRowSeq++) }));
+      } catch(e) {
+        resourceEditCache = DEFAULT_RESOURCES.map(r => ({ ...r, _rowId: "row" + (resourceRowSeq++) }));
+      }
+      renderResourceEditor();
+    };
+
+    window.closeResourceManager = function() {
+      const modal = document.getElementById("resource-manager-modal");
+      if (modal) modal.style.display = "none";
+    };
+
+    function renderResourceEditor() {
+      const body = document.getElementById("resource-manager-body");
+      if (!body) return;
+      if (!resourceEditCache.length) {
+        body.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;text-align:center;padding:20px;">No resources yet — click "+ Add New Resource" below to create one.</p>';
+        return;
+      }
+      body.innerHTML = resourceEditCache.map((r, idx) => `
+        <div class="amd-section" data-row="${r._rowId}" style="border:1px solid var(--border);padding:20px;border-radius:2px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <span style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);">Resource ${idx+1}</span>
+            <button style="background:none;border:none;color:#c0392b;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;" onclick="window.removeResourceRow('${r._rowId}')">Remove</button>
+          </div>
+          <div class="amd-row"><div class="amd-key">Title</div><div class="amd-val"><input class="amd-input" data-rf="title" value="${esc(r.title||"")}"></div></div>
+          <div class="amd-row"><div class="amd-key">Description</div><div class="amd-val"><textarea class="amd-input amd-textarea" data-rf="description">${esc(r.description||"")}</textarea></div></div>
+          <div class="amd-row"><div class="amd-key">Button Label</div><div class="amd-val"><input class="amd-input" data-rf="buttonLabel" value="${esc(r.buttonLabel||"")}"></div></div>
+          <div class="amd-row"><div class="amd-key">Link / File URL</div><div class="amd-val"><input class="amd-input" data-rf="linkUrl" value="${esc(r.linkUrl||"")}" placeholder="assets/docs/YourFile.pdf or https://..."></div></div>
+        </div>`).join("");
+    }
+
+    window.addResourceRow = function() {
+      resourceEditCache.push({ _rowId: "row" + (resourceRowSeq++), title:"", description:"", buttonLabel:"Learn More", linkUrl:"" });
+      renderResourceEditor();
+    };
+
+    window.removeResourceRow = function(rowId) {
+      resourceEditCache = resourceEditCache.filter(r => r._rowId !== rowId);
+      renderResourceEditor();
+    };
+
+    window.saveResources = async function() {
+      const body = document.getElementById("resource-manager-body");
+      const rows = body.querySelectorAll("[data-row]");
+      const items = [];
+      rows.forEach(rowEl => {
+        const rowId = rowEl.getAttribute("data-row");
+        const cached = resourceEditCache.find(r => r._rowId === rowId) || {};
+        const item = { id: cached.id || rowId };
+        rowEl.querySelectorAll("[data-rf]").forEach(el => { item[el.getAttribute("data-rf")] = el.value; });
+        if (item.title.trim()) items.push(item);
+      });
+      const btn = document.getElementById("save-resources-btn");
+      if (btn) { btn.textContent = "Saving…"; btn.disabled = true; }
+      try {
+        await setDoc(doc(db, "settings", "resources"), { items });
+        if (btn) { btn.textContent = "✓ Saved!"; }
+        setTimeout(() => { window.closeResourceManager(); if (btn) { btn.textContent = "Save Changes"; btn.disabled = false; } }, 900);
+      } catch(e) {
+        if (btn) { btn.textContent = "Save Changes"; btn.disabled = false; }
+        alert("Save failed: " + e.message);
+      }
+    };
+
     window.addEventListener("DOMContentLoaded", () => {
       const pw = document.getElementById("login-password");
       if (pw) pw.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
       const em = document.getElementById("login-email");
       if (em) em.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
+      const pinInput = document.getElementById("resource-pin-input");
+      if (pinInput) pinInput.addEventListener("keydown", e => { if (e.key === "Enter") window.submitResourcePin(); });
     });
   </script>
 
@@ -933,13 +1079,8 @@
       <span class="section-label">Resources</span>
       <h2>Everything you<br>need in <em>one place.</em></h2>
     </div>
-    <div class="resources-grid">
-      <a class="resource-card" href="assets/docs/Wedding_Guide.pdf" target="_blank"><div class="resource-icon"></div><h3>Wedding Guide</h3><p>Your comprehensive guide to planning at The Seventy Five &mdash; checklists, timelines, and everything you need to know.</p><span class="resource-link">Download Guide</span></a>
-      <a class="resource-card" href="assets/docs/Wedding_Guide.pdf#page=6" target="_blank"><div class="resource-icon"></div><h3>Preferred Vendors</h3><p>Our carefully curated list of trusted caterers, florists, photographers, DJs, and more &mdash; all familiar with The 75.</p><span class="resource-link">View Vendors</span></a>
-      <a class="resource-card" href="assets/docs/Reserving_The_Box_Hops.pdf" target="_blank"><div class="resource-icon"></div><h3>The Box Hops</h3><p>As a Seventy Five couple, you have priority access to our six stunning Box Hop Airbnbs &mdash; three on our property and three nearby.</p><span class="resource-link">Explore Lodging</span></a>
-      <a class="resource-card" href="https://www.linenshowroom.com" target="_blank"><div class="resource-icon"></div><h3>Linen Showroom</h3><p>Browse and design your custom linen color palette. <strong>Username:</strong> The 75 &middot; <strong>Password:</strong> Events</p><span class="resource-link">Visit Linenshowroom.com</span></a>
-      <a class="resource-card" href="https://venue.prismm.com/?extluid=88ec036c-d361-46bc-9f31-e4fb97d5fc1f" target="_blank"><div class="resource-icon"></div><h3>Venue Layout</h3><p>Explore floor plan options for your ceremony and reception. Use Prismm to visualize your setup and send to your coordinator.</p><span class="resource-link">View Floor Plans</span></a>
-      <a class="resource-card" href="https://theseventyfive.hbportal.co/app/" target="_blank"><div class="resource-icon"></div><h3>Contact Your Coordinator</h3><p>Have a question between meetings? Reach out to your lead coordinator or venue manager directly. We are always here.</p><span class="resource-link">Open Client Portal</span></a>
+    <div class="resources-grid" id="resources-grid">
+      <p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">Loading resources…</p>
     </div>
   </section>
 
@@ -2038,6 +2179,7 @@
       </div>
       <div class="admin-header-right">
         <div class="admin-count-badge"><span id="admin-couple-count">—</span> Couples</div>
+        <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.openResourcePinGate()">&#128274; Manage Resources</button>
         <button class="btn-export-all" id="export-all-btn" onclick="window.exportAllCouples()">&#8595; Export All Couples to CSV</button>
       </div>
     </div>
@@ -2061,6 +2203,36 @@
     </div>
   </div>
 </div>
+
+  <!-- ══════════════════ RESOURCE PIN GATE MODAL ══════════════════ -->
+  <div id="resource-pin-modal" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(44,44,44,0.75);align-items:center;justify-content:center;padding:24px;">
+    <div style="background:var(--warm-white);width:100%;max-width:360px;padding:36px 32px;border-radius:2px;text-align:center;">
+      <div style="font-size:28px;margin-bottom:8px;">&#128274;</div>
+      <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:400;color:var(--charcoal);margin-bottom:8px;">Owner Access Only</h2>
+      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:24px;line-height:1.6;">Enter the 4-digit PIN to manage resource cards. This area is restricted to venue ownership and upper management.</p>
+      <input type="password" inputmode="numeric" maxlength="4" id="resource-pin-input" class="login-input" style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
+      <p id="resource-pin-error" style="display:none;color:#c0392b;font-size:12px;margin-top:10px;"></p>
+      <div style="display:flex;gap:10px;margin-top:20px;">
+        <button class="btn-back" style="flex:1;" onclick="window.closeResourcePinGate()">Cancel</button>
+        <button class="btn-save" style="flex:1;" onclick="window.submitResourcePin()">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════ RESOURCE MANAGER MODAL ══════════════════ -->
+  <div id="resource-manager-modal" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(44,44,44,0.75);align-items:center;justify-content:center;padding:24px;">
+    <div class="admin-modal-box" style="max-width:760px;">
+      <div class="admin-modal-header">
+        <h2>Manage Resource Cards</h2>
+        <button class="admin-modal-close" onclick="window.closeResourceManager()">&times;</button>
+      </div>
+      <div class="admin-modal-body" id="resource-manager-body"></div>
+      <div style="padding:20px 32px;border-top:1px solid var(--border);display:flex;gap:12px;flex-shrink:0;">
+        <button class="acc-btn-export" style="flex:1;" onclick="window.addResourceRow()">+ Add New Resource</button>
+        <button class="acc-btn-view" style="flex:1;" id="save-resources-btn" onclick="window.saveResources()">Save Changes</button>
+      </div>
+    </div>
+  </div>
 
 </body>
 </html>
