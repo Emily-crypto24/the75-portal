@@ -14,7 +14,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBmqd_uayeu-aCAteNoC5N5TIigbJhiKt8",
@@ -37,10 +37,133 @@
     let currentUser = null;
     let pendingCoupleNames = "";
     let pendingWeddingDate = "";
+    let pendingSlugBase = "";
+
+    function firstNameSlug(fullName) {
+      const first = (fullName || "").trim().split(/\s+/)[0] || "";
+      return first.toLowerCase().replace(/[^a-z0-9]/g, "");
+    }
+
+    // Finds a unique slug for a new couple, appending -2, -3, etc. if the base is already taken.
+    async function resolveUniqueSlug(base) {
+      if (!base) base = "couple" + Date.now().toString().slice(-5);
+      let candidate = base;
+      let attempt = 1;
+      while (attempt <= 25) {
+        try {
+          const q = query(collection(db, "couples"), where("slug", "==", candidate));
+          const snap = await getDocs(q);
+          if (snap.empty) return candidate;
+        } catch(e) { return candidate; } // if the query fails for any reason, don't block account creation
+        attempt++;
+        candidate = `${base}${attempt}`;
+      }
+      return `${base}${Date.now().toString().slice(-5)}`;
+    }
+
     let autoSaveTimers = {};
+    let isGuestViewMode = false;
+
+    // ── PUBLIC GUEST VIEW ROUTING ─────────────────────────────────
+    // Guest links (e.g. planning.theseventyfivevenue.com/emilyandjames) hit GitHub's 404 page,
+    // which redirects here with ?guest=emilyandjames preserved. We clean the URL back up,
+    // then load that couple's public-safe profile — no login required.
+    (function checkForGuestView() {
+      const params = new URLSearchParams(window.location.search);
+      const guestParam = params.get("guest");
+      if (!guestParam) return;
+      const slug = guestParam.replace(/^\/|\/$/g, "").split("/")[0];
+      isGuestViewMode = true;
+      try { window.history.replaceState(null, "", "/" + slug); } catch(e) {}
+      document.getElementById("login-screen").style.display = "none";
+      document.getElementById("guest-view").style.display = "block";
+      loadGuestView(slug);
+    })();
+
+    let guestGateData = null;
+
+    async function loadGuestView(slug) {
+      const gateError = document.getElementById("guest-gate-error");
+      try {
+        const snap = await getDoc(doc(db, "publicCouples", slug));
+        if (!snap.exists()) {
+          document.getElementById("guest-gate").innerHTML = `<div style="max-width:380px;text-align:center;"><p class="hero-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p><h2 style="font-family:var(--font-heading);font-size:28px;font-weight:300;color:#fdfaf6;margin:16px 0;">We couldn't find this page</h2><p style="font-size:13px;color:rgba(253,250,246,0.55);line-height:1.7;">Double check the link, or reach out to the couple directly.</p></div>`;
+          return;
+        }
+        guestGateData = snap.data();
+      } catch(e) {
+        showGuestGateError("Something went wrong loading this page. Please try refreshing.");
+      }
+    }
+
+    function showGuestGateError(msg) {
+      const el = document.getElementById("guest-gate-error");
+      if (el) { el.textContent = msg; el.style.display = "block"; }
+    }
+
+    window.submitGuestGate = function() {
+      const nameEl = document.getElementById("guest-gate-name");
+      const dateEl = document.getElementById("guest-gate-date");
+      const name = nameEl.value.trim();
+      const enteredDate = dateEl.value;
+      document.getElementById("guest-gate-error").style.display = "none";
+
+      if (!guestGateData) { showGuestGateError("This page is still loading — please try again in a moment."); return; }
+      if (!name) { showGuestGateError("Please enter your name."); return; }
+      if (!enteredDate) { showGuestGateError("Please enter the wedding date from your invitation."); return; }
+
+      const blockedNames = (guestGateData.blockedGuestNames || []).map(n => n.trim().toLowerCase());
+      if (blockedNames.includes(name.toLowerCase())) {
+        showGuestGateError("Access to this page has been restricted. Please contact the couple directly.");
+        return;
+      }
+      if (enteredDate !== guestGateData.weddingDate) {
+        showGuestGateError("That date doesn't match our records — please double check your invitation and try again.");
+        return;
+      }
+
+      document.getElementById("guest-gate").style.display = "none";
+      document.getElementById("guest-content").style.display = "flex";
+      renderGuestContent(guestGateData);
+    };
+
+    function renderGuestContent(data) {
+      const namesEl = document.getElementById("guest-view-names");
+      const countdownEl = document.getElementById("guest-view-countdown");
+      const detailsEl = document.getElementById("guest-view-details");
+      namesEl.innerHTML = esc(data.coupleNames || "A Seventy Five Wedding");
+
+      if (data.weddingDate) {
+        const [y, m, d] = data.weddingDate.split("-").map(Number);
+        const weddingDate = new Date(y, m - 1, d);
+        const today = new Date();
+        const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const formattedDate = weddingDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+        let countdownText;
+        if (todayMidnight.getTime() === weddingDate.getTime()) countdownText = "Today is the day! 🎉";
+        else if (todayMidnight.getTime() > weddingDate.getTime()) countdownText = "Thank you for celebrating with us!";
+        else {
+          let months = (weddingDate.getFullYear() - todayMidnight.getFullYear()) * 12 + (weddingDate.getMonth() - todayMidnight.getMonth());
+          let days = weddingDate.getDate() - todayMidnight.getDate();
+          if (days < 0) { months--; days += new Date(weddingDate.getFullYear(), weddingDate.getMonth(), 0).getDate(); }
+          const parts = [];
+          if (months > 0) parts.push(`${months} Month${months === 1 ? "" : "s"}`);
+          parts.push(`${days} Day${days === 1 ? "" : "s"}`);
+          countdownText = parts.join(", ") + " To Go";
+        }
+        countdownEl.innerHTML = `<p style="font-size:13px;letter-spacing:0.1em;color:rgba(253,250,246,0.6);margin-bottom:6px;text-transform:uppercase;">${esc(formattedDate)}</p><p style="font-family:var(--font-heading);font-size:26px;color:var(--gold-light);">${countdownText}</p>`;
+      }
+
+      const detailLines = [];
+      if (data.ceremonyLocation) detailLines.push(`Ceremony at ${esc(data.ceremonyLocation)}`);
+      if (data.ceremonyTime) detailLines.push(`Ceremony begins ${esc(data.ceremonyTime)}`);
+      if (data.receptionTime) detailLines.push(`Reception to follow at ${esc(data.receptionTime)}`);
+      detailsEl.innerHTML = detailLines.length ? detailLines.map(l => `<p>${l}</p>`).join("") : `<p>More details coming soon!</p>`;
+    }
 
     // ── AUTH STATE ──────────────────────────────────────────────
     onAuthStateChanged(auth, async (user) => {
+      if (isGuestViewMode) return;
       if (user) {
         currentUser = user;
         document.getElementById("login-screen").style.display = "none";
@@ -56,7 +179,14 @@
           const userRef = doc(db, "couples", user.uid);
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" } });
+            const slug = await resolveUniqueSlug(pendingSlugBase);
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" } });
+            try {
+              await setDoc(doc(db, "publicCouples", slug), {
+                slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
+                ceremonyTime: "", receptionTime: "", ceremonyLocation: "", blockedGuestNames: []
+              });
+            } catch(e) {}
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
@@ -96,6 +226,15 @@
         });
       });
       renderLeadCoordinator(data.leadCoordinator);
+      renderGuestPageLink(data.slug);
+    }
+
+    function renderGuestPageLink(slug) {
+      const wrap = document.getElementById("guest-page-link");
+      if (!wrap) return;
+      if (!slug) { wrap.innerHTML = ""; return; }
+      const url = `${window.location.origin}/${slug}`;
+      wrap.innerHTML = `<p style="font-size:11px;letter-spacing:0.06em;color:rgba(253,250,246,0.45);">Your guest page: <a href="${esc(url)}" target="_blank" style="color:var(--gold-light);text-decoration:underline;">${esc(url)}</a> <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy';},1500);" style="background:none;border:1px solid rgba(253,250,246,0.25);color:rgba(253,250,246,0.6);font-size:10px;padding:2px 10px;margin-left:8px;cursor:pointer;border-radius:1px;">Copy</button></p>`;
     }
 
     function renderLeadCoordinator(lc) {
@@ -550,6 +689,8 @@
     let guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] };
     let editingGuestId = null;
 
+    let blockedGuestsCache = [];
+
     async function loadGuestList(uid) {
       try {
         const snap = await getDoc(doc(db, "couples", uid));
@@ -558,11 +699,52 @@
         guestListSettings = data.guestListSettings && typeof data.guestListSettings === "object"
           ? { dinnerStyle: data.guestListSettings.dinnerStyle || "Buffet", mealOptions: Array.isArray(data.guestListSettings.mealOptions) ? data.guestListSettings.mealOptions : [] }
           : { dinnerStyle: "Buffet", mealOptions: [] };
-      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; }
+        blockedGuestsCache = Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [];
+      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; }
       renderGuestListSettingsUI();
+      renderBlockedGuests();
       window.resetGuestForm();
       window.renderGuestList();
     }
+
+    function renderBlockedGuests() {
+      const wrap = document.getElementById("blocked-guests-list");
+      if (!wrap) return;
+      if (!blockedGuestsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No one is currently blocked.</p>';
+        return;
+      }
+      wrap.innerHTML = blockedGuestsCache.map(name => `
+        <div class="note-item" style="padding:10px 0;display:flex;align-items:center;justify-content:space-between;">
+          <span style="font-size:14px;color:var(--charcoal);">${esc(name)}</span>
+          <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.removeBlockedGuest('${esc(name).replace(/'/g,"\\'")}')">Unblock</button>
+        </div>`).join("");
+    }
+
+    window.addBlockedGuest = async function() {
+      if (!currentUser) return;
+      const input = document.getElementById("blocked-guest-newName");
+      const name = input.value.trim();
+      if (!name) return;
+      if (blockedGuestsCache.some(n => n.toLowerCase() === name.toLowerCase())) { input.value = ""; return; }
+      blockedGuestsCache.push(name);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { blockedGuestNames: blockedGuestsCache });
+        input.value = "";
+        renderBlockedGuests();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.removeBlockedGuest = async function(name) {
+      if (!currentUser) return;
+      blockedGuestsCache = blockedGuestsCache.filter(n => n !== name);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { blockedGuestNames: blockedGuestsCache });
+        renderBlockedGuests();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
 
     function renderGuestListSettingsUI() {
       const radios = document.querySelectorAll('input[name="gl-dinnerStyle"]');
@@ -1463,6 +1645,27 @@
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
+    const PUBLIC_PROFILE_FIELDS = ["coupleNames", "weddingDate", "ceremonyTime", "receptionTime", "ceremonyLocation"];
+
+    async function syncPublicProfile(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        if (!snap.exists()) return;
+        const data = snap.data();
+        if (!data.slug) return;
+        const m1 = data.meeting1 || {};
+        await setDoc(doc(db, "publicCouples", data.slug), {
+          slug: data.slug,
+          coupleNames: m1.coupleNames || "",
+          weddingDate: m1.weddingDate || "",
+          ceremonyTime: m1.ceremonyTime || "",
+          receptionTime: m1.receptionTime || "",
+          ceremonyLocation: m1.ceremonyLocation || "",
+          blockedGuestNames: Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : []
+        });
+      } catch(e) {}
+    }
+
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
       const key = `${meeting}.${field}`;
@@ -1474,6 +1677,7 @@
           });
           showSaveIndicator(meeting, "saved");
           updateProgress(meeting);
+          if (meeting === "meeting1" && PUBLIC_PROFILE_FIELDS.includes(field)) syncPublicProfile(currentUser.uid);
         } catch(e) { showSaveIndicator(meeting, "error"); }
       }, 800);
     };
@@ -1497,6 +1701,7 @@
         btn.textContent = "✓ Saved!";
         btn.style.background = "var(--gold)";
         updateProgress(meeting);
+        if (meeting === "meeting1") syncPublicProfile(currentUser.uid);
         setTimeout(() => { btn.textContent = "Save Progress"; btn.style.background = ""; btn.disabled = false; }, 2000);
       } catch(e) { btn.textContent = "Save Progress"; btn.disabled = false; }
     };
@@ -1570,6 +1775,7 @@
       if (!email || !password) { showSignupError("Please enter an email and password."); return; }
       pendingCoupleNames = `${partner1} & ${partner2}`;
       pendingWeddingDate = document.getElementById("signup-weddingDate").value;
+      pendingSlugBase = firstNameSlug(partner1) + "and" + firstNameSlug(partner2);
       btn.textContent = "Creating Account…"; btn.disabled = true;
       try { await createUserWithEmailAndPassword(auth, email, password); }
       catch(e) {
@@ -2347,6 +2553,33 @@
 </head>
 <body>
 
+<!-- ══════════════════ PUBLIC GUEST VIEW (NO LOGIN REQUIRED) ══════════════════ -->
+<div id="guest-view" style="display:none;min-height:100vh;background:var(--charcoal);">
+  <!-- GATE: verify name isn't blocked and the wedding date matches before showing anything -->
+  <div id="guest-gate" style="display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;">
+    <div style="max-width:380px;width:100%;text-align:center;">
+      <p class="hero-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
+      <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:#fdfaf6;margin:12px 0 20px;">You're <em style="color:var(--gold-light);font-style:italic;">Invited</em></h2>
+      <p style="font-size:13px;color:rgba(253,250,246,0.55);margin-bottom:26px;line-height:1.7;">Enter your name and the wedding date from your invitation to view this couple's page.</p>
+      <input class="login-input" type="text" id="guest-gate-name" placeholder="Your Name" autocomplete="off"/>
+      <input class="login-input" type="date" id="guest-gate-date" style="color-scheme:dark;"/>
+      <button class="btn-email" id="guest-gate-btn" onclick="window.submitGuestGate()" style="margin-top:4px;">View Wedding Page</button>
+      <div id="guest-gate-error" style="display:none;margin-top:16px;font-size:12px;color:#e07070;line-height:1.6;"></div>
+    </div>
+  </div>
+
+  <!-- CONTENT: revealed only after the gate is passed -->
+  <section class="hero" id="guest-content" style="height:100vh;display:none;">
+    <div class="hero-bg"></div>
+    <div class="hero-content">
+      <p class="hero-eyebrow" id="guest-view-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
+      <h1 class="hero-title" id="guest-view-names">Loading&hellip;</h1>
+      <div id="guest-view-countdown" style="margin-bottom:24px;"></div>
+      <div id="guest-view-details" style="font-size:13px;color:rgba(253,250,246,0.6);line-height:2;"></div>
+    </div>
+  </section>
+</div>
+
 <!-- ══════════════════ LOGIN SCREEN ══════════════════ -->
 <div id="login-screen">
   <div class="login-bg"></div>
@@ -2435,7 +2668,8 @@
       <p class="hero-eyebrow">Welcome to Your Planning Portal</p>
       <h1 class="hero-title">Your dream day,<br><em>thoughtfully planned.</em></h1>
       <p class="hero-subtitle">The Seventy Five &middot; Rockbridge, Ohio</p>
-      <div id="wedding-countdown" style="margin-bottom:40px;"></div>
+      <div id="wedding-countdown" style="margin-bottom:16px;"></div>
+      <div id="guest-page-link" style="margin-bottom:40px;"></div>
       <a href="#welcome" class="hero-cta">Begin Your Journey</a>
     </div>
     <div class="hero-scroll"><div class="scroll-line"></div><span>Scroll</span></div>
@@ -3903,6 +4137,16 @@
         <button class="acc-btn-export" style="padding:12px 24px;font-size:10px;white-space:nowrap;" onclick="window.exportCatererList()">&#8595; Export Meal &amp; Table List for Caterer</button>
       </div>
       <div id="guest-list-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No guests added yet.</p></div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Guest Page <em>Access</em></h2>
+      <p class="form-section-intro">Your guest page is protected by name + wedding date. In the rare case someone who shouldn't have access gets in, add their name here to block them — they'll see a message asking them to contact you directly.</p>
+      <div style="display:flex;gap:10px;margin-bottom:16px;">
+        <input type="text" class="form-input" id="blocked-guest-newName" placeholder="Name to block..." onkeypress="if(event.key==='Enter'){event.preventDefault();window.addBlockedGuest();}">
+        <button class="btn-save" style="white-space:nowrap;" onclick="window.addBlockedGuest()">+ Block</button>
+      </div>
+      <div id="blocked-guests-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No one is currently blocked.</p></div>
     </div>
   </div>
 
