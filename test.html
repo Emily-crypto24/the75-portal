@@ -54,7 +54,7 @@
           const userRef = doc(db, "couples", user.uid);
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [] });
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
@@ -63,6 +63,7 @@
           await loadResources();
           await loadVendorMeetings(user.uid);
           await loadFinanceEntries(user.uid);
+          await loadGuestList(user.uid);
         }
       } else {
         currentUser = null;
@@ -477,6 +478,280 @@
         await updateDoc(doc(db, "couples", currentUser.uid), { financeEntries: financeEntriesCache });
         renderFinanceEntries();
       } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    // ── GUEST LIST & RSVPs (PLANNING TOOL) ────────────────────────
+    let guestListCache = [];
+    let guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] };
+    let editingGuestId = null;
+
+    async function loadGuestList(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        guestListCache = Array.isArray(data.guestList) ? data.guestList : [];
+        guestListSettings = data.guestListSettings && typeof data.guestListSettings === "object"
+          ? { dinnerStyle: data.guestListSettings.dinnerStyle || "Buffet", mealOptions: Array.isArray(data.guestListSettings.mealOptions) ? data.guestListSettings.mealOptions : [] }
+          : { dinnerStyle: "Buffet", mealOptions: [] };
+      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; }
+      renderGuestListSettingsUI();
+      window.resetGuestForm();
+      window.renderGuestList();
+    }
+
+    function renderGuestListSettingsUI() {
+      const radios = document.querySelectorAll('input[name="gl-dinnerStyle"]');
+      radios.forEach(r => { r.checked = (r.value === guestListSettings.dinnerStyle); });
+      const mealBlock = document.getElementById("gl-meal-options-block");
+      mealBlock.style.display = guestListSettings.dinnerStyle === "Plated" ? "block" : "none";
+      const list = document.getElementById("gl-meal-options-list");
+      list.innerHTML = "";
+      const opts = guestListSettings.mealOptions.length ? guestListSettings.mealOptions : [""];
+      opts.forEach(o => window.addMealOptionRow(o));
+      updateGuestFormMealFields();
+    }
+
+    window.updateDinnerStyle = function() {
+      const selected = document.querySelector('input[name="gl-dinnerStyle"]:checked');
+      const isPlated = selected && selected.value === "Plated";
+      document.getElementById("gl-meal-options-block").style.display = isPlated ? "block" : "none";
+      if (isPlated && !document.getElementById("gl-meal-options-list").children.length) {
+        window.addMealOptionRow();
+      }
+    };
+
+    window.addMealOptionRow = function(value) {
+      const list = document.getElementById("gl-meal-options-list");
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:10px;margin-bottom:8px;align-items:center;";
+      row.innerHTML = `
+        <input type="text" class="form-input gl-meal-option-input" placeholder="e.g. Chicken" value="${esc(value||"")}">
+        <button type="button" class="btn-back" style="padding:8px 14px;flex-shrink:0;" onclick="this.parentElement.remove()">&times;</button>`;
+      list.appendChild(row);
+    };
+
+    window.saveGuestListSettings = async function() {
+      if (!currentUser) return;
+      const selected = document.querySelector('input[name="gl-dinnerStyle"]:checked');
+      const dinnerStyle = selected ? selected.value : "Buffet";
+      const mealOptions = Array.from(document.querySelectorAll(".gl-meal-option-input")).map(el => el.value.trim()).filter(Boolean);
+      guestListSettings = { dinnerStyle, mealOptions };
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { guestListSettings });
+        updateGuestFormMealFields();
+        window.renderGuestList();
+        const btn = document.getElementById("gl-settings-save-btn");
+        const original = btn.textContent;
+        btn.textContent = "✓ Saved!";
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      } catch(e) { alert("Couldn't save dinner settings: " + e.message); }
+    };
+
+    function populateMealSelects() {
+      const opts = guestListSettings.mealOptions || [];
+      const optionsHtml = '<option value="">Select a meal...</option>' + opts.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+      document.getElementById("gl-mealChoice").innerHTML = optionsHtml;
+      document.getElementById("gl-plusOneMealChoice").innerHTML = optionsHtml;
+    }
+
+    function updateGuestFormMealFields() {
+      const isPlated = guestListSettings.dinnerStyle === "Plated";
+      const hasPlusOne = document.getElementById("gl-hasPlusOne").checked;
+      populateMealSelects();
+      document.getElementById("gl-mealChoice-group").style.display = isPlated ? "flex" : "none";
+      document.getElementById("gl-plusOneMealChoice-group").style.display = (isPlated && hasPlusOne) ? "flex" : "none";
+    }
+
+    window.toggleGuestPlusOneField = function() {
+      const checked = document.getElementById("gl-hasPlusOne").checked;
+      document.getElementById("gl-plusOneName-group").style.display = checked ? "flex" : "none";
+      document.getElementById("gl-plusOneAllergies-group").style.display = checked ? "flex" : "none";
+      if (!checked) {
+        document.getElementById("gl-plusOneName").value = "";
+        document.getElementById("gl-plusOneAllergies").value = "";
+      }
+      updateGuestFormMealFields();
+    };
+
+    window.toggleGuestTableField = function() {
+      const isAttending = document.getElementById("gl-rsvpStatus").value === "Attending";
+      document.getElementById("gl-tableNumber-group").style.display = isAttending ? "flex" : "none";
+      if (!isAttending) document.getElementById("gl-tableNumber").value = "";
+    };
+
+    window.renderGuestList = function() {
+      const wrap = document.getElementById("guest-list-list");
+      const searchEl = document.getElementById("gl-search");
+      const search = searchEl ? searchEl.value.trim().toLowerCase() : "";
+      const isPlated = guestListSettings.dinnerStyle === "Plated";
+
+      let totalInvited = 0, totalAttending = 0, totalDeclined = 0, totalPending = 0;
+      guestListCache.forEach(g => {
+        const partySize = 1 + (g.plusOneAllowed ? 1 : 0);
+        totalInvited += partySize;
+        if (g.rsvpStatus === "Attending") totalAttending += partySize;
+        else if (g.rsvpStatus === "Not Attending") totalDeclined += partySize;
+        else totalPending += partySize;
+      });
+      document.getElementById("gl-total-invited").textContent = totalInvited;
+      document.getElementById("gl-total-attending").textContent = totalAttending;
+      document.getElementById("gl-total-declined").textContent = totalDeclined;
+      document.getElementById("gl-total-pending").textContent = totalPending;
+
+      if (!wrap) return;
+      let list = guestListCache.slice();
+      if (search) list = list.filter(g => (g.guestName||"").toLowerCase().includes(search) || (g.plusOneName||"").toLowerCase().includes(search));
+      list.sort((a,b) => (a.guestName||"").localeCompare(b.guestName||""));
+
+      if (!list.length) {
+        wrap.innerHTML = `<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">${guestListCache.length ? "No guests match your search." : "No guests added yet."}</p>`;
+        return;
+      }
+      wrap.innerHTML = list.map(g => {
+        const statusColor = g.rsvpStatus === "Attending" ? "var(--gold-dark)" : (g.rsvpStatus === "Not Attending" ? "var(--mid-gray)" : "var(--charcoal)");
+        const statusLabel = g.rsvpStatus === "Attending" ? (g.tableNumber ? `Attending &middot; ${esc(g.tableNumber)}` : "Attending") : (g.rsvpStatus === "Not Attending" ? "Not Attending" : "Awaiting Response");
+        const mealLine = isPlated && g.mealChoice ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">Meal: ${esc(g.mealChoice)}</div>` : "";
+        const plusOneMealLine = isPlated && g.plusOneAllowed && g.plusOneMealChoice ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Plus One Meal: ${esc(g.plusOneMealChoice)}</div>` : "";
+        const allergyLine = g.allergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:4px;">Allergies: ${esc(g.allergies)}</div>` : "";
+        const plusOneAllergyLine = g.plusOneAllowed && g.plusOneAllergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:2px;">Plus One Allergies: ${esc(g.plusOneAllergies)}</div>` : "";
+        return `
+        <div class="note-item" style="padding:18px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;">
+              <div style="font-size:15px;color:var(--charcoal);">${esc(g.guestName||"Unnamed Guest")}${g.plusOneAllowed ? ` <span style="font-size:12px;color:var(--mid-gray);">+ ${g.plusOneName ? esc(g.plusOneName) : "Plus One Approved"}</span>` : ""}</div>
+              <div style="font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:${statusColor};margin-top:4px;">${statusLabel}</div>
+              ${g.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:6px;white-space:pre-line;">${esc(g.address)}</div>` : ""}
+              ${mealLine}${plusOneMealLine}${allergyLine}${plusOneAllergyLine}
+              ${g.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(g.notes)}</div>` : ""}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editGuest('${g.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteGuest('${g.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`;
+      }).join("");
+    };
+
+    window.resetGuestForm = function() {
+      editingGuestId = null;
+      document.getElementById("gl-guestName").value = "";
+      document.getElementById("gl-rsvpStatus").value = "Pending";
+      document.getElementById("gl-address").value = "";
+      document.getElementById("gl-hasPlusOne").checked = false;
+      document.getElementById("gl-plusOneName").value = "";
+      document.getElementById("gl-plusOneName-group").style.display = "none";
+      document.getElementById("gl-plusOneAllergies-group").style.display = "none";
+      document.getElementById("gl-plusOneAllergies").value = "";
+      document.getElementById("gl-allergies").value = "";
+      document.getElementById("gl-notes").value = "";
+      document.getElementById("gl-tableNumber").value = "";
+      window.toggleGuestTableField();
+      updateGuestFormMealFields();
+      document.getElementById("gl-mealChoice").value = "";
+      document.getElementById("gl-plusOneMealChoice").value = "";
+      document.getElementById("gl-form-title").innerHTML = 'Add a <em>Guest</em>';
+      document.getElementById("gl-save-btn").textContent = "Add Guest";
+      document.getElementById("gl-cancel-btn").style.display = "none";
+    };
+
+    window.editGuest = function(id) {
+      const g = guestListCache.find(x => x.id === id);
+      if (!g) return;
+      editingGuestId = id;
+      document.getElementById("gl-guestName").value = g.guestName || "";
+      document.getElementById("gl-rsvpStatus").value = g.rsvpStatus || "Pending";
+      document.getElementById("gl-address").value = g.address || "";
+      document.getElementById("gl-hasPlusOne").checked = !!g.plusOneAllowed;
+      document.getElementById("gl-plusOneName-group").style.display = g.plusOneAllowed ? "flex" : "none";
+      document.getElementById("gl-plusOneAllergies-group").style.display = g.plusOneAllowed ? "flex" : "none";
+      document.getElementById("gl-plusOneName").value = g.plusOneName || "";
+      document.getElementById("gl-plusOneAllergies").value = g.plusOneAllergies || "";
+      document.getElementById("gl-allergies").value = g.allergies || "";
+      document.getElementById("gl-notes").value = g.notes || "";
+      window.toggleGuestTableField();
+      document.getElementById("gl-tableNumber").value = g.tableNumber || "";
+      updateGuestFormMealFields();
+      document.getElementById("gl-mealChoice").value = g.mealChoice || "";
+      document.getElementById("gl-plusOneMealChoice").value = g.plusOneMealChoice || "";
+      document.getElementById("gl-form-title").innerHTML = 'Edit <em>Guest</em>';
+      document.getElementById("gl-save-btn").textContent = "Save Changes";
+      document.getElementById("gl-cancel-btn").style.display = "inline-block";
+      document.getElementById("gl-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveGuest = async function() {
+      if (!currentUser) return;
+      const guestName = document.getElementById("gl-guestName").value.trim();
+      if (!guestName) { alert("Please enter a guest name."); return; }
+      const entry = {
+        id: editingGuestId || Date.now().toString(),
+        guestName,
+        rsvpStatus: document.getElementById("gl-rsvpStatus").value,
+        address: document.getElementById("gl-address").value.trim(),
+        plusOneAllowed: document.getElementById("gl-hasPlusOne").checked,
+        plusOneName: document.getElementById("gl-plusOneName").value.trim(),
+        mealChoice: document.getElementById("gl-mealChoice").value,
+        allergies: document.getElementById("gl-allergies").value.trim(),
+        plusOneMealChoice: document.getElementById("gl-plusOneMealChoice").value,
+        plusOneAllergies: document.getElementById("gl-plusOneAllergies").value.trim(),
+        tableNumber: document.getElementById("gl-tableNumber").value.trim(),
+        notes: document.getElementById("gl-notes").value.trim()
+      };
+      if (editingGuestId) {
+        const idx = guestListCache.findIndex(x => x.id === editingGuestId);
+        if (idx > -1) guestListCache[idx] = entry; else guestListCache.push(entry);
+      } else {
+        guestListCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
+        window.resetGuestForm();
+        window.renderGuestList();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteGuest = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this guest?")) return;
+      guestListCache = guestListCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
+        window.renderGuestList();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    window.exportCatererList = function() {
+      const isPlated = guestListSettings.dinnerStyle === "Plated";
+      const attending = guestListCache.filter(g => g.rsvpStatus === "Attending");
+      if (!attending.length) { alert("No guests are marked Attending yet — nothing to export."); return; }
+      const rows = [["Guest Name", "Table Number", "Meal Choice", "Allergies / Dietary Restrictions"]];
+      attending.forEach(g => {
+        rows.push([
+          g.guestName || "",
+          g.tableNumber || "",
+          isPlated ? (g.mealChoice || "") : "",
+          g.allergies || ""
+        ]);
+        if (g.plusOneAllowed) {
+          rows.push([
+            g.plusOneName ? `${g.plusOneName} (Plus One)` : `${g.guestName || "Guest"}'s Plus One`,
+            g.tableNumber || "",
+            isPlated ? (g.plusOneMealChoice || "") : "",
+            g.plusOneAllergies || ""
+          ]);
+        }
+      });
+      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "caterer_meal_table_list.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     };
 
     window.saveField = async function(meeting, field, value) {
@@ -1340,6 +1615,7 @@
       <div class="nav-dropdown-menu">
         <a href="#" onclick="window.showPage('vendors');return false;">Vendor Meetings</a>
         <a href="#" onclick="window.showPage('finances');return false;">Finance Tracker</a>
+        <a href="#" onclick="window.showPage('guestlist');return false;">Guest List &amp; RSVPs</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('home');setTimeout(()=>{document.getElementById('resources').scrollIntoView({behavior:'smooth'})},100);return false;">Resources</a></li>
@@ -2693,6 +2969,135 @@
     <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
   </div>
 </div><!-- end page-finances -->
+
+<!-- ══════════════════ GUEST LIST & RSVPs (PLANNING TOOL) ══════════════════ -->
+<div id="page-guestlist" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting1-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Guest List <em>&amp; RSVPs</em></h1>
+      <p>Track every invite, address, and response in one place.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Add each invitation as one entry — if a guest has a plus one, they'll RSVP together as a pair. This list is yours to manage manually for now; down the road, guests will be able to submit their own RSVPs, and they'll feed right into this same list.</p>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:48px;">
+      <div style="background:var(--cream);border:1px solid var(--border);padding:18px 16px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:6px;">Total Invited</div>
+        <div style="font-family:var(--font-heading);font-size:24px;color:var(--charcoal);" id="gl-total-invited">0</div>
+      </div>
+      <div style="background:var(--cream);border:1px solid var(--border);padding:18px 16px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:6px;">Attending</div>
+        <div style="font-family:var(--font-heading);font-size:24px;color:var(--gold-dark);" id="gl-total-attending">0</div>
+      </div>
+      <div style="background:var(--cream);border:1px solid var(--border);padding:18px 16px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:6px;">Not Attending</div>
+        <div style="font-family:var(--font-heading);font-size:24px;color:var(--charcoal);" id="gl-total-declined">0</div>
+      </div>
+      <div style="background:var(--cream);border:1px solid var(--border);padding:18px 16px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:6px;">Awaiting Response</div>
+        <div style="font-family:var(--font-heading);font-size:24px;color:var(--charcoal);" id="gl-total-pending">0</div>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Dinner <em>Style</em></h2>
+      <p class="form-section-intro">Choose how your reception meal works — this controls whether guests need to pick a meal choice at all.</p>
+      <div style="display:flex;gap:24px;padding-top:6px;margin-bottom:20px;">
+        <label class="check-item"><input type="radio" name="gl-dinnerStyle" value="Buffet" onchange="window.updateDinnerStyle()"><span>Buffet (no meal choices needed)</span></label>
+        <label class="check-item"><input type="radio" name="gl-dinnerStyle" value="Family Style" onchange="window.updateDinnerStyle()"><span>Family Style (shared platters, no meal choices needed)</span></label>
+        <label class="check-item"><input type="radio" name="gl-dinnerStyle" value="Plated" onchange="window.updateDinnerStyle()"><span>Plated Dinner (guests choose a meal)</span></label>
+      </div>
+      <div id="gl-meal-options-block" style="display:none;">
+        <label class="form-label" style="margin-bottom:8px;display:block;">Meal Options for This Event</label>
+        <div id="gl-meal-options-list"></div>
+        <button type="button" class="btn-back" style="margin-top:8px;" onclick="window.addMealOptionRow()">+ Add Meal Option</button>
+      </div>
+      <div class="form-save-row" style="margin-top:20px;">
+        <button class="btn-save" id="gl-settings-save-btn" onclick="window.saveGuestListSettings()">Save Dinner Settings</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="gl-form-title">Add a <em>Guest</em></h2>
+      <p class="form-section-intro">Fill in what you know — you can edit or remove this anytime.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Guest Name</label>
+          <input type="text" class="form-input" id="gl-guestName" placeholder="e.g. Sarah Thompson">
+        </div>
+        <div class="form-group">
+          <label class="form-label">RSVP Status</label>
+          <select class="form-input" id="gl-rsvpStatus" onchange="window.toggleGuestTableField()">
+            <option value="Pending">Awaiting Response</option>
+            <option value="Attending">Attending</option>
+            <option value="Not Attending">Not Attending</option>
+          </select>
+        </div>
+        <div class="form-group" id="gl-tableNumber-group" style="display:none;">
+          <label class="form-label">Table Number</label>
+          <input type="text" class="form-input" id="gl-tableNumber" placeholder="e.g. Table 5">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Mailing Address</label>
+          <textarea class="form-textarea" id="gl-address" style="min-height:70px;" placeholder="Street, City, State, ZIP"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Plus One</label>
+          <div style="display:flex;gap:24px;padding-top:10px;">
+            <label class="check-item"><input type="checkbox" id="gl-hasPlusOne" onchange="window.toggleGuestPlusOneField()"><span>Approved for a plus one</span></label>
+          </div>
+        </div>
+        <div class="form-group" id="gl-plusOneName-group" style="display:none;">
+          <label class="form-label">Plus One's Name</label>
+          <input type="text" class="form-input" id="gl-plusOneName" placeholder="Leave blank if not yet known">
+        </div>
+        <div class="form-group" id="gl-mealChoice-group" style="display:none;">
+          <label class="form-label">Guest's Meal Choice</label>
+          <select class="form-input" id="gl-mealChoice"></select>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Guest's Allergies / Dietary Restrictions</label>
+          <input type="text" class="form-input" id="gl-allergies" placeholder="e.g. Peanut allergy, gluten-free">
+        </div>
+        <div class="form-group" id="gl-plusOneMealChoice-group" style="display:none;">
+          <label class="form-label">Plus One's Meal Choice</label>
+          <select class="form-input" id="gl-plusOneMealChoice"></select>
+        </div>
+        <div class="form-group full" id="gl-plusOneAllergies-group" style="display:none;">
+          <label class="form-label">Plus One's Allergies / Dietary Restrictions</label>
+          <input type="text" class="form-input" id="gl-plusOneAllergies" placeholder="e.g. Peanut allergy, gluten-free">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <textarea class="form-textarea" id="gl-notes" placeholder="Seating notes, anything else you want to remember..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="gl-save-btn" onclick="window.saveGuest()">Add Guest</button>
+        <button class="btn-back" id="gl-cancel-btn" style="display:none;" onclick="window.resetGuestForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Guest List</em></h2>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin-bottom:24px;">
+        <div class="form-group full" style="max-width:340px;margin-bottom:0;">
+          <input type="text" class="form-input" id="gl-search" placeholder="Search guests by name..." oninput="window.renderGuestList()">
+        </div>
+        <button class="acc-btn-export" style="padding:12px 24px;font-size:10px;white-space:nowrap;" onclick="window.exportCatererList()">&#8595; Export Meal &amp; Table List for Caterer</button>
+      </div>
+      <div id="guest-list-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No guests added yet.</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-guestlist -->
 
 </div><!-- end portal-root -->
 
