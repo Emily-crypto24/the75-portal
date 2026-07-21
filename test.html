@@ -12,7 +12,7 @@
   <!-- Firebase SDKs -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getFirestore, doc, setDoc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     const firebaseConfig = {
@@ -188,9 +188,31 @@
 
     window.signOutUser = async function() { await signOut(auth); window.showPage('home'); };
 
-    function showLoginError(msg) {
+    window.forgotPassword = async function() {
+      const email = document.getElementById("login-email").value.trim();
+      if (!email) { showLoginError("Enter your email address above first, then click \"Forgot password?\" again."); return; }
+      const link = document.getElementById("forgot-password-link");
+      if (link) { link.textContent = "Sending…"; }
+      try {
+        await sendPasswordResetEmail(auth, email);
+        showLoginError(`A password reset link has been sent to ${email}. Check your inbox (and spam folder).`, true);
+      } catch(e) {
+        if (e.code === "auth/user-not-found") {
+          showLoginError("We couldn't find an account with that email. Double check it's typed correctly.");
+        } else {
+          showLoginError("Something went wrong sending the reset email. Please try again.");
+        }
+      }
+      if (link) { link.textContent = "Forgot password?"; }
+    };
+
+    function showLoginError(msg, isSuccess) {
       const el = document.getElementById("login-error");
-      if (el) { el.textContent = msg; el.style.display = "block"; }
+      if (el) {
+        el.textContent = msg;
+        el.style.color = isSuccess ? "#8FBF8F" : "#e07070";
+        el.style.display = "block";
+      }
     }
 
 
@@ -786,6 +808,7 @@
       <input class="login-input" type="email" id="login-email" placeholder="Email address" autocomplete="email"/>
       <input class="login-input" type="password" id="login-password" placeholder="Password" autocomplete="current-password"/>
       <button class="btn-email" id="btn-email" onclick="window.signInWithEmail()">Sign In</button>
+      <p style="text-align:center;margin-top:14px;"><a href="#" id="forgot-password-link" onclick="window.forgotPassword();return false;" style="font-size:11px;letter-spacing:0.08em;color:rgba(253,250,246,0.45);text-decoration:underline;">Forgot password?</a></p>
       <div id="login-error"></div>
       <p class="login-footer-note">New here? Enter your email and create a password<br>to set up your account in seconds.</p>
     </div>
