@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -53,13 +54,14 @@
           const userRef = doc(db, "couples", user.uid);
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{} });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [] });
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
           await loadAllForms(user.uid);
           updateAllProgress();
           await loadResources();
+          await loadVendorMeetings(user.uid);
         }
       } else {
         currentUser = null;
@@ -124,6 +126,191 @@
       if (!items.length) { grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">No resources have been added yet.</p>'; return; }
       grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(r.linkUrl)}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${r.description}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
     }
+    // ── VENDOR MEETINGS (PLANNING TOOL) ──────────────────────────
+    let vendorMeetingsCache = [];
+    let editingVendorId = null;
+
+    async function loadVendorMeetings(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        vendorMeetingsCache = Array.isArray(data.vendorMeetings) ? data.vendorMeetings : [];
+      } catch(e) { vendorMeetingsCache = []; }
+      window.resetVendorForm();
+      renderVendorMeetings();
+    }
+
+    function formatMeetingDate(d) {
+      if (!d) return "";
+      const [y,m,day] = d.split("-").map(Number);
+      const dt = new Date(y, m-1, day);
+      return dt.toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" });
+    }
+    function formatMeetingTime(t) {
+      if (!t) return "";
+      let [h,min] = t.split(":").map(Number);
+      const ampm = h >= 12 ? "PM" : "AM";
+      h = h % 12; if (h === 0) h = 12;
+      return `${h}:${String(min).padStart(2,"0")} ${ampm}`;
+    }
+
+    function renderVendorMeetings() {
+      const wrap = document.getElementById("vendor-meetings-list");
+      if (!wrap) return;
+      if (!vendorMeetingsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No vendor meetings added yet.</p>';
+        return;
+      }
+      const sorted = vendorMeetingsCache.slice().sort((a,b) => {
+        if (!!a.done !== !!b.done) return a.done ? 1 : -1;
+        const da = (a.meetingDate||"9999-12-31") + "T" + (a.meetingTime||"00:00");
+        const db2 = (b.meetingDate||"9999-12-31") + "T" + (b.meetingTime||"00:00");
+        return da.localeCompare(db2);
+      });
+      wrap.innerHTML = sorted.map(v => `
+        <div class="note-item" style="padding:18px 0;${v.done ? "opacity:0.55;" : ""}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;">
+              <div style="font-size:15px;color:var(--charcoal);">${esc(v.vendorName||"Untitled Vendor")}${v.vendorType ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(v.vendorType)}</span>` : ""}</div>
+              <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">
+                ${v.meetingDate ? formatMeetingDate(v.meetingDate) : "No date set"}${v.meetingTime ? " &middot; " + formatMeetingTime(v.meetingTime) : ""}${v.format ? " &middot; " + esc(v.format) : ""}
+              </div>
+              ${v.pointPerson ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Point Person: ${esc(v.pointPerson)}</div>` : ""}
+              ${v.location ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${v.format === "Virtual" ? "Video Link" : "Address"}: ${esc(v.location)}</div>` : ""}
+              ${(v.contacts && v.contacts.filter(c=>c.name||c.info).length) ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:6px;">${v.contacts.filter(c=>c.name||c.info).map(c => `${esc(c.name||"")}${c.info ? " (" + esc(c.info) + ")" : ""}`).join(", ")}</div>` : ""}
+              ${v.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(v.notes)}</div>` : ""}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editVendorMeeting('${v.id}')">Edit</button>
+              <button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.toggleVendorDone('${v.id}')">${v.done ? "&#8635; Mark Upcoming" : "&#10003; Mark Done"}</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteVendorMeeting('${v.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.addContactRow = function(name, info) {
+      const list = document.getElementById("vf-contacts-list");
+      const row = document.createElement("div");
+      row.className = "vf-contact-row";
+      row.style.cssText = "display:flex;gap:10px;margin-bottom:8px;align-items:center;";
+      row.innerHTML = `
+        <input type="text" class="form-input vf-contact-name" placeholder="Contact name" value="${esc(name||"")}">
+        <input type="text" class="form-input vf-contact-info" placeholder="Phone or email" value="${esc(info||"")}">
+        <button type="button" class="btn-back" style="padding:8px 14px;flex-shrink:0;" onclick="this.parentElement.remove()">&times;</button>`;
+      list.appendChild(row);
+    };
+
+    window.updateVendorFormatField = function() {
+      const selected = document.querySelector('input[name="vf-format"]:checked');
+      const label = document.getElementById("vf-location-label");
+      const input = document.getElementById("vf-location");
+      if (selected && selected.value === "Virtual") {
+        label.textContent = "Video Call Link";
+        input.placeholder = "e.g. Google Meet or Zoom link";
+      } else {
+        label.textContent = "Address";
+        input.placeholder = "Meeting location address";
+      }
+    };
+
+    window.resetVendorForm = function() {
+      editingVendorId = null;
+      document.getElementById("vf-vendorName").value = "";
+      document.getElementById("vf-vendorType").value = "";
+      document.getElementById("vf-pointPerson").value = "";
+      document.getElementById("vf-meetingDate").value = "";
+      document.getElementById("vf-meetingTime").value = "";
+      document.getElementById("vf-location").value = "";
+      document.getElementById("vf-notes").value = "";
+      document.querySelectorAll('input[name="vf-format"]').forEach(r => r.checked = false);
+      window.updateVendorFormatField();
+      document.getElementById("vf-contacts-list").innerHTML = "";
+      window.addContactRow();
+      document.getElementById("vendor-form-title").innerHTML = 'Add a Vendor <em>Meeting</em>';
+      document.getElementById("vf-save-btn").textContent = "Add Vendor Meeting";
+      document.getElementById("vf-cancel-btn").style.display = "none";
+    };
+
+    window.editVendorMeeting = function(id) {
+      const v = vendorMeetingsCache.find(x => x.id === id);
+      if (!v) return;
+      editingVendorId = id;
+      document.getElementById("vf-vendorName").value = v.vendorName || "";
+      document.getElementById("vf-vendorType").value = v.vendorType || "";
+      document.getElementById("vf-pointPerson").value = v.pointPerson || "";
+      document.getElementById("vf-meetingDate").value = v.meetingDate || "";
+      document.getElementById("vf-meetingTime").value = v.meetingTime || "";
+      document.getElementById("vf-location").value = v.location || "";
+      document.getElementById("vf-notes").value = v.notes || "";
+      document.querySelectorAll('input[name="vf-format"]').forEach(r => r.checked = (r.value === v.format));
+      window.updateVendorFormatField();
+      const list = document.getElementById("vf-contacts-list");
+      list.innerHTML = "";
+      const contacts = (v.contacts && v.contacts.length) ? v.contacts : [{name:"",info:""}];
+      contacts.forEach(c => window.addContactRow(c.name, c.info));
+      document.getElementById("vendor-form-title").innerHTML = 'Edit Vendor <em>Meeting</em>';
+      document.getElementById("vf-save-btn").textContent = "Save Changes";
+      document.getElementById("vf-cancel-btn").style.display = "inline-block";
+      document.getElementById("vendor-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveVendorMeeting = async function() {
+      if (!currentUser) return;
+      const vendorName = document.getElementById("vf-vendorName").value.trim();
+      if (!vendorName) { alert("Please enter a vendor name."); return; }
+      const formatEl = document.querySelector('input[name="vf-format"]:checked');
+      const contacts = Array.from(document.querySelectorAll(".vf-contact-row")).map(row => ({
+        name: row.querySelector(".vf-contact-name").value.trim(),
+        info: row.querySelector(".vf-contact-info").value.trim()
+      })).filter(c => c.name || c.info);
+      const entry = {
+        id: editingVendorId || Date.now().toString(),
+        vendorName,
+        vendorType: document.getElementById("vf-vendorType").value,
+        pointPerson: document.getElementById("vf-pointPerson").value.trim(),
+        format: formatEl ? formatEl.value : "",
+        meetingDate: document.getElementById("vf-meetingDate").value,
+        meetingTime: document.getElementById("vf-meetingTime").value,
+        location: document.getElementById("vf-location").value.trim(),
+        contacts,
+        notes: document.getElementById("vf-notes").value.trim(),
+        done: editingVendorId ? (vendorMeetingsCache.find(x => x.id === editingVendorId) || {}).done || false : false
+      };
+      if (editingVendorId) {
+        const idx = vendorMeetingsCache.findIndex(x => x.id === editingVendorId);
+        if (idx > -1) vendorMeetingsCache[idx] = entry; else vendorMeetingsCache.push(entry);
+      } else {
+        vendorMeetingsCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { vendorMeetings: vendorMeetingsCache });
+        window.resetVendorForm();
+        renderVendorMeetings();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.toggleVendorDone = async function(id) {
+      if (!currentUser) return;
+      const idx = vendorMeetingsCache.findIndex(x => x.id === id);
+      if (idx === -1) return;
+      vendorMeetingsCache[idx].done = !vendorMeetingsCache[idx].done;
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { vendorMeetings: vendorMeetingsCache });
+        renderVendorMeetings();
+      } catch(e) { alert("Couldn't update: " + e.message); }
+    };
+
+    window.deleteVendorMeeting = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this vendor meeting?")) return;
+      vendorMeetingsCache = vendorMeetingsCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { vendorMeetings: vendorMeetingsCache });
+        renderVendorMeetings();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
       const key = `${meeting}.${field}`;
@@ -978,6 +1165,12 @@
         <a href="#" onclick="window.showPage('meeting1');return false;">First Planning Meeting</a>
         <a href="#" onclick="window.showPage('meeting2');return false;">Second Planning Meeting</a>
         <a href="#" onclick="window.showPage('meeting3');return false;">Final Planning Meeting</a>
+      </div>
+    </li>
+    <li class="nav-dropdown">
+      <a href="#">Planning Tools &#9662;</a>
+      <div class="nav-dropdown-menu">
+        <a href="#" onclick="window.showPage('vendors');return false;">Vendor Meetings</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('home');setTimeout(()=>{document.getElementById('resources').scrollIntoView({behavior:'smooth'})},100);return false;">Resources</a></li>
@@ -2148,6 +2341,96 @@
     </div>
   </div>
 </div><!-- end page-meeting3 -->
+
+<!-- ══════════════════ VENDOR MEETINGS (PLANNING TOOL) ══════════════════ -->
+<div id="page-vendors" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Vendor <em>Meetings</em></h1>
+      <p>Keep every vendor conversation in one place.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:48px;line-height:1.8;font-style:italic;">Track meetings with your outside vendors — florist, photographer, DJ, and more — so nothing slips through the cracks. This is just for your own organization and doesn't affect your Seventy Five planning meetings above.</p>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="vendor-form-title">Add a Vendor <em>Meeting</em></h2>
+      <p class="form-section-intro">Fill in what you know — you can edit or remove this anytime.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Vendor Name</label>
+          <input type="text" class="form-input" id="vf-vendorName" placeholder="e.g. Bloom &amp; Co Florist">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Vendor Type</label>
+          <select class="form-input" id="vf-vendorType">
+            <option value="">Select a type...</option>
+            <option>Florist</option>
+            <option>Caterer</option>
+            <option>Photographer</option>
+            <option>Videographer</option>
+            <option>DJ / Band</option>
+            <option>Officiant</option>
+            <option>Hair &amp; Makeup</option>
+            <option>Baker / Cake</option>
+            <option>Rentals</option>
+            <option>Transportation</option>
+            <option>Stationery</option>
+            <option>Wedding Planner / Coordinator</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Point Person</label>
+          <input type="text" class="form-input" id="vf-pointPerson" placeholder="Who you've been working with directly">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Format</label>
+          <div style="display:flex;gap:24px;padding-top:10px;">
+            <label class="check-item"><input type="radio" name="vf-format" value="In Person" onchange="window.updateVendorFormatField()"><span>In Person</span></label>
+            <label class="check-item"><input type="radio" name="vf-format" value="Virtual" onchange="window.updateVendorFormatField()"><span>Virtual</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Next Meeting Date + Time</label>
+          <div style="display:flex;gap:10px;">
+            <input type="date" class="form-input" id="vf-meetingDate">
+            <input type="time" class="form-input" id="vf-meetingTime">
+          </div>
+        </div>
+        <div class="form-group" id="vf-location-group">
+          <label class="form-label" id="vf-location-label">Location / Video Link</label>
+          <input type="text" class="form-input" id="vf-location" placeholder="Address or video call link">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Contacts</label>
+          <div id="vf-contacts-list"></div>
+          <button type="button" class="btn-back" style="margin-top:8px;align-self:flex-start;" onclick="window.addContactRow()">+ Add Another Contact</button>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <textarea class="form-textarea" id="vf-notes" placeholder="Anything you want to remember..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="vf-save-btn" onclick="window.saveVendorMeeting()">Add Vendor Meeting</button>
+        <button class="btn-back" id="vf-cancel-btn" style="display:none;" onclick="window.resetVendorForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Vendor Meetings</em></h2>
+      <div id="vendor-meetings-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No vendor meetings added yet.</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-vendors -->
 
 </div><!-- end portal-root -->
 
