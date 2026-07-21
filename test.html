@@ -35,6 +35,8 @@
     const isAdmin = (email) => ADMIN_EMAILS.includes((email||"").toLowerCase());
 
     let currentUser = null;
+    let pendingCoupleNames = "";
+    let pendingWeddingDate = "";
     let autoSaveTimers = {};
 
     // ── AUTH STATE ──────────────────────────────────────────────
@@ -54,12 +56,13 @@
           const userRef = doc(db, "couples", user.uid);
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" } });
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
           await loadAllForms(user.uid);
           updateAllProgress();
+          renderWeddingCountdown();
           await loadResources();
           await loadVendorMeetings(user.uid);
           await loadFinanceEntries(user.uid);
@@ -92,6 +95,64 @@
           else { el.value = val; }
         });
       });
+      renderLeadCoordinator(data.leadCoordinator);
+    }
+
+    function renderLeadCoordinator(lc) {
+      const wrap = document.getElementById("lead-coordinator-card");
+      if (!wrap) return;
+      if (lc && lc.name) {
+        wrap.innerHTML = `
+          <span class="section-label">Your Point Person</span>
+          <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:8px 0 10px;">${esc(lc.name)}</h3>
+          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;">
+            ${lc.email ? `<a href="mailto:${esc(lc.email)}" style="color:var(--gold-dark);">${esc(lc.email)}</a>` : ""}
+            ${lc.email && lc.phone ? " &middot; " : ""}
+            ${lc.phone ? esc(lc.phone) : ""}
+          </p>`;
+      } else {
+        wrap.innerHTML = `
+          <span class="section-label">Your Point Person</span>
+          <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:8px 0 10px;">Coming Soon</h3>
+          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;">Your lead coordinator is typically assigned within a few days of your first payment. We'll be in touch by email as soon as they're set!</p>`;
+      }
+    }
+
+    // ── WEDDING DATE + COUNTDOWN (HOME PAGE) ─────────────────────
+    function renderWeddingCountdown() {
+      const wrap = document.getElementById("wedding-countdown");
+      if (!wrap) return;
+      const dateInput = document.querySelector('[data-field="meeting1.weddingDate"]');
+      const dateStr = dateInput ? dateInput.value : "";
+      if (!dateStr) {
+        wrap.innerHTML = `<p style="font-size:12px;letter-spacing:0.08em;color:rgba(253,250,246,0.45);">Add your wedding date in your First Planning Meeting to see your countdown here.</p>`;
+        return;
+      }
+      const [y, m, d] = dateStr.split("-").map(Number);
+      const weddingDate = new Date(y, m - 1, d);
+      const today = new Date();
+      const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const formattedDate = weddingDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+
+      if (todayMidnight.getTime() === weddingDate.getTime()) {
+        wrap.innerHTML = `<p style="font-size:13px;letter-spacing:0.1em;color:rgba(253,250,246,0.6);margin-bottom:6px;text-transform:uppercase;">${formattedDate}</p><p style="font-family:var(--font-heading);font-size:26px;color:var(--gold-light);">Today is the day! &#127881;</p>`;
+        return;
+      }
+      if (todayMidnight.getTime() > weddingDate.getTime()) {
+        wrap.innerHTML = `<p style="font-size:13px;letter-spacing:0.1em;color:rgba(253,250,246,0.6);margin-bottom:6px;text-transform:uppercase;">${formattedDate}</p><p style="font-family:var(--font-heading);font-size:22px;color:var(--gold-light);">Congratulations on your wedding!</p>`;
+        return;
+      }
+      let months = (weddingDate.getFullYear() - todayMidnight.getFullYear()) * 12 + (weddingDate.getMonth() - todayMidnight.getMonth());
+      let days = weddingDate.getDate() - todayMidnight.getDate();
+      if (days < 0) {
+        months--;
+        const prevMonthLastDay = new Date(weddingDate.getFullYear(), weddingDate.getMonth(), 0).getDate();
+        days += prevMonthLastDay;
+      }
+      const parts = [];
+      if (months > 0) parts.push(`${months} Month${months === 1 ? "" : "s"}`);
+      parts.push(`${days} Day${days === 1 ? "" : "s"}`);
+      wrap.innerHTML = `<p style="font-size:13px;letter-spacing:0.1em;color:rgba(253,250,246,0.6);margin-bottom:6px;text-transform:uppercase;">${formattedDate}</p><p style="font-family:var(--font-heading);font-size:26px;color:var(--gold-light);">${parts.join(", ")} To Go</p>`;
     }
 
     // ── RESOURCES (CLIENT-FACING, DATA-DRIVEN) ───────────────────
@@ -1494,11 +1555,34 @@
       btn.textContent = "Signing in…"; btn.disabled = true;
       try { await signInWithEmailAndPassword(auth, email, password); }
       catch(e) {
-        if (e.code === "auth/user-not-found" || e.code === "auth/invalid-credential") {
-          try { await createUserWithEmailAndPassword(auth, email, password); }
-          catch(e2) { showLoginError("Incorrect email or password. Please try again."); }
-        } else { showLoginError(e.message); }
+        showLoginError("Incorrect email or password. If you're new here, use the New Account section below.");
         btn.textContent = "Sign In"; btn.disabled = false;
+      }
+    };
+
+    window.createAccount = async function() {
+      const partner1 = document.getElementById("signup-partner1").value.trim();
+      const partner2 = document.getElementById("signup-partner2").value.trim();
+      const email = document.getElementById("signup-email").value.trim();
+      const password = document.getElementById("signup-password").value;
+      const btn = document.getElementById("btn-signup");
+      if (!partner1 || !partner2) { showSignupError("Please enter both partners' names."); return; }
+      if (!email || !password) { showSignupError("Please enter an email and password."); return; }
+      pendingCoupleNames = `${partner1} & ${partner2}`;
+      pendingWeddingDate = document.getElementById("signup-weddingDate").value;
+      btn.textContent = "Creating Account…"; btn.disabled = true;
+      try { await createUserWithEmailAndPassword(auth, email, password); }
+      catch(e) {
+        if (e.code === "auth/email-already-in-use") {
+          showSignupError("That email already has an account — sign in above instead.");
+        } else if (e.code === "auth/weak-password") {
+          showSignupError("Please choose a password with at least 6 characters.");
+        } else if (e.code === "auth/invalid-email") {
+          showSignupError("Please enter a valid email address.");
+        } else {
+          showSignupError(e.message);
+        }
+        btn.textContent = "Create Account"; btn.disabled = false;
       }
     };
 
@@ -1524,6 +1608,15 @@
 
     function showLoginError(msg, isSuccess) {
       const el = document.getElementById("login-error");
+      if (el) {
+        el.textContent = msg;
+        el.style.color = isSuccess ? "#8FBF8F" : "#e07070";
+        el.style.display = "block";
+      }
+    }
+
+    function showSignupError(msg, isSuccess) {
+      const el = document.getElementById("signup-error");
       if (el) {
         el.textContent = msg;
         el.style.color = isSuccess ? "#8FBF8F" : "#e07070";
@@ -1592,11 +1685,16 @@
         const m2 = calcPct(c.meeting2||{});
         const m3 = calcPct(c.meeting3||{});
         const isCompleted = c.status === "completed";
+        const lc = c.leadCoordinator || {};
+        const coordinatorLine = lc.name
+          ? `<div class="acc-email" style="color:var(--gold-dark);">&#128100; ${esc(lc.name)}</div>`
+          : `<div class="acc-email" style="color:var(--mid-gray);font-style:italic;">&#128100; No coordinator assigned</div>`;
         return `<div class="acc-card">
           <div class="acc-top">
             <div class="acc-names">${esc(names)}</div>
             <div class="acc-date">&#128197; ${wDate}</div>
             <div class="acc-email">${esc(c.email||"")}</div>
+            ${coordinatorLine}
           </div>
           <div class="acc-progress">
             ${[["M1",m1],["M2",m2],["M3",m3]].map(([l,p]) => `<div class="acc-prog-row"><span class="acc-prog-label">${l}</span><div class="acc-prog-track"><div class="acc-prog-fill" style="width:${p}%"></div></div><span class="acc-prog-pct">${p}%</span></div>`).join("")}
@@ -1643,6 +1741,26 @@
     window.closeAdminModal = function() { document.getElementById("admin-modal").style.display = "none"; };
 
     function buildDetail(data, uid) {
+      const lc = data.leadCoordinator || {};
+      const coordinatorHTML = `<div class="amd-section">
+        <div class="amd-stitle">Lead Coordinator Assignment <span style="font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;">(shown to the couple on their homepage)</span></div>
+        <div class="amd-row amd-row-edit">
+          <div class="amd-key">Name</div>
+          <div class="amd-val"><input class="amd-input" type="text" id="lc-name-${uid}" value="${esc(lc.name||"")}" placeholder="e.g. Jess Carter"></div>
+        </div>
+        <div class="amd-row amd-row-edit">
+          <div class="amd-key">Email</div>
+          <div class="amd-val"><input class="amd-input" type="text" id="lc-email-${uid}" value="${esc(lc.email||"")}" placeholder="coordinator@theseventyfivevenue.com"></div>
+        </div>
+        <div class="amd-row amd-row-edit">
+          <div class="amd-key">Phone</div>
+          <div class="amd-val"><input class="amd-input" type="text" id="lc-phone-${uid}" value="${esc(lc.phone||"")}" placeholder="614.555.1234"></div>
+        </div>
+        <div style="text-align:right;margin-top:12px;">
+          <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveLeadCoordinator('${uid}')">Save Coordinator</button>
+        </div>
+      </div>`;
+
       const notes = Array.isArray(data.notes) ? data.notes : [];
       const notesHTML = `<div class="amd-section">
         <div class="amd-stitle">Internal Notes <span style="font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;">(only visible to Emily, Jess &amp; coordinators)</span></div>
@@ -1696,7 +1814,7 @@
           </div>
         </div>`;
       }).join("");
-      return notesHTML + sections + `<div style="text-align:center;margin-top:24px;padding-bottom:16px;border-top:1px solid var(--border);padding-top:24px;">
+      return coordinatorHTML + notesHTML + sections + `<div style="text-align:center;margin-top:24px;padding-bottom:16px;border-top:1px solid var(--border);padding-top:24px;">
         <button class="acc-btn-export" style="padding:14px 40px;font-size:11px;" onclick="window.exportCouple('${uid}','couple')">&#8595; Export This Couple to CSV</button>
       </div>`;
     }
@@ -1712,6 +1830,23 @@
         await ud(dc(db,"couples",uid), { notes: arrayUnion(note) });
         await window.openCouple(uid); // refresh modal with new note
       } catch(e) { alert("Couldn't save note: " + e.message); }
+    };
+
+    window.saveLeadCoordinator = async function(uid) {
+      const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const leadCoordinator = {
+        name: document.getElementById(`lc-name-${uid}`).value.trim(),
+        email: document.getElementById(`lc-email-${uid}`).value.trim(),
+        phone: document.getElementById(`lc-phone-${uid}`).value.trim()
+      };
+      try {
+        await ud(dc(db,"couples",uid), { leadCoordinator });
+        const idx = allCouplesCache.findIndex(c => c.id === uid);
+        if (idx > -1) allCouplesCache[idx].leadCoordinator = leadCoordinator;
+        renderAdminGrid();
+        const btns = document.querySelectorAll(`button[onclick*="saveLeadCoordinator('${uid}')"]`);
+        btns.forEach(b => { b.textContent = "✓ Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = "Save Coordinator"; b.style.background=""; },2000); });
+      } catch(e) { alert("Couldn't save coordinator: " + e.message); }
     };
 
     window.saveAdminSection = async function(uid, meetingKey) {
@@ -1956,6 +2091,7 @@
     .btn-email{width:100%;padding:13px 20px;background:var(--gold);border:none;color:var(--warm-white);font-family:var(--font-body);font-size:11px;letter-spacing:0.2em;text-transform:uppercase;cursor:pointer;transition:background 0.25s;border-radius:1px;}
     .btn-email:hover{background:var(--gold-dark);}
     #login-error{display:none;margin-top:16px;font-size:12px;color:#e07070;text-align:center;line-height:1.5;}
+    #signup-error{display:none;margin-top:16px;font-size:12px;color:#e07070;text-align:center;line-height:1.5;}
     .login-footer-note{margin-top:28px;font-size:11px;color:rgba(253,250,246,0.25);text-align:center;line-height:1.7;}
 
     /* ── NAV ── */
@@ -2234,7 +2370,19 @@
       <button class="btn-email" id="btn-email" onclick="window.signInWithEmail()">Sign In</button>
       <p style="text-align:center;margin-top:14px;"><a href="#" id="forgot-password-link" onclick="window.forgotPassword();return false;" style="font-size:11px;letter-spacing:0.08em;color:rgba(253,250,246,0.45);text-decoration:underline;">Forgot password?</a></p>
       <div id="login-error"></div>
-      <p class="login-footer-note">New here? Enter your email and create a password<br>to set up your account in seconds.</p>
+
+      <div class="login-or"><span>or</span></div>
+
+      <p style="text-align:center;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;color:rgba(253,250,246,0.55);margin-bottom:18px;">New Account</p>
+      <input class="login-input" type="text" id="signup-partner1" placeholder="Partner 1 Full Name" autocomplete="off"/>
+      <input class="login-input" type="text" id="signup-partner2" placeholder="Partner 2 Full Name" autocomplete="off"/>
+      <label style="display:block;font-size:11px;letter-spacing:0.06em;color:rgba(253,250,246,0.4);margin-bottom:6px;">Wedding Date</label>
+      <input class="login-input" type="date" id="signup-weddingDate" style="color-scheme:dark;"/>
+      <input class="login-input" type="email" id="signup-email" placeholder="Email address" autocomplete="email"/>
+      <input class="login-input" type="password" id="signup-password" placeholder="Create a password" autocomplete="new-password"/>
+      <button class="btn-email" id="btn-signup" onclick="window.createAccount()">Create Account</button>
+      <div id="signup-error"></div>
+      <p class="login-footer-note">One shared account links both of you to the same planning portal.</p>
     </div>
   </div>
 </div>
@@ -2287,6 +2435,7 @@
       <p class="hero-eyebrow">Welcome to Your Planning Portal</p>
       <h1 class="hero-title">Your dream day,<br><em>thoughtfully planned.</em></h1>
       <p class="hero-subtitle">The Seventy Five &middot; Rockbridge, Ohio</p>
+      <div id="wedding-countdown" style="margin-bottom:40px;"></div>
       <a href="#welcome" class="hero-cta">Begin Your Journey</a>
     </div>
     <div class="hero-scroll"><div class="scroll-line"></div><span>Scroll</span></div>
@@ -2301,6 +2450,7 @@
       <p>Here you will find everything you need: your planning forms, resources, vendor guides, and direct access to your coordinator at every step. Your answers save automatically so you can always pick up right where you left off.</p>
     </div>
     <div class="welcome-right">
+      <div id="lead-coordinator-card" style="background:var(--cream);border:1px solid var(--border);padding:28px 32px;margin-bottom:28px;"></div>
       <div class="welcome-signature">
         &ldquo;We have poured our hearts into creating not just a venue, but a full planning experience that ensures your day is as perfect as you imagined.&rdquo;
         <span class="welcome-sig-title">Emily Britt &middot; Co-Owner, The Seventy Five</span>
