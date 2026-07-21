@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>The Seventy Five &middot; Redirecting&hellip;</title>
+  <script>
+    // GitHub Pages shows this 404 page for any URL that isn't a real file —
+    // like planning.theseventyfivevenue.com/emilyandjames (a guest link, not a file).
+    // We grab whatever was typed after the slash and forward it to test.html,
+    // which reads it and shows that couple's guest page.
+    var path = window.location.pathname.replace(/^\//, "").replace(/\/$/, "");
+    if (path) {
+      window.location.replace("/test.html?guest=" + encodeURIComponent(path));
+    } else {
+      window.location.replace("/test.html");
+    }
+  </script>
+  <style>
+    body { background:#2c2c2c; color:#fdfaf6; font-family:Georgia,serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+  </style>
+</head>
+<body>
+  <p>Redirecting&hellip;</p>
+</body>
+</html>
