@@ -54,7 +54,7 @@
           const userRef = doc(db, "couples", user.uid);
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [] });
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
@@ -65,6 +65,9 @@
           await loadFinanceEntries(user.uid);
           await loadGuestList(user.uid);
           await loadBachParties(user.uid);
+          await loadRehearsalDinner(user.uid);
+          await loadTimelineItems(user.uid);
+          await loadIdeaBoard(user.uid);
         }
       } else {
         currentUser = null;
@@ -580,17 +583,29 @@
       if (!isAttending) document.getElementById("gl-tableNumber").value = "";
     };
 
+    function childPartyCounts(children) {
+      children = Array.isArray(children) ? children : [];
+      let youngCount = 0;
+      children.forEach(c => {
+        const age = c.age;
+        const isTwoOrYounger = age !== undefined && age !== null && age !== "" && Number(age) <= 2;
+        if (isTwoOrYounger) youngCount++;
+      });
+      return { total: children.length, youngCount };
+    }
+
     window.renderGuestList = function() {
       const wrap = document.getElementById("guest-list-list");
       const searchEl = document.getElementById("gl-search");
       const search = searchEl ? searchEl.value.trim().toLowerCase() : "";
       const isPlated = guestListSettings.dinnerStyle === "Plated";
 
-      let totalInvited = 0, totalAttending = 0, totalDeclined = 0, totalPending = 0;
+      let totalInvited = 0, totalAttending = 0, totalDeclined = 0, totalPending = 0, totalYoungChildren = 0;
       guestListCache.forEach(g => {
-        const partySize = 1 + (g.plusOneAllowed ? 1 : 0);
+        const kids = childPartyCounts(g.children);
+        const partySize = 1 + (g.plusOneAllowed ? 1 : 0) + kids.total;
         totalInvited += partySize;
-        if (g.rsvpStatus === "Attending") totalAttending += partySize;
+        if (g.rsvpStatus === "Attending") { totalAttending += partySize; totalYoungChildren += kids.youngCount; }
         else if (g.rsvpStatus === "Not Attending") totalDeclined += partySize;
         else totalPending += partySize;
       });
@@ -598,6 +613,7 @@
       document.getElementById("gl-total-attending").textContent = totalAttending;
       document.getElementById("gl-total-declined").textContent = totalDeclined;
       document.getElementById("gl-total-pending").textContent = totalPending;
+      document.getElementById("gl-total-pricing").textContent = totalYoungChildren;
 
       if (!wrap) return;
       let list = guestListCache.slice();
@@ -615,6 +631,12 @@
         const plusOneMealLine = isPlated && g.plusOneAllowed && g.plusOneMealChoice ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Plus One Meal: ${esc(g.plusOneMealChoice)}</div>` : "";
         const allergyLine = g.allergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:4px;">Allergies: ${esc(g.allergies)}</div>` : "";
         const plusOneAllergyLine = g.plusOneAllowed && g.plusOneAllergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:2px;">Plus One Allergies: ${esc(g.plusOneAllergies)}</div>` : "";
+        const childrenLine = (g.children && g.children.length) ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:6px;">Children: ${g.children.map(c => {
+          const age = c.age !== undefined && c.age !== null && c.age !== "" ? ` (${esc(String(c.age))})` : "";
+          const underTwoNote = (c.age !== undefined && c.age !== null && c.age !== "" && Number(c.age) <= 2) ? " — 2 or younger" : "";
+          const hc = c.needsHighchair ? " — highchair" : "";
+          return `${esc(c.name)}${age}${hc}${underTwoNote}`;
+        }).join(", ")}</div>` : "";
         return `
         <div class="note-item" style="padding:18px 0;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
@@ -622,7 +644,7 @@
               <div style="font-size:15px;color:var(--charcoal);">${esc(g.guestName||"Unnamed Guest")}${g.plusOneAllowed ? ` <span style="font-size:12px;color:var(--mid-gray);">+ ${g.plusOneName ? esc(g.plusOneName) : "Plus One Approved"}</span>` : ""}</div>
               <div style="font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:${statusColor};margin-top:4px;">${statusLabel}</div>
               ${g.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:6px;white-space:pre-line;">${esc(g.address)}</div>` : ""}
-              ${mealLine}${plusOneMealLine}${allergyLine}${plusOneAllergyLine}
+              ${mealLine}${plusOneMealLine}${allergyLine}${plusOneAllergyLine}${childrenLine}
               ${g.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(g.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
@@ -632,6 +654,10 @@
           </div>
         </div>`;
       }).join("");
+    };
+
+    window.addGuestChildRow = function(child) {
+      document.getElementById("gl-children-list").appendChild(buildChildRow("gl-child-row", child));
     };
 
     window.resetGuestForm = function() {
@@ -645,6 +671,7 @@
       document.getElementById("gl-plusOneAllergies-group").style.display = "none";
       document.getElementById("gl-plusOneAllergies").value = "";
       document.getElementById("gl-allergies").value = "";
+      document.getElementById("gl-children-list").innerHTML = "";
       document.getElementById("gl-notes").value = "";
       document.getElementById("gl-tableNumber").value = "";
       window.toggleGuestTableField();
@@ -669,6 +696,8 @@
       document.getElementById("gl-plusOneName").value = g.plusOneName || "";
       document.getElementById("gl-plusOneAllergies").value = g.plusOneAllergies || "";
       document.getElementById("gl-allergies").value = g.allergies || "";
+      document.getElementById("gl-children-list").innerHTML = "";
+      (Array.isArray(g.children) ? g.children : []).forEach(c => window.addGuestChildRow(c));
       document.getElementById("gl-notes").value = g.notes || "";
       window.toggleGuestTableField();
       document.getElementById("gl-tableNumber").value = g.tableNumber || "";
@@ -696,6 +725,7 @@
         allergies: document.getElementById("gl-allergies").value.trim(),
         plusOneMealChoice: document.getElementById("gl-plusOneMealChoice").value,
         plusOneAllergies: document.getElementById("gl-plusOneAllergies").value.trim(),
+        children: readChildRows(document.getElementById("gl-children-list")),
         tableNumber: document.getElementById("gl-tableNumber").value.trim(),
         notes: document.getElementById("gl-notes").value.trim()
       };
@@ -928,6 +958,449 @@
         </div>`;
       }).join("");
     }
+
+    // ── REHEARSAL DINNER PLANNER (PLANNING TOOL) ──────────────────
+    async function loadRehearsalDinner(uid) {
+      let rd = { venueName:"", address:"", date:"", time:"", guests: [], notes:"" };
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        if (data.rehearsalDinner && typeof data.rehearsalDinner === "object") {
+          rd = { venueName:"", address:"", date:"", time:"", guests: [], notes:"", ...data.rehearsalDinner };
+        }
+      } catch(e) {}
+      document.getElementById("rd-venueName").value = rd.venueName || "";
+      document.getElementById("rd-address").value = rd.address || "";
+      document.getElementById("rd-date").value = rd.date || "";
+      document.getElementById("rd-time").value = rd.time || "";
+      document.getElementById("rd-notes").value = rd.notes || "";
+      document.getElementById("rd-guests-list").innerHTML = "";
+      (Array.isArray(rd.guests) ? rd.guests : []).forEach(g => window.addRehearsalGuestRow(g));
+    }
+
+    window.toggleRehearsalPlusOneField = function(checkboxEl) {
+      const row = checkboxEl.closest(".rd-guest-row");
+      const nameField = row.querySelector(".rd-guest-plusOneName");
+      const mealAllergyBlock = row.querySelector(".rd-plusOne-meal-block");
+      nameField.style.display = checkboxEl.checked ? "block" : "none";
+      mealAllergyBlock.style.display = checkboxEl.checked ? "flex" : "none";
+      if (!checkboxEl.checked) {
+        nameField.value = "";
+        row.querySelector(".rd-guest-plusOneMeal").value = "";
+        row.querySelector(".rd-guest-plusOneAllergies").value = "";
+      }
+    };
+
+    // Shared child-row builder used by both the Guest List and Rehearsal Dinner pages
+    function buildChildRow(rowClass, child) {
+      child = child || {};
+      const row = document.createElement("div");
+      row.className = rowClass;
+      row.style.cssText = "display:flex;gap:10px;margin-bottom:8px;align-items:center;flex-wrap:wrap;";
+      row.innerHTML = `
+        <input type="text" class="form-input child-name" placeholder="Child's name" value="${esc(child.name||"")}" style="flex:2;min-width:130px;">
+        <input type="number" class="form-input child-age" placeholder="Age" min="0" value="${child.age!==undefined && child.age!==null && child.age!=="" ? child.age : ""}" style="flex:1;min-width:70px;">
+        <label class="check-item" style="flex-shrink:0;"><input type="checkbox" class="child-highchair" ${child.needsHighchair ? "checked" : ""}><span>Needs highchair</span></label>
+        <button type="button" class="btn-back" style="padding:8px 14px;flex-shrink:0;" onclick="this.parentElement.remove()">&times;</button>`;
+      return row;
+    }
+
+    function readChildRows(container) {
+      return Array.from(container.querySelectorAll(":scope > div")).map(row => ({
+        name: row.querySelector(".child-name").value.trim(),
+        age: row.querySelector(".child-age").value,
+        needsHighchair: row.querySelector(".child-highchair").checked
+      })).filter(c => c.name);
+    }
+
+    window.addRehearsalChildRow = function(btnEl, child) {
+      const list = btnEl.parentElement.querySelector(".rd-children-list");
+      list.appendChild(buildChildRow("rd-child-row", child));
+    };
+
+    window.addRehearsalGuestRow = function(g) {
+      g = g || {};
+      const list = document.getElementById("rd-guests-list");
+      const row = document.createElement("div");
+      row.className = "rd-guest-row";
+      row.style.cssText = "border:1px solid var(--border);padding:14px 16px;margin-bottom:10px;border-radius:1px;";
+      row.innerHTML = `
+        <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+          <input type="text" class="form-input rd-guest-name" placeholder="Guest name" value="${esc(g.name||"")}" style="flex:2;min-width:160px;">
+          <select class="form-input rd-guest-status" style="flex:1;min-width:150px;">
+            <option value="Pending">Awaiting Response</option>
+            <option value="Attending">Attending</option>
+            <option value="Not Attending">Not Attending</option>
+          </select>
+          <button type="button" class="btn-back" style="padding:8px 14px;flex-shrink:0;" onclick="this.closest('.rd-guest-row').remove()">&times;</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+          <label class="check-item" style="flex-shrink:0;"><input type="checkbox" class="rd-guest-plusOne" onchange="window.toggleRehearsalPlusOneField(this)">${" "}<span>Approved for a plus one</span></label>
+          <input type="text" class="form-input rd-guest-plusOneName" placeholder="Plus one's name" style="flex:1;min-width:160px;display:none;">
+        </div>
+        <div class="rd-plusOne-meal-block" style="display:none;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+          <input type="text" class="form-input rd-guest-plusOneMeal" placeholder="Plus one's meal preference" style="flex:1;min-width:160px;">
+          <input type="text" class="form-input rd-guest-plusOneAllergies" placeholder="Plus one's allergies / dietary restrictions" style="flex:1;min-width:160px;">
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+          <input type="text" class="form-input rd-guest-meal" placeholder="Meal preference" style="flex:1;min-width:160px;">
+          <input type="text" class="form-input rd-guest-allergies" placeholder="Allergies / dietary restrictions" style="flex:1;min-width:160px;">
+        </div>
+        <div>
+          <label class="form-label" style="font-size:11px;">Children in this party</label>
+          <div class="rd-children-list"></div>
+          <button type="button" class="btn-back" style="margin-top:6px;padding:6px 12px;font-size:9px;" onclick="window.addRehearsalChildRow(this)">+ Add Child</button>
+        </div>`;
+      list.appendChild(row);
+      row.querySelector(".rd-guest-status").value = g.rsvpStatus || "Pending";
+      row.querySelector(".rd-guest-plusOne").checked = !!g.plusOneAllowed;
+      const nameField = row.querySelector(".rd-guest-plusOneName");
+      nameField.value = g.plusOneName || "";
+      nameField.style.display = g.plusOneAllowed ? "block" : "none";
+      row.querySelector(".rd-plusOne-meal-block").style.display = g.plusOneAllowed ? "flex" : "none";
+      row.querySelector(".rd-guest-plusOneMeal").value = g.plusOneMealChoice || "";
+      row.querySelector(".rd-guest-plusOneAllergies").value = g.plusOneAllergies || "";
+      row.querySelector(".rd-guest-meal").value = g.mealChoice || "";
+      row.querySelector(".rd-guest-allergies").value = g.allergies || "";
+      const childrenList = row.querySelector(".rd-children-list");
+      (Array.isArray(g.children) ? g.children : []).forEach(c => childrenList.appendChild(buildChildRow("rd-child-row", c)));
+    };
+
+    window.saveRehearsalDinner = async function() {
+      if (!currentUser) return;
+      const guests = Array.from(document.querySelectorAll(".rd-guest-row")).map(row => ({
+        name: row.querySelector(".rd-guest-name").value.trim(),
+        rsvpStatus: row.querySelector(".rd-guest-status").value,
+        plusOneAllowed: row.querySelector(".rd-guest-plusOne").checked,
+        plusOneName: row.querySelector(".rd-guest-plusOneName").value.trim(),
+        plusOneMealChoice: row.querySelector(".rd-guest-plusOneMeal").value.trim(),
+        plusOneAllergies: row.querySelector(".rd-guest-plusOneAllergies").value.trim(),
+        mealChoice: row.querySelector(".rd-guest-meal").value.trim(),
+        allergies: row.querySelector(".rd-guest-allergies").value.trim(),
+        children: readChildRows(row.querySelector(".rd-children-list"))
+      })).filter(g => g.name);
+      const rehearsalDinner = {
+        venueName: document.getElementById("rd-venueName").value.trim(),
+        address: document.getElementById("rd-address").value.trim(),
+        date: document.getElementById("rd-date").value,
+        time: document.getElementById("rd-time").value,
+        guests,
+        notes: document.getElementById("rd-notes").value.trim()
+      };
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { rehearsalDinner });
+        const btn = document.getElementById("rd-save-btn");
+        const original = btn.textContent;
+        btn.textContent = "✓ Saved!";
+        btn.style.background = "var(--gold)";
+        setTimeout(() => { btn.textContent = original; btn.style.background = ""; }, 1800);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    // ── WEDDING DAY TIMELINE (PLANNING TOOL) ──────────────────────
+    let timelineItemsCache = [];
+    let editingTimelineId = null;
+
+    async function loadTimelineItems(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        timelineItemsCache = Array.isArray(data.timelineItems) ? data.timelineItems : [];
+      } catch(e) { timelineItemsCache = []; }
+      window.resetTimelineForm();
+      renderTimelineItems();
+    }
+
+    function renderTimelineItems() {
+      const wrap = document.getElementById("timeline-list");
+      if (!wrap) return;
+      if (!timelineItemsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No timeline items added yet.</p>';
+        return;
+      }
+      const sorted = timelineItemsCache.slice().sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+      wrap.innerHTML = sorted.map(t => `
+        <div class="note-item" style="padding:16px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;display:flex;gap:16px;">
+              <div style="font-family:var(--font-heading);font-size:16px;color:var(--gold-dark);min-width:80px;">${t.time ? formatMeetingTime(t.time) : "—"}</div>
+              <div>
+                <div style="font-size:15px;color:var(--charcoal);">${esc(t.activity||"Untitled")}</div>
+                ${t.location ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(t.location)}</div>` : ""}
+                ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(t.notes)}</div>` : ""}
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editTimelineItem('${t.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteTimelineItem('${t.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetTimelineForm = function() {
+      editingTimelineId = null;
+      document.getElementById("tl-time").value = "";
+      document.getElementById("tl-activity").value = "";
+      document.getElementById("tl-location").value = "";
+      document.getElementById("tl-notes").value = "";
+      document.getElementById("tl-form-title").innerHTML = 'Add a <em>Timeline Item</em>';
+      document.getElementById("tl-save-btn").textContent = "Add Timeline Item";
+      document.getElementById("tl-cancel-btn").style.display = "none";
+    };
+
+    window.editTimelineItem = function(id) {
+      const t = timelineItemsCache.find(x => x.id === id);
+      if (!t) return;
+      editingTimelineId = id;
+      document.getElementById("tl-time").value = t.time || "";
+      document.getElementById("tl-activity").value = t.activity || "";
+      document.getElementById("tl-location").value = t.location || "";
+      document.getElementById("tl-notes").value = t.notes || "";
+      document.getElementById("tl-form-title").innerHTML = 'Edit <em>Timeline Item</em>';
+      document.getElementById("tl-save-btn").textContent = "Save Changes";
+      document.getElementById("tl-cancel-btn").style.display = "inline-block";
+      document.getElementById("tl-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveTimelineItem = async function() {
+      if (!currentUser) return;
+      const activity = document.getElementById("tl-activity").value.trim();
+      if (!activity) { alert("Please enter an event or activity."); return; }
+      const entry = {
+        id: editingTimelineId || Date.now().toString(),
+        time: document.getElementById("tl-time").value,
+        activity,
+        location: document.getElementById("tl-location").value.trim(),
+        notes: document.getElementById("tl-notes").value.trim()
+      };
+      if (editingTimelineId) {
+        const idx = timelineItemsCache.findIndex(x => x.id === editingTimelineId);
+        if (idx > -1) timelineItemsCache[idx] = entry; else timelineItemsCache.push(entry);
+      } else {
+        timelineItemsCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { timelineItems: timelineItemsCache });
+        window.resetTimelineForm();
+        renderTimelineItems();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteTimelineItem = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this timeline item?")) return;
+      timelineItemsCache = timelineItemsCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { timelineItems: timelineItemsCache });
+        renderTimelineItems();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    window.exportTimelineCSV = function() {
+      if (!timelineItemsCache.length) { alert("No timeline items yet — nothing to export."); return; }
+      const sorted = timelineItemsCache.slice().sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+      const rows = [["Time", "Event / Activity", "Location", "Notes"]];
+      sorted.forEach(t => {
+        rows.push([t.time ? formatMeetingTime(t.time) : "", t.activity || "", t.location || "", t.notes || ""]);
+      });
+      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "wedding_day_timeline.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
+    // ── IDEAS & INSPIRATION BOARD (PLANNING TOOL) ─────────────────
+    let ideaItemsCache = [];
+    let editingIdeaId = null;
+    let checklistItemsCache = [];
+
+    async function loadIdeaBoard(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        ideaItemsCache = Array.isArray(data.ideaItems) ? data.ideaItems : [];
+        checklistItemsCache = Array.isArray(data.checklistItems) ? data.checklistItems : [];
+      } catch(e) { ideaItemsCache = []; checklistItemsCache = []; }
+      window.resetIdeaForm();
+      renderIdeas();
+      renderChecklist();
+    }
+
+    function renderIdeas() {
+      const wrap = document.getElementById("ideas-list");
+      if (!wrap) return;
+      if (!ideaItemsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No ideas saved yet.</p>';
+        return;
+      }
+      const sorted = ideaItemsCache.slice().reverse();
+      wrap.innerHTML = sorted.map(idea => `
+        <div class="note-item" style="padding:16px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;">
+              <div style="font-size:15px;color:var(--charcoal);">${esc(idea.title||"Untitled Idea")}${idea.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(idea.category)}</span>` : ""}</div>
+              ${idea.description ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;">${esc(idea.description)}</div>` : ""}
+              ${idea.link ? `<div style="font-size:12px;margin-top:6px;"><a href="${esc(idea.link)}" target="_blank" style="color:var(--gold-dark);">${esc(idea.link)}</a></div>` : ""}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editIdea('${idea.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteIdea('${idea.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetIdeaForm = function() {
+      editingIdeaId = null;
+      document.getElementById("idea-title").value = "";
+      document.getElementById("idea-category").value = "";
+      document.getElementById("idea-description").value = "";
+      document.getElementById("idea-link").value = "";
+      document.getElementById("idea-form-title").innerHTML = 'Add an <em>Idea</em>';
+      document.getElementById("idea-save-btn").textContent = "Add Idea";
+      document.getElementById("idea-cancel-btn").style.display = "none";
+    };
+
+    window.editIdea = function(id) {
+      const idea = ideaItemsCache.find(x => x.id === id);
+      if (!idea) return;
+      editingIdeaId = id;
+      document.getElementById("idea-title").value = idea.title || "";
+      document.getElementById("idea-category").value = idea.category || "";
+      document.getElementById("idea-description").value = idea.description || "";
+      document.getElementById("idea-link").value = idea.link || "";
+      document.getElementById("idea-form-title").innerHTML = 'Edit <em>Idea</em>';
+      document.getElementById("idea-save-btn").textContent = "Save Changes";
+      document.getElementById("idea-cancel-btn").style.display = "inline-block";
+      document.getElementById("idea-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveIdea = async function() {
+      if (!currentUser) return;
+      const title = document.getElementById("idea-title").value.trim();
+      if (!title) { alert("Please enter a title."); return; }
+      const entry = {
+        id: editingIdeaId || Date.now().toString(),
+        title,
+        category: document.getElementById("idea-category").value,
+        description: document.getElementById("idea-description").value.trim(),
+        link: document.getElementById("idea-link").value.trim()
+      };
+      if (editingIdeaId) {
+        const idx = ideaItemsCache.findIndex(x => x.id === editingIdeaId);
+        if (idx > -1) ideaItemsCache[idx] = entry; else ideaItemsCache.push(entry);
+      } else {
+        ideaItemsCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { ideaItems: ideaItemsCache });
+        window.resetIdeaForm();
+        renderIdeas();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteIdea = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this idea?")) return;
+      ideaItemsCache = ideaItemsCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { ideaItems: ideaItemsCache });
+        renderIdeas();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    function renderChecklist() {
+      const wrap = document.getElementById("checklist-list");
+      let totalPlanned = 0, totalDone = 0;
+      checklistItemsCache.forEach(item => {
+        const lineTotal = (Number(item.quantity)||0) * (Number(item.price)||0);
+        totalPlanned += lineTotal;
+        if (item.status === "Purchased" || item.status === "Delivered") totalDone += lineTotal;
+      });
+      document.getElementById("checklist-total-planned").textContent = formatMoney(totalPlanned);
+      document.getElementById("checklist-total-done").textContent = formatMoney(totalDone);
+      document.getElementById("checklist-total-remaining").textContent = formatMoney(totalPlanned - totalDone);
+
+      if (!wrap) return;
+      if (!checklistItemsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No checklist items yet.</p>';
+        return;
+      }
+      const sorted = checklistItemsCache.slice().sort((a,b) => {
+        const doneA = a.status === "Purchased" || a.status === "Delivered";
+        const doneB = b.status === "Purchased" || b.status === "Delivered";
+        if (doneA !== doneB) return doneA ? 1 : -1;
+        return 0;
+      });
+      wrap.innerHTML = sorted.map(item => {
+        const isDone = item.status === "Purchased" || item.status === "Delivered";
+        const lineTotal = (Number(item.quantity)||0) * (Number(item.price)||0);
+        return `
+        <div class="note-item" style="padding:14px 0;${isDone ? "opacity:0.6;" : ""}">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">
+            <div style="flex:2;min-width:160px;font-size:14px;color:var(--charcoal);${isDone ? "text-decoration:line-through;" : ""}">${esc(item.text)}</div>
+            <input type="number" class="form-input" value="${item.quantity!==undefined && item.quantity!==null ? item.quantity : ""}" min="0" placeholder="Qty" style="flex:1;max-width:80px;" onchange="window.updateChecklistItem('${item.id}','quantity',this.value)">
+            <input type="number" class="form-input" value="${item.price!==undefined && item.price!==null ? item.price : ""}" min="0" step="0.01" placeholder="Price" style="flex:1;max-width:100px;" onchange="window.updateChecklistItem('${item.id}','price',this.value)">
+            <select class="form-input" style="flex:1;max-width:160px;" onchange="window.updateChecklistItem('${item.id}','status',this.value)">
+              <option value="Need to Purchase" ${item.status === "Need to Purchase" || !item.status ? "selected" : ""}>Need to Purchase</option>
+              <option value="Purchased" ${item.status === "Purchased" ? "selected" : ""}>Purchased</option>
+              <option value="Delivered" ${item.status === "Delivered" ? "selected" : ""}>Delivered</option>
+            </select>
+            <div style="flex-shrink:0;font-size:12px;color:var(--mid-gray);min-width:70px;text-align:right;">${formatMoney(lineTotal)}</div>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;flex-shrink:0;" onclick="window.deleteChecklistItem('${item.id}')">Delete</button>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    window.addChecklistItem = async function() {
+      if (!currentUser) return;
+      const input = document.getElementById("checklist-newItem");
+      const text = input.value.trim();
+      if (!text) return;
+      checklistItemsCache.push({
+        id: Date.now().toString(),
+        text,
+        quantity: parseFloat(document.getElementById("checklist-newQty").value) || 0,
+        price: parseFloat(document.getElementById("checklist-newPrice").value) || 0,
+        status: document.getElementById("checklist-newStatus").value
+      });
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { checklistItems: checklistItemsCache });
+        input.value = "";
+        document.getElementById("checklist-newQty").value = "";
+        document.getElementById("checklist-newPrice").value = "";
+        document.getElementById("checklist-newStatus").value = "Need to Purchase";
+        renderChecklist();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.updateChecklistItem = async function(id, field, value) {
+      if (!currentUser) return;
+      const idx = checklistItemsCache.findIndex(x => x.id === id);
+      if (idx === -1) return;
+      checklistItemsCache[idx][field] = (field === "quantity" || field === "price") ? (parseFloat(value) || 0) : value;
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { checklistItems: checklistItemsCache });
+        renderChecklist();
+      } catch(e) { alert("Couldn't update: " + e.message); }
+    };
+
+    window.deleteChecklistItem = async function(id) {
+      if (!currentUser) return;
+      checklistItemsCache = checklistItemsCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { checklistItems: checklistItemsCache });
+        renderChecklist();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
 
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
@@ -1792,6 +2265,9 @@
         <a href="#" onclick="window.showPage('finances');return false;">Finance Tracker</a>
         <a href="#" onclick="window.showPage('guestlist');return false;">Guest List &amp; RSVPs</a>
         <a href="#" onclick="window.showPage('bachparty');return false;">Bachelor/Bachelorette Planner</a>
+        <a href="#" onclick="window.showPage('rehearsal');return false;">Rehearsal Dinner Planner</a>
+        <a href="#" onclick="window.showPage('timeline');return false;">Wedding Day Timeline</a>
+        <a href="#" onclick="window.showPage('ideas');return false;">Ideas &amp; Inspiration Board</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('home');setTimeout(()=>{document.getElementById('resources').scrollIntoView({behavior:'smooth'})},100);return false;">Resources</a></li>
@@ -3160,7 +3636,7 @@
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Add each invitation as one entry — if a guest has a plus one, they'll RSVP together as a pair. This list is yours to manage manually for now; down the road, guests will be able to submit their own RSVPs, and they'll feed right into this same list.</p>
 
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:48px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-bottom:48px;">
       <div style="background:var(--cream);border:1px solid var(--border);padding:18px 16px;text-align:center;">
         <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:6px;">Total Invited</div>
         <div style="font-family:var(--font-heading);font-size:24px;color:var(--charcoal);" id="gl-total-invited">0</div>
@@ -3176,6 +3652,10 @@
       <div style="background:var(--cream);border:1px solid var(--border);padding:18px 16px;text-align:center;">
         <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:6px;">Awaiting Response</div>
         <div style="font-family:var(--font-heading);font-size:24px;color:var(--charcoal);" id="gl-total-pending">0</div>
+      </div>
+      <div style="background:var(--cream);border:1px solid var(--border);padding:18px 16px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--mid-gray);margin-bottom:6px;">Children 2 &amp; Under</div>
+        <div style="font-family:var(--font-heading);font-size:24px;color:var(--gold-dark);" id="gl-total-pricing">0</div>
       </div>
     </div>
 
@@ -3246,6 +3726,12 @@
         <div class="form-group full" id="gl-plusOneAllergies-group" style="display:none;">
           <label class="form-label">Plus One's Allergies / Dietary Restrictions</label>
           <input type="text" class="form-input" id="gl-plusOneAllergies" placeholder="e.g. Peanut allergy, gluten-free">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Children in This Party</label>
+          <p style="font-size:11px;color:var(--mid-gray);margin:-4px 0 8px;">Kids 2 years or younger typically don't need their own chair or place setting — the "Children 2 &amp; Under" count above tracks how many that is, so you can subtract them from your final headcount for the caterer if needed. They're still included in your total guest count.</p>
+          <div id="gl-children-list"></div>
+          <button type="button" class="btn-back" style="margin-top:8px;align-self:flex-start;" onclick="window.addGuestChildRow()">+ Add Child</button>
         </div>
         <div class="form-group full">
           <label class="form-label">Notes</label>
@@ -3360,6 +3846,203 @@
     <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
   </div>
 </div><!-- end page-bachparty -->
+
+<!-- ══════════════════ REHEARSAL DINNER PLANNER (PLANNING TOOL) ══════════════════ -->
+<div id="page-rehearsal" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting3-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Rehearsal Dinner <em>Planner</em></h1>
+      <p>The details, the guest list, and the notes — all in one spot.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">This is just for your own organization — track your rehearsal dinner's location, timing, guest list, and any details you want to remember.</p>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Rehearsal Dinner <em>Details</em></h2>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Venue / Restaurant Name</label>
+          <input type="text" class="form-input" id="rd-venueName" placeholder="e.g. The Berwick">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Address</label>
+          <textarea class="form-textarea" id="rd-address" style="min-height:70px;" placeholder="Street, City, State, ZIP"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Date</label>
+          <input type="date" class="form-input" id="rd-date">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Time</label>
+          <input type="time" class="form-input" id="rd-time">
+        </div>
+
+        <div class="form-group full">
+          <label class="form-label">Guest List</label>
+          <div id="rd-guests-list"></div>
+          <button type="button" class="btn-back" style="margin-top:8px;align-self:flex-start;" onclick="window.addRehearsalGuestRow()">+ Add Guest</button>
+        </div>
+
+        <div class="form-group full">
+          <label class="form-label">Menu / Notes</label>
+          <textarea class="form-textarea" id="rd-notes" placeholder="Menu details, seating notes, toasts schedule, anything else..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="rd-save-btn" onclick="window.saveRehearsalDinner()">Save Rehearsal Dinner Details</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-rehearsal -->
+
+<!-- ══════════════════ WEDDING DAY TIMELINE (PLANNING TOOL) ══════════════════ -->
+<div id="page-timeline" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting1-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Wedding Day <em>Timeline</em></h1>
+      <p>Build the run of show, then hand it straight to your vendors.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Build your hour-by-hour day-of schedule — hair and makeup, first look, ceremony, reception — then export it as a simple spreadsheet you can email straight to your vendors.</p>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="tl-form-title">Add a <em>Timeline Item</em></h2>
+      <p class="form-section-intro">Fill in what you know — you can edit or remove this anytime.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Time</label>
+          <input type="time" class="form-input" id="tl-time">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Event / Activity</label>
+          <input type="text" class="form-input" id="tl-activity" placeholder="e.g. Hair &amp; Makeup Begins">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Location</label>
+          <input type="text" class="form-input" id="tl-location" placeholder="e.g. Bridal Suite">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <textarea class="form-textarea" id="tl-notes" placeholder="Who's involved, anything vendors need to know..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="tl-save-btn" onclick="window.saveTimelineItem()">Add Timeline Item</button>
+        <button class="btn-back" id="tl-cancel-btn" style="display:none;" onclick="window.resetTimelineForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin-bottom:24px;">
+        <h2 class="form-section-title" style="margin-bottom:0;">Your <em>Day-Of Timeline</em></h2>
+        <button class="acc-btn-export" style="padding:12px 24px;font-size:10px;white-space:nowrap;" onclick="window.exportTimelineCSV()">&#8595; Export Timeline as CSV</button>
+      </div>
+      <div id="timeline-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No timeline items added yet.</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-timeline -->
+
+<!-- ══════════════════ IDEAS & INSPIRATION BOARD (PLANNING TOOL) ══════════════════ -->
+<div id="page-ideas" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Ideas &amp; <em>Inspiration</em></h1>
+      <p>Everything from Pinterest, saved in one place.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Save ideas you find on Pinterest, Instagram, or anywhere else, and keep a running checklist of the little details so nothing gets forgotten.</p>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="idea-form-title">Add an <em>Idea</em></h2>
+      <p class="form-section-intro">Fill in what you know — you can edit or remove this anytime.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Title</label>
+          <input type="text" class="form-input" id="idea-title" placeholder="e.g. Ceremony Arch Idea">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select class="form-input" id="idea-category">
+            <option value="">Select a category...</option>
+            <option>Color Palette</option>
+            <option>Décor</option>
+            <option>Florals</option>
+            <option>Attire &amp; Beauty</option>
+            <option>Food &amp; Drink</option>
+            <option>Favors &amp; Gifts</option>
+            <option>Stationery</option>
+            <option>Music</option>
+            <option>Photography</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Description / Notes</label>
+          <textarea class="form-textarea" id="idea-description" placeholder="What you love about it, how you want to use it..."></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Reference Link</label>
+          <input type="text" class="form-input" id="idea-link" placeholder="Paste a Pinterest, Instagram, or other link">
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="idea-save-btn" onclick="window.saveIdea()">Add Idea</button>
+        <button class="btn-back" id="idea-cancel-btn" style="display:none;" onclick="window.resetIdeaForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Ideas</em></h2>
+      <div id="ideas-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No ideas saved yet.</p></div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Details <em>Checklist</em></h2>
+      <p class="form-section-intro">Little things you don't want to forget — "need flowers for the flower girls," "welcome drink is champagne, need plastic cups," anything at all.</p>
+      <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
+        <input type="text" class="form-input" id="checklist-newItem" placeholder="Item name..." style="flex:2;min-width:180px;" onkeypress="if(event.key==='Enter'){event.preventDefault();window.addChecklistItem();}">
+        <input type="number" class="form-input" id="checklist-newQty" placeholder="Qty" min="0" style="flex:1;min-width:80px;">
+        <input type="number" class="form-input" id="checklist-newPrice" placeholder="Price" min="0" step="0.01" style="flex:1;min-width:100px;">
+        <select class="form-input" id="checklist-newStatus" style="flex:1;min-width:160px;">
+          <option value="Need to Purchase">Need to Purchase</option>
+          <option value="Purchased">Purchased</option>
+          <option value="Delivered">Delivered</option>
+        </select>
+        <button class="btn-save" style="white-space:nowrap;" onclick="window.addChecklistItem()">+ Add</button>
+      </div>
+      <div style="display:flex;gap:24px;margin-bottom:20px;font-size:12px;color:var(--mid-gray);">
+        <span>Total Planned: <strong id="checklist-total-planned" style="color:var(--charcoal);">$0</strong></span>
+        <span>Purchased/Delivered: <strong id="checklist-total-done" style="color:var(--gold-dark);">$0</strong></span>
+        <span>Still Need to Buy: <strong id="checklist-total-remaining" style="color:var(--charcoal);">$0</strong></span>
+      </div>
+      <div id="checklist-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No checklist items yet.</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-ideas -->
 
 </div><!-- end portal-root -->
 
