@@ -381,7 +381,7 @@
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
               <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editFinanceEntry('${f.id}')">Edit</button>
-              ${!isPaidInFull ? `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.markFinancePaidInFull('${f.id}')">&#10003; Mark Paid in Full</button>` : ""}
+              ${!isPaidInFull ? `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.markFinancePaidInFull('${f.id}')">&#10003; Mark Paid in Full</button>` : `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.undoFinancePaidInFull('${f.id}')">&#8635; Undo Paid in Full</button>`}
               <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteFinanceEntry('${f.id}')">Delete</button>
             </div>
           </div>
@@ -448,7 +448,21 @@
       if (!currentUser) return;
       const idx = financeEntriesCache.findIndex(x => x.id === id);
       if (idx === -1) return;
+      financeEntriesCache[idx].amountPaidBeforeFull = financeEntriesCache[idx].amountPaid || 0;
       financeEntriesCache[idx].amountPaid = financeEntriesCache[idx].totalCost;
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { financeEntries: financeEntriesCache });
+        renderFinanceEntries();
+      } catch(e) { alert("Couldn't update: " + e.message); }
+    };
+
+    window.undoFinancePaidInFull = async function(id) {
+      if (!currentUser) return;
+      const idx = financeEntriesCache.findIndex(x => x.id === id);
+      if (idx === -1) return;
+      const restored = financeEntriesCache[idx].amountPaidBeforeFull;
+      financeEntriesCache[idx].amountPaid = restored !== undefined ? restored : 0;
+      delete financeEntriesCache[idx].amountPaidBeforeFull;
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { financeEntries: financeEntriesCache });
         renderFinanceEntries();
