@@ -1,5 +1,6 @@
 
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -51,10 +52,9 @@
       let attempt = 1;
       while (attempt <= 25) {
         try {
-          const q = query(collection(db, "couples"), where("slug", "==", candidate));
-          const snap = await getDocs(q);
-          if (snap.empty) return candidate;
-        } catch(e) { return candidate; } // if the query fails for any reason, don't block account creation
+          const snap = await getDoc(doc(db, "publicCouples", candidate));
+          if (!snap.exists()) return candidate;
+        } catch(e) { console.error("Slug check failed:", e); return candidate; } // if the check fails for any reason, don't block account creation
         attempt++;
         candidate = `${base}${attempt}`;
       }
@@ -246,7 +246,7 @@
           slug = await resolveUniqueSlug(slugBaseFromExistingData(data));
           await updateDoc(doc(db, "couples", uid), { slug });
           await syncPublicProfile(uid);
-        } catch(e) { slug = null; }
+        } catch(e) { console.error("Slug backfill failed:", e); slug = null; }
       }
       renderGuestPageLink(slug);
     }
@@ -1685,7 +1685,7 @@
           ceremonyLocation: m1.ceremonyLocation || "",
           blockedGuestNames: Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : []
         });
-      } catch(e) {}
+      } catch(e) { console.error("Public profile sync failed:", e); }
     }
 
     window.saveField = async function(meeting, field, value) {
