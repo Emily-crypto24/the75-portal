@@ -54,7 +54,7 @@
           const userRef = doc(db, "couples", user.uid);
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], meeting1:{}, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [] });
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
@@ -64,6 +64,7 @@
           await loadVendorMeetings(user.uid);
           await loadFinanceEntries(user.uid);
           await loadGuestList(user.uid);
+          await loadBachParties(user.uid);
         }
       } else {
         currentUser = null;
@@ -753,6 +754,180 @@
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     };
+
+    // ── BACHELOR/BACHELORETTE PLANNER (PLANNING TOOL) ─────────────
+    let bachPartiesCache = [];
+    let editingBachPartyId = null;
+
+    async function loadBachParties(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        bachPartiesCache = Array.isArray(data.bachParties) ? data.bachParties : [];
+      } catch(e) { bachPartiesCache = []; }
+      window.resetBachPartyForm();
+      renderBachParties();
+    }
+
+    window.addAttendeeRow = function(name, confirmed) {
+      const list = document.getElementById("bp-attendees-list");
+      const row = document.createElement("div");
+      row.className = "bp-attendee-row";
+      row.style.cssText = "display:flex;gap:10px;margin-bottom:8px;align-items:center;";
+      row.innerHTML = `
+        <input type="text" class="form-input bp-attendee-name" placeholder="Attendee name" value="${esc(name||"")}" style="flex:1;">
+        <label class="check-item" style="flex-shrink:0;"><input type="checkbox" class="bp-attendee-confirmed" ${confirmed ? "checked" : ""}><span>Confirmed</span></label>
+        <button type="button" class="btn-back" style="padding:8px 14px;flex-shrink:0;" onclick="this.parentElement.remove()">&times;</button>`;
+      list.appendChild(row);
+    };
+
+    window.addPurchaseRow = function(item, cost, purchased) {
+      const list = document.getElementById("bp-purchases-list");
+      const row = document.createElement("div");
+      row.className = "bp-purchase-row";
+      row.style.cssText = "display:flex;gap:10px;margin-bottom:8px;align-items:center;";
+      row.innerHTML = `
+        <input type="text" class="form-input bp-purchase-item" placeholder="Item (e.g. matching robes)" value="${esc(item||"")}" style="flex:2;">
+        <input type="number" class="form-input bp-purchase-cost" placeholder="0.00" min="0" step="0.01" value="${cost!==undefined && cost!==null ? cost : ""}" style="flex:1;" oninput="window.updateBachPartyFormTotals()">
+        <label class="check-item" style="flex-shrink:0;"><input type="checkbox" class="bp-purchase-purchased" ${purchased ? "checked" : ""} onchange="window.updateBachPartyFormTotals()"><span>Purchased</span></label>
+        <button type="button" class="btn-back" style="padding:8px 14px;flex-shrink:0;" onclick="this.parentElement.remove();window.updateBachPartyFormTotals()">&times;</button>`;
+      list.appendChild(row);
+      window.updateBachPartyFormTotals();
+    };
+
+    window.updateBachPartyFormTotals = function() {
+      let planned = 0, purchased = 0;
+      document.querySelectorAll(".bp-purchase-row").forEach(row => {
+        const cost = parseFloat(row.querySelector(".bp-purchase-cost").value) || 0;
+        planned += cost;
+        if (row.querySelector(".bp-purchase-purchased").checked) purchased += cost;
+      });
+      document.getElementById("bp-form-total-planned").textContent = formatMoney(planned);
+      document.getElementById("bp-form-total-purchased").textContent = formatMoney(purchased);
+      document.getElementById("bp-form-total-remaining").textContent = formatMoney(planned - purchased);
+    };
+
+    window.resetBachPartyForm = function() {
+      editingBachPartyId = null;
+      document.getElementById("bp-eventName").value = "";
+      document.getElementById("bp-whoseParty").value = "Bride's Party";
+      document.getElementById("bp-destination").value = "";
+      document.getElementById("bp-address").value = "";
+      document.getElementById("bp-startDate").value = "";
+      document.getElementById("bp-endDate").value = "";
+      document.getElementById("bp-notes").value = "";
+      document.getElementById("bp-attendees-list").innerHTML = "";
+      document.getElementById("bp-purchases-list").innerHTML = "";
+      window.updateBachPartyFormTotals();
+      document.getElementById("bp-form-title").innerHTML = 'Add a <em>Party Event</em>';
+      document.getElementById("bp-save-btn").textContent = "Add Party Event";
+      document.getElementById("bp-cancel-btn").style.display = "none";
+    };
+
+    window.editBachParty = function(id) {
+      const p = bachPartiesCache.find(x => x.id === id);
+      if (!p) return;
+      editingBachPartyId = id;
+      document.getElementById("bp-eventName").value = p.eventName || "";
+      document.getElementById("bp-whoseParty").value = p.whoseParty || "Bride's Party";
+      document.getElementById("bp-destination").value = p.destination || "";
+      document.getElementById("bp-address").value = p.address || "";
+      document.getElementById("bp-startDate").value = p.startDate || "";
+      document.getElementById("bp-endDate").value = p.endDate || "";
+      document.getElementById("bp-notes").value = p.notes || "";
+      document.getElementById("bp-attendees-list").innerHTML = "";
+      (p.attendees && p.attendees.length ? p.attendees : []).forEach(a => window.addAttendeeRow(a.name, a.confirmed));
+      document.getElementById("bp-purchases-list").innerHTML = "";
+      (p.purchases && p.purchases.length ? p.purchases : []).forEach(i => window.addPurchaseRow(i.item, i.cost, i.purchased));
+      window.updateBachPartyFormTotals();
+      document.getElementById("bp-form-title").innerHTML = 'Edit <em>Party Event</em>';
+      document.getElementById("bp-save-btn").textContent = "Save Changes";
+      document.getElementById("bp-cancel-btn").style.display = "inline-block";
+      document.getElementById("bp-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveBachParty = async function() {
+      if (!currentUser) return;
+      const eventName = document.getElementById("bp-eventName").value.trim();
+      if (!eventName) { alert("Please enter an event name."); return; }
+      const attendees = Array.from(document.querySelectorAll(".bp-attendee-row")).map(row => ({
+        name: row.querySelector(".bp-attendee-name").value.trim(),
+        confirmed: row.querySelector(".bp-attendee-confirmed").checked
+      })).filter(a => a.name);
+      const purchases = Array.from(document.querySelectorAll(".bp-purchase-row")).map(row => ({
+        item: row.querySelector(".bp-purchase-item").value.trim(),
+        cost: parseFloat(row.querySelector(".bp-purchase-cost").value) || 0,
+        purchased: row.querySelector(".bp-purchase-purchased").checked
+      })).filter(i => i.item);
+      const entry = {
+        id: editingBachPartyId || Date.now().toString(),
+        eventName,
+        whoseParty: document.getElementById("bp-whoseParty").value,
+        destination: document.getElementById("bp-destination").value.trim(),
+        address: document.getElementById("bp-address").value.trim(),
+        startDate: document.getElementById("bp-startDate").value,
+        endDate: document.getElementById("bp-endDate").value,
+        attendees,
+        purchases,
+        notes: document.getElementById("bp-notes").value.trim()
+      };
+      if (editingBachPartyId) {
+        const idx = bachPartiesCache.findIndex(x => x.id === editingBachPartyId);
+        if (idx > -1) bachPartiesCache[idx] = entry; else bachPartiesCache.push(entry);
+      } else {
+        bachPartiesCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { bachParties: bachPartiesCache });
+        window.resetBachPartyForm();
+        renderBachParties();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteBachParty = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this party event?")) return;
+      bachPartiesCache = bachPartiesCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { bachParties: bachPartiesCache });
+        renderBachParties();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    function renderBachParties() {
+      const wrap = document.getElementById("bachparty-list");
+      if (!wrap) return;
+      if (!bachPartiesCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No party events added yet.</p>';
+        return;
+      }
+      const sorted = bachPartiesCache.slice().sort((a,b) => (a.startDate||"9999-12-31").localeCompare(b.startDate||"9999-12-31"));
+      wrap.innerHTML = sorted.map(p => {
+        const attendees = p.attendees || [];
+        const confirmedCount = attendees.filter(a => a.confirmed).length;
+        const purchases = p.purchases || [];
+        const totalPlanned = purchases.reduce((s,i) => s + (Number(i.cost)||0), 0);
+        const totalPurchased = purchases.reduce((s,i) => s + (i.purchased ? (Number(i.cost)||0) : 0), 0);
+        const dateRange = p.startDate ? (formatMeetingDate(p.startDate) + (p.endDate && p.endDate !== p.startDate ? " – " + formatMeetingDate(p.endDate) : "")) : "";
+        return `
+        <div class="note-item" style="padding:18px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;">
+              <div style="font-size:15px;color:var(--charcoal);">${esc(p.eventName||"Untitled Event")}${p.whoseParty ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(p.whoseParty)}</span>` : ""}</div>
+              <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${p.destination ? esc(p.destination) : "No destination set"}${dateRange ? " &middot; " + dateRange : ""}</div>
+              ${p.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;white-space:pre-line;">${esc(p.address)}</div>` : ""}
+              ${attendees.length ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:6px;">Attendees: ${confirmedCount} of ${attendees.length} confirmed</div>` : ""}
+              ${purchases.length ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Purchases: ${formatMoney(totalPurchased)} of ${formatMoney(totalPlanned)} bought</div>` : ""}
+              ${p.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(p.notes)}</div>` : ""}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editBachParty('${p.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteBachParty('${p.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`;
+      }).join("");
+    }
 
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
@@ -1616,6 +1791,7 @@
         <a href="#" onclick="window.showPage('vendors');return false;">Vendor Meetings</a>
         <a href="#" onclick="window.showPage('finances');return false;">Finance Tracker</a>
         <a href="#" onclick="window.showPage('guestlist');return false;">Guest List &amp; RSVPs</a>
+        <a href="#" onclick="window.showPage('bachparty');return false;">Bachelor/Bachelorette Planner</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('home');setTimeout(()=>{document.getElementById('resources').scrollIntoView({behavior:'smooth'})},100);return false;">Resources</a></li>
@@ -3098,6 +3274,92 @@
     <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
   </div>
 </div><!-- end page-guestlist -->
+
+<!-- ══════════════════ BACHELOR/BACHELORETTE PLANNER (PLANNING TOOL) ══════════════════ -->
+<div id="page-bachparty" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Bachelor/Bachelorette <em>Planner</em></h1>
+      <p>Keep the trip details, the crew, and the shopping list in one place.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Add one entry per event — a bachelor party, bachelorette party, or any other pre-wedding trip. This is just for your own organization.</p>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="bp-form-title">Add a <em>Party Event</em></h2>
+      <p class="form-section-intro">Fill in what you know — you can edit or remove this anytime.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Event Name</label>
+          <input type="text" class="form-input" id="bp-eventName" placeholder="e.g. Nashville Bachelorette Weekend">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Whose Party</label>
+          <select class="form-input" id="bp-whoseParty">
+            <option value="Bride's Party">Bride's Party</option>
+            <option value="Groom's Party">Groom's Party</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Destination</label>
+          <input type="text" class="form-input" id="bp-destination" placeholder="e.g. Nashville, TN">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Address / Directions Info</label>
+          <textarea class="form-textarea" id="bp-address" style="min-height:70px;" placeholder="Address, house/rental details, or anything the bridal party needs for directions"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Start Date</label>
+          <input type="date" class="form-input" id="bp-startDate">
+        </div>
+        <div class="form-group">
+          <label class="form-label">End Date</label>
+          <input type="date" class="form-input" id="bp-endDate">
+        </div>
+
+        <div class="form-group full">
+          <label class="form-label">Attendees</label>
+          <div id="bp-attendees-list"></div>
+          <button type="button" class="btn-back" style="margin-top:8px;align-self:flex-start;" onclick="window.addAttendeeRow()">+ Add Attendee</button>
+        </div>
+
+        <div class="form-group full">
+          <label class="form-label">Purchases Checklist</label>
+          <div id="bp-purchases-list"></div>
+          <button type="button" class="btn-back" style="margin-top:8px;align-self:flex-start;" onclick="window.addPurchaseRow()">+ Add Item</button>
+          <div style="display:flex;gap:24px;margin-top:14px;font-size:12px;color:var(--mid-gray);">
+            <span>Total Planned: <strong id="bp-form-total-planned" style="color:var(--charcoal);">$0</strong></span>
+            <span>Purchased: <strong id="bp-form-total-purchased" style="color:var(--gold-dark);">$0</strong></span>
+            <span>Remaining: <strong id="bp-form-total-remaining" style="color:var(--charcoal);">$0</strong></span>
+          </div>
+        </div>
+
+        <div class="form-group full">
+          <label class="form-label">Notes / Itinerary</label>
+          <textarea class="form-textarea" id="bp-notes" placeholder="Schedule of activities, reservations, anything else to remember..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="bp-save-btn" onclick="window.saveBachParty()">Add Party Event</button>
+        <button class="btn-back" id="bp-cancel-btn" style="display:none;" onclick="window.resetBachPartyForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Party Events</em></h2>
+      <div id="bachparty-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No party events added yet.</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-bachparty -->
 
 </div><!-- end portal-root -->
 
