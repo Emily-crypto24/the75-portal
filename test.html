@@ -184,7 +184,7 @@
 
       let directionsHtml = "";
       if (hasSeparateCeremony) {
-        directionsHtml += `<div style="margin-bottom:36px;"><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Ceremony</p><p style="font-size:20px;color:var(--charcoal);"><strong>${esc(data.ceremonyLocation || "Ceremony Location")}</strong></p><p style="font-size:16px;">${esc(data.ceremonyAddress)}</p>${ceremonyMapButton("Map to Ceremony", data.ceremonyAddress)}</div>`;
+        directionsHtml += `<div style="margin-bottom:36px;"><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Ceremony</p><p style="font-size:20px;color:var(--charcoal);"><strong>${esc(data.ceremonyLocation || "Ceremony Location")}</strong></p><p style="font-size:16px;">${esc(data.ceremonyAddress)}</p>${ceremonyMapButton("Directions to Ceremony", data.ceremonyAddress)}</div>`;
         directionsHtml += `<div><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Reception</p><p style="font-size:20px;color:var(--charcoal);"><strong>${esc(venueName)}</strong></p><p style="font-size:16px;">${esc(venueAddress)}</p>${data.parkingNotes ? `<p style="margin-top:14px;">${esc(data.parkingNotes)}</p>` : ""}${venueButtonsRow(venueAddress, data.propertyMapUrl)}</div>`;
       } else {
         const label = data.ceremonyLocation && data.ceremonyLocation.trim() && data.ceremonyLocation.trim() !== venueName ? data.ceremonyLocation : venueName;
@@ -193,9 +193,6 @@
         directionsHtml += venueButtonsRow(venueAddress, data.propertyMapUrl);
       }
       document.getElementById("guest-directions-content").innerHTML = directionsHtml;
-
-      const mapWrap = document.getElementById("guest-directions-map-wrap");
-      mapWrap.innerHTML = data.propertyMapUrl ? `<p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:10px;">Property Map</p><img src="${esc(data.propertyMapUrl)}" alt="Property map" style="width:100%;border:1px solid var(--border);" onerror="this.parentElement.style.display='none';">` : "";
 
       // Dress code tab
       document.getElementById("guest-dresscode-content").innerHTML = data.dressCode ? `<p style="font-size:14px;color:var(--mid-gray);line-height:1.9;">${esc(data.dressCode)}</p>` : `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
@@ -3611,7 +3608,6 @@
           <span class="section-label">Directions</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Getting <em style="color:var(--gold);font-style:italic;">there</em></h2>
           <div id="guest-directions-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;"></div>
-          <div id="guest-directions-map-wrap" style="margin-top:40px;"></div>
         </div>
 
         <div id="guest-tab-dresscode" class="guest-tab-panel" style="display:none;">
