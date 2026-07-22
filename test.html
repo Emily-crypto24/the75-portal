@@ -130,8 +130,14 @@
     function renderGuestContent(data, guestName) {
       const namesEl = document.getElementById("guest-view-names");
       const countdownEl = document.getElementById("guest-view-countdown");
-      const detailsEl = document.getElementById("guest-view-details");
+      const photoEl = document.getElementById("guest-view-photo");
       namesEl.innerHTML = esc(data.coupleNames || "A Seventy Five Wedding");
+
+      if (data.photoUrl) {
+        photoEl.innerHTML = `<img src="${esc(data.photoUrl)}" class="guest-view-photo-img" alt="${esc(data.coupleNames||"")}">`;
+      } else {
+        photoEl.innerHTML = "";
+      }
 
       if (data.weddingDate) {
         const [y, m, d] = data.weddingDate.split("-").map(Number);
@@ -154,18 +160,50 @@
         countdownEl.innerHTML = `<p style="font-size:13px;letter-spacing:0.1em;color:rgba(253,250,246,0.6);margin-bottom:6px;text-transform:uppercase;">${esc(formattedDate)}</p><p style="font-family:var(--font-heading);font-size:26px;color:var(--gold-light);">${countdownText}</p>`;
       }
 
-      const detailLines = [];
-      if (data.ceremonyLocation) detailLines.push(`Ceremony at ${esc(data.ceremonyLocation)}`);
-      if (data.ceremonyTime) detailLines.push(`Ceremony begins ${esc(data.ceremonyTime)}`);
-      if (data.receptionTime) detailLines.push(`Reception to follow at ${esc(data.receptionTime)}`);
-      detailsEl.innerHTML = detailLines.length ? detailLines.map(l => `<p>${l}</p>`).join("") : `<p>More details coming soon!</p>`;
+      // Directions tab
+      const directionsLines = [];
+      if (data.ceremonyLocation) directionsLines.push(`<p><strong>${esc(data.ceremonyLocation)}</strong></p>`);
+      directionsLines.push(`<p>10835 State Route 374, Rockbridge, Ohio 43149</p>`);
+      if (data.parkingNotes) directionsLines.push(`<p style="margin-top:16px;">${esc(data.parkingNotes)}</p>`);
+      directionsLines.push(`<p style="margin-top:20px;"><a href="https://maps.google.com/?q=10835+State+Route+374+Rockbridge+Ohio+43149" target="_blank" style="color:var(--gold-dark);">Get Directions on Google Maps &rarr;</a></p>`);
+      document.getElementById("guest-directions-content").innerHTML = directionsLines.join("");
 
+      // Dress code tab
+      document.getElementById("guest-dresscode-content").innerHTML = data.dressCode ? `<p>${esc(data.dressCode)}</p>` : `<p>Details coming soon!</p>`;
+
+      // Itinerary tab
+      if (data.guestItinerary) {
+        document.getElementById("guest-itinerary-content").textContent = data.guestItinerary;
+      } else {
+        const fallback = [];
+        if (data.ceremonyTime) fallback.push(`Ceremony begins ${data.ceremonyTime}`);
+        if (data.receptionTime) fallback.push(`Reception to follow at ${data.receptionTime}`);
+        document.getElementById("guest-itinerary-content").textContent = fallback.length ? fallback.join("\n") : "Details coming soon!";
+      }
+
+      window.switchGuestTab("rsvp");
       renderGuestRSVPForm(data, guestName);
     }
+
+    window.switchGuestTab = function(tab) {
+      ["rsvp","directions","dresscode","itinerary"].forEach(t => {
+        const panel = document.getElementById(`guest-tab-${t}`);
+        const btn = document.getElementById(`guest-tabbtn-${t}`);
+        if (panel) panel.style.display = (t === tab) ? "block" : "none";
+        if (btn) btn.classList.toggle("active", t === tab);
+      });
+    };
 
     function renderGuestRSVPForm(data, guestName) {
       const wrap = document.getElementById("guest-rsvp-form");
       if (!wrap) return;
+
+      const stored = getStoredRSVP(data.slug);
+      if (stored) {
+        renderAlreadySubmittedState(data, guestName, stored);
+        return;
+      }
+
       const roster = Array.isArray(data.guestRoster) ? data.guestRoster : [];
       const match = roster.find(g => (g.name || "").trim().toLowerCase() === guestName.trim().toLowerCase());
       const plusOneAllowed = match ? !!match.plusOneAllowed : false;
@@ -220,6 +258,80 @@
         <div id="rsvp-submit-error" style="display:none;margin-top:14px;font-size:12px;color:#c0392b;"></div>`;
     }
 
+    function getRSVPStorageKey(slug) { return `rsvp_submitted_${slug}`; }
+
+    function getStoredRSVP(slug) {
+      try {
+        const raw = localStorage.getItem(getRSVPStorageKey(slug));
+        return raw ? JSON.parse(raw) : null;
+      } catch(e) { return null; }
+    }
+
+    function renderAlreadySubmittedState(data, guestName, stored) {
+      const wrap = document.getElementById("guest-rsvp-form");
+      wrap.innerHTML = `<div style="text-align:center;padding:20px 0;">
+        <p style="font-family:var(--font-heading);font-size:24px;font-weight:300;color:var(--charcoal);margin-bottom:14px;">Submitted!</p>
+        <button onclick="window.reopenGuestRSVPForm()" style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:11px;letter-spacing:0.06em;padding:10px 20px;cursor:pointer;border-radius:1px;">Need to change? Click here</button>
+      </div>`;
+    }
+
+    window.reopenGuestRSVPForm = function() {
+      const stored = getStoredRSVP(guestGateData.slug);
+      const wrap = document.getElementById("guest-rsvp-form");
+      const roster = Array.isArray(guestGateData.guestRoster) ? guestGateData.guestRoster : [];
+      const guestName = (stored && stored.guestName) || "";
+      const match = roster.find(g => (g.name || "").trim().toLowerCase() === guestName.trim().toLowerCase());
+      const plusOneAllowed = match ? !!match.plusOneAllowed : false;
+      const isPlated = guestGateData.dinnerStyle === "Plated";
+      const mealOptions = Array.isArray(guestGateData.mealOptions) ? guestGateData.mealOptions : [];
+      const mealOptionsHtml = '<option value="">Select a meal...</option>' + mealOptions.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+
+      wrap.innerHTML = `
+        <div class="form-grid">
+          <div class="form-group full">
+            <label class="form-label">Your Name</label>
+            <input type="text" class="form-input" id="rsvp-guestName" value="${esc(guestName)}">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Will you be attending?</label>
+            <div style="display:flex;gap:24px;padding-top:10px;">
+              <label class="check-item"><input type="radio" name="rsvp-status" value="Attending" ${stored && stored.rsvpStatus==="Attending" ? "checked" : ""}><span>Joyfully Attending</span></label>
+              <label class="check-item"><input type="radio" name="rsvp-status" value="Not Attending" ${stored && stored.rsvpStatus==="Not Attending" ? "checked" : ""}><span>Regretfully Declining</span></label>
+            </div>
+          </div>
+          ${plusOneAllowed ? `
+          <div class="form-group full">
+            <label class="form-label">Plus One</label>
+            <input type="text" class="form-input" id="rsvp-plusOneName" value="${esc((stored && stored.plusOneName) || "")}" placeholder="Your plus one's name (leave blank if not bringing one)">
+          </div>` : ""}
+          ${isPlated ? `
+          <div class="form-group">
+            <label class="form-label">Your Meal Choice</label>
+            <select class="form-input" id="rsvp-mealChoice">${mealOptionsHtml}</select>
+          </div>` : ""}
+          <div class="form-group full">
+            <label class="form-label">Allergies / Dietary Restrictions</label>
+            <input type="text" class="form-input" id="rsvp-allergies" value="${esc((stored && stored.allergies) || "")}" placeholder="e.g. Peanut allergy, gluten-free">
+          </div>
+          ${(isPlated && plusOneAllowed) ? `
+          <div class="form-group">
+            <label class="form-label">Plus One's Meal Choice</label>
+            <select class="form-input" id="rsvp-plusOneMealChoice">${mealOptionsHtml}</select>
+          </div>` : ""}
+          ${plusOneAllowed ? `
+          <div class="form-group full">
+            <label class="form-label">Plus One's Allergies / Dietary Restrictions</label>
+            <input type="text" class="form-input" id="rsvp-plusOneAllergies" value="${esc((stored && stored.plusOneAllergies) || "")}" placeholder="e.g. Peanut allergy, gluten-free">
+          </div>` : ""}
+        </div>
+        <div class="form-save-row" style="margin-top:24px;">
+          <button class="btn-save" id="rsvp-submit-btn" onclick="window.submitGuestRSVP('${esc(guestGateData.slug)}')">Update RSVP</button>
+        </div>
+        <div id="rsvp-submit-error" style="display:none;margin-top:14px;font-size:12px;color:#c0392b;"></div>`;
+      if (stored && stored.mealChoice) document.getElementById("rsvp-mealChoice") && (document.getElementById("rsvp-mealChoice").value = stored.mealChoice);
+      if (stored && stored.plusOneMealChoice) document.getElementById("rsvp-plusOneMealChoice") && (document.getElementById("rsvp-plusOneMealChoice").value = stored.plusOneMealChoice);
+    };
+
     window.submitGuestRSVP = async function(coupleSlug) {
       const btn = document.getElementById("rsvp-submit-btn");
       const errorEl = document.getElementById("rsvp-submit-error");
@@ -251,7 +363,8 @@
       btn.textContent = "Submitting…"; btn.disabled = true;
       try {
         await setDoc(doc(collection(db, "rsvpSubmissions")), submission);
-        document.getElementById("guest-rsvp-form").innerHTML = `<div style="text-align:center;padding:20px 0;"><p style="font-family:var(--font-heading);font-size:24px;font-weight:300;color:var(--charcoal);margin-bottom:10px;">Thank You!</p><p style="font-size:13px;color:var(--mid-gray);line-height:1.7;">Your RSVP has been received.</p></div>`;
+        try { localStorage.setItem(getRSVPStorageKey(coupleSlug), JSON.stringify(submission)); } catch(e) {}
+        renderAlreadySubmittedState(guestGateData, guestName, submission);
       } catch(e) {
         errorEl.textContent = "Something went wrong submitting your RSVP. Please try again.";
         errorEl.style.display = "block";
@@ -283,7 +396,8 @@
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
                 ceremonyTime: "", receptionTime: "", ceremonyLocation: "", blockedGuestNames: [],
-                guestRoster: [], dinnerStyle: "Buffet", mealOptions: []
+                guestRoster: [], dinnerStyle: "Buffet", mealOptions: [],
+                photoUrl: "", dressCode: "", guestItinerary: "", parkingNotes: ""
               });
             } catch(e) {}
           }
@@ -839,6 +953,15 @@
           : { dinnerStyle: "Buffet", mealOptions: [] };
         blockedGuestsCache = Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [];
         currentCoupleSlug = data.slug || "";
+        const gpc = data.guestPortalContent || {};
+        const photoEl = document.getElementById("gp-photoUrl");
+        const dressEl = document.getElementById("gp-dressCode");
+        const itinEl = document.getElementById("gp-itinerary");
+        const parkEl = document.getElementById("gp-parkingNotes");
+        if (photoEl) photoEl.value = gpc.photoUrl || "";
+        if (dressEl) dressEl.value = gpc.dressCode || "";
+        if (itinEl) itinEl.value = gpc.guestItinerary || "";
+        if (parkEl) parkEl.value = gpc.parkingNotes || "";
       } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
@@ -846,6 +969,24 @@
       window.renderGuestList();
       loadPendingRSVPs();
     }
+
+    window.saveGuestPortalContent = async function() {
+      if (!currentUser) return;
+      const guestPortalContent = {
+        photoUrl: document.getElementById("gp-photoUrl").value.trim(),
+        dressCode: document.getElementById("gp-dressCode").value.trim(),
+        guestItinerary: document.getElementById("gp-itinerary").value.trim(),
+        parkingNotes: document.getElementById("gp-parkingNotes").value.trim()
+      };
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { guestPortalContent });
+        syncPublicProfile(currentUser.uid);
+        const btn = document.getElementById("gp-content-save-btn");
+        const original = btn.textContent;
+        btn.textContent = "✓ Saved!";
+        setTimeout(() => { btn.textContent = original; }, 1800);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
 
     let pendingRSVPsCache = [];
 
@@ -1899,6 +2040,7 @@
         const guestList = Array.isArray(data.guestList) ? data.guestList : [];
         const guestRoster = guestList.map(g => ({ name: g.guestName || "", plusOneAllowed: !!g.plusOneAllowed }));
         const settings = data.guestListSettings || {};
+        const gpc = data.guestPortalContent || {};
         await setDoc(doc(db, "publicCouples", data.slug), {
           slug: data.slug,
           coupleNames: m1.coupleNames || "",
@@ -1909,7 +2051,11 @@
           blockedGuestNames: Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [],
           guestRoster,
           dinnerStyle: settings.dinnerStyle || "Buffet",
-          mealOptions: Array.isArray(settings.mealOptions) ? settings.mealOptions : []
+          mealOptions: Array.isArray(settings.mealOptions) ? settings.mealOptions : [],
+          photoUrl: gpc.photoUrl || "",
+          dressCode: gpc.dressCode || "",
+          guestItinerary: gpc.guestItinerary || "",
+          parkingNotes: gpc.parkingNotes || ""
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -2769,6 +2915,10 @@
     .acc-prog-pct{font-size:11px;color:var(--mid-gray);width:32px;text-align:right;flex-shrink:0;}
     .acc-actions{display:flex;gap:8px;}
     .acc-btn-view{flex:1;padding:9px;background:var(--charcoal);color:var(--warm-white);border:none;font-family:var(--font-body);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;cursor:pointer;transition:background 0.2s;}
+    .guest-tab-btn{padding:14px 26px;background:none;border:1px solid var(--border);color:var(--charcoal);font-family:var(--font-body);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
+    .guest-tab-btn:hover{background:var(--cream);}
+    .guest-tab-btn.active{background:var(--charcoal);color:var(--warm-white);border-color:var(--charcoal);}
+    .guest-view-photo-img{width:120px;height:120px;border-radius:50%;object-fit:cover;border:2px solid rgba(253,250,246,0.4);}
     .acc-btn-view:hover{background:var(--gold-dark);}
     .acc-btn-export{flex:1;padding:9px;background:transparent;color:var(--gold-dark);border:1px solid var(--border);font-family:var(--font-body);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
     .acc-btn-export:hover{background:var(--gold);color:var(--warm-white);border-color:var(--gold);}
@@ -2821,17 +2971,44 @@
     <section class="hero" style="height:100vh;">
       <div class="hero-bg"></div>
       <div class="hero-content">
+        <div id="guest-view-photo" style="margin-bottom:20px;"></div>
         <p class="hero-eyebrow" id="guest-view-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
         <h1 class="hero-title" id="guest-view-names">Loading&hellip;</h1>
-        <div id="guest-view-countdown" style="margin-bottom:24px;"></div>
-        <div id="guest-view-details" style="font-size:13px;color:rgba(253,250,246,0.6);line-height:2;"></div>
+        <div id="guest-view-countdown"></div>
       </div>
     </section>
-    <section style="background:var(--warm-white);padding:80px 24px;">
-      <div style="max-width:520px;margin:0 auto;">
-        <span class="section-label">RSVP</span>
-        <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Let us know <em style="color:var(--gold);font-style:italic;">you're coming</em></h2>
-        <div id="guest-rsvp-form"></div>
+    <section style="background:var(--warm-white);padding:60px 24px 100px;">
+      <div style="max-width:640px;margin:0 auto;">
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:48px;">
+          <button class="guest-tab-btn" id="guest-tabbtn-rsvp" onclick="window.switchGuestTab('rsvp')">RSVP Here!</button>
+          <button class="guest-tab-btn" id="guest-tabbtn-directions" onclick="window.switchGuestTab('directions')">Directions to the Venue</button>
+          <button class="guest-tab-btn" id="guest-tabbtn-dresscode" onclick="window.switchGuestTab('dresscode')">Dress Code</button>
+          <button class="guest-tab-btn" id="guest-tabbtn-itinerary" onclick="window.switchGuestTab('itinerary')">Itinerary</button>
+        </div>
+
+        <div id="guest-tab-rsvp" class="guest-tab-panel">
+          <span class="section-label">RSVP</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Let us know <em style="color:var(--gold);font-style:italic;">you're coming</em></h2>
+          <div id="guest-rsvp-form"></div>
+        </div>
+
+        <div id="guest-tab-directions" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">Directions</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Getting <em style="color:var(--gold);font-style:italic;">there</em></h2>
+          <div id="guest-directions-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;"></div>
+        </div>
+
+        <div id="guest-tab-dresscode" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">Dress Code</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">What to <em style="color:var(--gold);font-style:italic;">wear</em></h2>
+          <div id="guest-dresscode-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;"></div>
+        </div>
+
+        <div id="guest-tab-itinerary" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">Itinerary</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">The <em style="color:var(--gold);font-style:italic;">schedule</em></h2>
+          <div id="guest-itinerary-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;white-space:pre-line;"></div>
+        </div>
       </div>
     </section>
   </div>
@@ -4724,6 +4901,32 @@
           <label class="form-label">Ceremony Location</label>
           <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
         </div>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Guest Page <em>Content</em></h2>
+      <p class="form-section-intro">Fill these in to power the tabs your guests see: RSVP, Directions, Dress Code, and Itinerary.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Couple's Photo URL</label>
+          <input type="text" class="form-input" id="gp-photoUrl" placeholder="Paste a link to a photo (e.g. from Google Photos, Dropbox, etc.)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Dress Code</label>
+          <textarea class="form-textarea" id="gp-dressCode" placeholder="e.g. Semi-formal — garden party attire. Ceremony and reception are outdoors on grass."></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Itinerary (Guest-Facing)</label>
+          <textarea class="form-textarea" id="gp-itinerary" placeholder="e.g.&#10;4:00 PM — Guest Arrival&#10;4:30 PM — Ceremony&#10;5:00 PM — Cocktail Hour&#10;6:00 PM — Reception &amp; Dinner&#10;10:00 PM — Send-Off"></textarea>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Parking &amp; Additional Directions Notes</label>
+          <textarea class="form-textarea" id="gp-parkingNotes" placeholder="e.g. Parking available on-site. Please use the gravel lot to the left of the main entrance."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="gp-content-save-btn" onclick="window.saveGuestPortalContent()">Save Guest Page Content</button>
       </div>
     </div>
 
