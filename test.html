@@ -169,7 +169,8 @@
       const venueName = "The Seventy Five";
       const venueAddress = "10835 State Route 374, Rockbridge, Ohio 43149";
       const hasSeparateCeremony = data.ceremonyAddress && data.ceremonyAddress.trim();
-      const ceremonyMapButton = (label, address) => `<div style="margin-top:20px;text-align:center;"><a href="https://maps.google.com/?q=${encodeURIComponent(address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 36px;font-size:13px;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;border-radius:1px;">${esc(label)}</a></div>`;
+      const mapsQuery = (name, address) => encodeURIComponent(name ? `${name}, ${address}` : address);
+      const ceremonyMapButton = (label, name, address) => `<div style="margin-top:20px;text-align:center;"><a href="https://maps.google.com/?q=${mapsQuery(name, address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 36px;font-size:13px;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;border-radius:1px;">${esc(label)}</a></div>`;
       const venueButtonsRow = (address, mapUrl) => {
         let html = '<div style="margin-top:24px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap;">';
         if (mapUrl) {
@@ -177,14 +178,14 @@
         } else {
           html += `<span style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-align:center;opacity:0.6;cursor:default;">Map of The Seventy Five</span>`;
         }
-        html += `<a href="https://maps.google.com/?q=${encodeURIComponent(address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Directions to The Seventy Five</a>`;
+        html += `<a href="https://maps.google.com/?q=${mapsQuery(venueName, address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Directions to The Seventy Five</a>`;
         html += '</div>';
         return html;
       };
 
       let directionsHtml = "";
       if (hasSeparateCeremony) {
-        directionsHtml += `<div style="margin-bottom:36px;"><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Ceremony</p><p style="font-size:20px;color:var(--charcoal);"><strong>${esc(data.ceremonyLocation || "Ceremony Location")}</strong></p><p style="font-size:16px;">${esc(data.ceremonyAddress)}</p>${ceremonyMapButton("Directions to Ceremony", data.ceremonyAddress)}</div>`;
+        directionsHtml += `<div style="margin-bottom:36px;"><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Ceremony</p><p style="font-size:20px;color:var(--charcoal);"><strong>${esc(data.ceremonyLocation || "Ceremony Location")}</strong></p><p style="font-size:16px;">${esc(data.ceremonyAddress)}</p>${ceremonyMapButton("Directions to Ceremony", data.ceremonyLocation, data.ceremonyAddress)}</div>`;
         directionsHtml += `<div><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Reception</p><p style="font-size:20px;color:var(--charcoal);"><strong>${esc(venueName)}</strong></p><p style="font-size:16px;">${esc(venueAddress)}</p>${data.parkingNotes ? `<p style="margin-top:14px;">${esc(data.parkingNotes)}</p>` : ""}${venueButtonsRow(venueAddress, data.propertyMapUrl)}</div>`;
       } else {
         const label = data.ceremonyLocation && data.ceremonyLocation.trim() && data.ceremonyLocation.trim() !== venueName ? data.ceremonyLocation : venueName;
@@ -213,7 +214,7 @@
         const fallback = [];
         if (data.ceremonyTime) fallback.push(`Ceremony begins ${data.ceremonyTime}`);
         if (data.receptionTime) fallback.push(`Reception to follow at ${data.receptionTime}`);
-        itineraryEl.innerHTML = fallback.length ? `<p style="font-size:14px;color:var(--mid-gray);line-height:1.9;">${esc(fallback.join(" · "))}</p>` : `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
+        itineraryEl.innerHTML = fallback.length ? fallback.map(f => `<p style="font-size:14px;color:var(--mid-gray);line-height:1.9;">${esc(f)}</p>`).join("") : `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
       }
 
       // Wedding Party tab
