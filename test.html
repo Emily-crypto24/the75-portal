@@ -256,6 +256,50 @@
       renderGuestRSVPForm(data, guestName);
     }
 
+    window.switchGPTab = function(tab) {
+      ["home","directions","dresscode","itinerary","party","stay","faq"].forEach(t => {
+        const panel = document.getElementById(`gptab-${t}`);
+        const btn = document.getElementById(`gptab-btn-${t}`);
+        if (panel) panel.style.display = (t === tab) ? "block" : "none";
+        if (btn) btn.classList.toggle("active", t === tab);
+      });
+    };
+
+    function renderPhotoBox(boxId, url, placeholder) {
+      const box = document.getElementById(boxId);
+      if (!box) return;
+      if (url) {
+        box.style.backgroundImage = `url('${url.replace(/'/g,"")}')`;
+        box.classList.add("has-photo");
+        box.innerHTML = `<span class="photo-upload-label">Change Photo</span>`;
+      } else {
+        box.style.backgroundImage = "";
+        box.classList.remove("has-photo");
+        box.innerHTML = `<span class="photo-upload-label">${placeholder}</span>`;
+      }
+    }
+
+    window.promptForPhoto = function(hiddenInputId, boxId, placeholder) {
+      const input = document.getElementById(hiddenInputId);
+      const current = input.value || "";
+      const url = prompt("Paste a link to your photo:", current);
+      if (url === null) return;
+      input.value = url.trim();
+      renderPhotoBox(boxId, url.trim(), placeholder);
+    };
+
+    window.updateGPHomePreview = function() {
+      const namesEl = document.querySelector('[data-field="meeting1.coupleNames"]');
+      const dateEl = document.querySelector('[data-field="meeting1.weddingDate"]');
+      const previewNames = document.getElementById("gp-home-preview-names");
+      const previewDate = document.getElementById("gp-home-preview-date");
+      if (previewNames) previewNames.textContent = (namesEl && namesEl.value) ? namesEl.value : "Your Names Here";
+      if (previewDate && dateEl && dateEl.value) {
+        const [y,m,d] = dateEl.value.split("-").map(Number);
+        previewDate.textContent = new Date(y,m-1,d).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});
+      } else if (previewDate) { previewDate.textContent = ""; }
+    };
+
     window.switchGuestTab = function(tab) {
       ["rsvp","directions","dresscode","itinerary","party","stay","faq"].forEach(t => {
         const panel = document.getElementById(`guest-tab-${t}`);
@@ -1060,6 +1104,12 @@
         if (dressEl) dressEl.value = gpc.dressCode || "";
         if (parkEl) parkEl.value = gpc.parkingNotes || "";
         if (mapEl) mapEl.value = gpc.propertyMapUrl || "";
+        renderPhotoBox("gp-coverPhoto-box", gpc.coverPhotoUrl || "", "+ Add Cover Photo");
+        renderPhotoBox("gp-photo-box", gpc.photoUrl || "", "+ Add Photo");
+        renderPhotoBox("gp-propertyMap-box", gpc.propertyMapUrl || "", "+ Add Property Map");
+        const previewBg = document.getElementById("gp-home-preview-bg");
+        if (previewBg && gpc.coverPhotoUrl) previewBg.style.backgroundImage = `url('${gpc.coverPhotoUrl.replace(/'/g,"")}')`;
+        window.updateGPHomePreview();
         placesToStayCache = (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY;
         itineraryItemsCache = Array.isArray(data.itineraryItems) ? data.itineraryItems : [];
         weddingPartyCache = Array.isArray(data.weddingParty) ? data.weddingParty : [];
@@ -1077,7 +1127,8 @@
       renderWeddingParty();
       window.resetFAQForm();
       renderFAQs();
-      loadPendingRSVPs();
+      autoMergeRSVPSubmissions();
+      window.switchGPTab("home");
     }
 
     window.saveGuestPortalContent = async function() {
@@ -1297,6 +1348,7 @@
     window.resetWeddingPartyForm = function() {
       editingWeddingPartyId = null;
       ["wp-name","wp-role","wp-photoUrl"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      renderPhotoBox("wp-photo-box", "", "+ Add Photo");
       const titleEl = document.getElementById("wp-form-title");
       if (titleEl) titleEl.innerHTML = 'Add a <em>Wedding Party Member</em>';
       const saveBtn = document.getElementById("wp-save-btn");
@@ -1312,6 +1364,7 @@
       document.getElementById("wp-name").value = p.name || "";
       document.getElementById("wp-role").value = p.role || "";
       document.getElementById("wp-photoUrl").value = p.photoUrl || "";
+      renderPhotoBox("wp-photo-box", p.photoUrl || "", "+ Add Photo");
       document.getElementById("wp-form-title").innerHTML = 'Edit <em>Wedding Party Member</em>';
       document.getElementById("wp-save-btn").textContent = "Save Changes";
       document.getElementById("wp-cancel-btn").style.display = "inline-block";
@@ -1431,104 +1484,46 @@
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
-    let pendingRSVPsCache = [];
-
-    async function loadPendingRSVPs() {
-      const wrap = document.getElementById("pending-rsvp-list");
-      if (!wrap) return;
-      if (!currentCoupleSlug) { wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No pending responses.</p>'; return; }
+    async function autoMergeRSVPSubmissions() {
+      if (!currentUser || !currentCoupleSlug) return;
       try {
         const q = query(collection(db, "rsvpSubmissions"), where("coupleSlug", "==", currentCoupleSlug));
         const snap = await getDocs(q);
-        pendingRSVPsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      } catch(e) { console.error("Couldn't load pending RSVPs:", e); pendingRSVPsCache = []; }
-      renderPendingRSVPs();
-    }
-
-    function renderPendingRSVPs() {
-      const wrap = document.getElementById("pending-rsvp-list");
-      if (!wrap) return;
-      if (!pendingRSVPsCache.length) {
-        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No pending responses.</p>';
-        return;
-      }
-      const guestOptionsHtml = '<option value="">— Add as New Guest —</option>' + guestListCache.map(g => `<option value="${g.id}">${esc(g.guestName || "Unnamed")}</option>`).join("");
-      wrap.innerHTML = pendingRSVPsCache.map(r => `
-        <div class="note-item" style="padding:16px 0;">
-          <div style="font-size:15px;color:var(--charcoal);">${esc(r.guestName||"Unnamed")}</div>
-          <div style="font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:${r.rsvpStatus==="Attending"?"var(--gold-dark)":"var(--mid-gray)"};margin-top:4px;">${esc(r.rsvpStatus||"")}</div>
-          ${r.plusOneName ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">Plus One: ${esc(r.plusOneName)}</div>` : ""}
-          ${r.mealChoice ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Meal: ${esc(r.mealChoice)}</div>` : ""}
-          ${r.plusOneMealChoice ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">Plus One Meal: ${esc(r.plusOneMealChoice)}</div>` : ""}
-          ${r.allergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:2px;">Allergies: ${esc(r.allergies)}</div>` : ""}
-          ${r.plusOneAllergies ? `<div style="font-size:12px;color:var(--charcoal);margin-top:2px;">Plus One Allergies: ${esc(r.plusOneAllergies)}</div>` : ""}
-          <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center;">
-            <select class="form-input" id="pending-match-${r.id}" style="flex:1;min-width:200px;">${guestOptionsHtml}</select>
-            <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.applyRSVPSubmission('${r.id}')">Apply</button>
-            <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.dismissRSVPSubmission('${r.id}')">Dismiss</button>
-          </div>
-        </div>`).join("");
-    }
-
-    window.applyRSVPSubmission = async function(submissionId) {
-      if (!currentUser) return;
-      const r = pendingRSVPsCache.find(x => x.id === submissionId);
-      if (!r) return;
-      const select = document.getElementById(`pending-match-${submissionId}`);
-      const targetId = select.value;
-
-      const rsvpFields = {
-        rsvpStatus: r.rsvpStatus || "Pending",
-        plusOneName: r.plusOneName || "",
-        mealChoice: r.mealChoice || "",
-        plusOneMealChoice: r.plusOneMealChoice || "",
-        allergies: r.allergies || "",
-        plusOneAllergies: r.plusOneAllergies || ""
-      };
-
-      if (targetId) {
-        const idx = guestListCache.findIndex(g => g.id === targetId);
-        if (idx > -1) {
-          const existing = guestListCache[idx];
-          guestListCache[idx] = {
-            ...existing,
-            ...rsvpFields,
-            plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName
+        if (snap.empty) return;
+        const submissions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        submissions.forEach(r => {
+          const rsvpFields = {
+            rsvpStatus: r.rsvpStatus || "Pending",
+            plusOneName: r.plusOneName || "",
+            mealChoice: r.mealChoice || "",
+            plusOneMealChoice: r.plusOneMealChoice || "",
+            allergies: r.allergies || "",
+            plusOneAllergies: r.plusOneAllergies || ""
           };
-        }
-      } else {
-        guestListCache.push({
-          id: Date.now().toString(),
-          guestName: r.guestName,
-          address: "",
-          plusOneAllowed: !!rsvpFields.plusOneName,
-          tableNumber: "",
-          notes: "Added from guest RSVP submission",
-          children: [],
-          ...rsvpFields
+          const idx = guestListCache.findIndex(g => (g.guestName||"").trim().toLowerCase() === (r.guestName||"").trim().toLowerCase());
+          if (idx > -1) {
+            const existing = guestListCache[idx];
+            guestListCache[idx] = { ...existing, ...rsvpFields, plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName };
+          } else {
+            guestListCache.push({
+              id: Date.now().toString() + Math.floor(Math.random()*1000),
+              guestName: r.guestName,
+              address: "",
+              plusOneAllowed: !!rsvpFields.plusOneName,
+              tableNumber: "",
+              notes: "Added from a guest RSVP submission",
+              children: [],
+              ...rsvpFields
+            });
+          }
         });
-      }
-
-      try {
         await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
         const { doc: dc, deleteDoc: dd } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await dd(dc(db, "rsvpSubmissions", submissionId));
-        pendingRSVPsCache = pendingRSVPsCache.filter(x => x.id !== submissionId);
+        await Promise.all(submissions.map(r => dd(dc(db, "rsvpSubmissions", r.id))));
         window.renderGuestList();
-        renderPendingRSVPs();
         syncPublicProfile(currentUser.uid);
-      } catch(e) { alert("Couldn't apply this RSVP: " + e.message); }
-    };
-
-    window.dismissRSVPSubmission = async function(submissionId) {
-      if (!confirm("Dismiss this response without applying it?")) return;
-      try {
-        const { doc: dc, deleteDoc: dd } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await dd(dc(db, "rsvpSubmissions", submissionId));
-        pendingRSVPsCache = pendingRSVPsCache.filter(x => x.id !== submissionId);
-        renderPendingRSVPs();
-      } catch(e) { alert("Couldn't dismiss: " + e.message); }
-    };
+      } catch(e) { console.error("Couldn't merge RSVP submissions:", e); }
+    }
 
     function renderBlockedGuests() {
       const wrap = document.getElementById("blocked-guests-list");
@@ -3369,6 +3364,14 @@
     .guest-tab-btn:hover{background:var(--cream);}
     .guest-tab-btn.active{background:var(--charcoal);color:var(--warm-white);border-color:var(--charcoal);}
     .guest-view-photo-img{width:120px;height:120px;border-radius:50%;object-fit:cover;border:2px solid rgba(253,250,246,0.4);}
+    .photo-upload-box{border:2px dashed var(--border);background:var(--cream) center/cover no-repeat;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--mid-gray);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;text-align:center;padding:20px;transition:border-color 0.2s;position:relative;}
+    .photo-upload-box:hover{border-color:var(--gold);}
+    .photo-upload-box.has-photo{border-style:solid;}
+    .photo-upload-box.has-photo .photo-upload-label{background:rgba(44,44,44,0.55);color:#fff;padding:8px 16px;opacity:0;transition:opacity 0.2s;}
+    .photo-upload-box.has-photo:hover .photo-upload-label{opacity:1;}
+    .gp-tab-btn{padding:12px 20px;background:none;border:1px solid var(--border);color:var(--charcoal);font-family:var(--font-body);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
+    .gp-tab-btn:hover{background:var(--cream);}
+    .gp-tab-btn.active{background:var(--charcoal);color:var(--warm-white);border-color:var(--charcoal);}
     .acc-btn-view:hover{background:var(--gold-dark);}
     .acc-btn-export{flex:1;padding:9px;background:transparent;color:var(--gold-dark);border:1px solid var(--border);font-family:var(--font-body);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
     .acc-btn-export:hover{background:var(--gold);color:var(--warm-white);border-color:var(--gold);}
@@ -3418,7 +3421,7 @@
 
   <!-- CONTENT: revealed only after the gate is passed -->
   <div id="guest-content" style="display:none;">
-    <section class="hero" style="height:100vh;">
+    <section class="hero" style="height:100vh;position:relative;">
       <div class="hero-bg"></div>
       <div class="hero-content">
         <div id="guest-view-photo" style="margin-bottom:20px;"></div>
@@ -3426,18 +3429,18 @@
         <h1 class="hero-title" id="guest-view-names">Loading&hellip;</h1>
         <div id="guest-view-countdown"></div>
       </div>
+      <div style="position:absolute;bottom:0;left:0;right:0;background:rgba(44,44,44,0.88);display:flex;justify-content:center;flex-wrap:wrap;z-index:2;">
+        <button class="guest-tab-btn" id="guest-tabbtn-rsvp" onclick="window.switchGuestTab('rsvp')">RSVP Here!</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-directions" onclick="window.switchGuestTab('directions')">Directions</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-dresscode" onclick="window.switchGuestTab('dresscode')">Dress Code</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-itinerary" onclick="window.switchGuestTab('itinerary')">Itinerary</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-party" onclick="window.switchGuestTab('party')">Wedding Party</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-stay" onclick="window.switchGuestTab('stay')">Places to Stay</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-faq" onclick="window.switchGuestTab('faq')">FAQs</button>
+      </div>
     </section>
     <section style="background:var(--warm-white);padding:60px 24px 100px;">
       <div style="max-width:640px;margin:0 auto;">
-        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:48px;">
-          <button class="guest-tab-btn" id="guest-tabbtn-rsvp" onclick="window.switchGuestTab('rsvp')">RSVP Here!</button>
-          <button class="guest-tab-btn" id="guest-tabbtn-directions" onclick="window.switchGuestTab('directions')">Directions</button>
-          <button class="guest-tab-btn" id="guest-tabbtn-dresscode" onclick="window.switchGuestTab('dresscode')">Dress Code</button>
-          <button class="guest-tab-btn" id="guest-tabbtn-itinerary" onclick="window.switchGuestTab('itinerary')">Itinerary</button>
-          <button class="guest-tab-btn" id="guest-tabbtn-party" onclick="window.switchGuestTab('party')">Wedding Party</button>
-          <button class="guest-tab-btn" id="guest-tabbtn-stay" onclick="window.switchGuestTab('stay')">Places to Stay</button>
-          <button class="guest-tab-btn" id="guest-tabbtn-faq" onclick="window.switchGuestTab('faq')">FAQs</button>
-        </div>
 
         <div id="guest-tab-rsvp" class="guest-tab-panel">
           <span class="section-label">RSVP</span>
@@ -5347,23 +5350,53 @@
   </div>
 
   <div class="planning-form-wrap">
-    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Think of this like a shared document — you have full editing access, and your guests get a read-only view of the details plus the ability to RSVP. Anything you update here goes live for your guests right away.</p>
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:24px;line-height:1.8;font-style:italic;">Think of this like a shared document — you have full editing access, and your guests get a read-only view of the details plus the ability to RSVP. These tabs match exactly what your guests see, so you always know where something will show up. Anything you update here goes live for your guests right away.</p>
 
-    <div class="form-section-block">
-      <div class="guest-page-link-slot" style="background:var(--cream);border:1px solid var(--border);padding:28px 32px;"></div>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:40px;">
+      <button class="gp-tab-btn" id="gptab-btn-home" onclick="window.switchGPTab('home')">Home</button>
+      <button class="gp-tab-btn" id="gptab-btn-directions" onclick="window.switchGPTab('directions')">Directions</button>
+      <button class="gp-tab-btn" id="gptab-btn-dresscode" onclick="window.switchGPTab('dresscode')">Dress Code</button>
+      <button class="gp-tab-btn" id="gptab-btn-itinerary" onclick="window.switchGPTab('itinerary')">Itinerary</button>
+      <button class="gp-tab-btn" id="gptab-btn-party" onclick="window.switchGPTab('party')">Wedding Party</button>
+      <button class="gp-tab-btn" id="gptab-btn-stay" onclick="window.switchGPTab('stay')">Places to Stay</button>
+      <button class="gp-tab-btn" id="gptab-btn-faq" onclick="window.switchGPTab('faq')">FAQs</button>
     </div>
 
-    <div class="form-section-block">
-      <h2 class="form-section-title">Wedding <em>Details</em></h2>
-      <p class="form-section-intro">These show up on your guest page automatically — same fields as your First Planning Meeting, just editable from here too.</p>
+    <!-- HOME TAB -->
+    <div id="gptab-home" class="gp-tab-panel">
+      <div style="background:var(--charcoal);color:#fff;border-radius:1px;overflow:hidden;position:relative;margin-bottom:32px;">
+        <div id="gp-home-preview-bg" style="height:260px;background:center/cover no-repeat;display:flex;align-items:center;justify-content:center;text-align:center;position:relative;">
+          <div style="position:relative;z-index:1;">
+            <p id="gp-home-preview-eyebrow" style="font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:rgba(253,250,246,0.6);margin-bottom:10px;">The Seventy Five &middot; Rockbridge, Ohio</p>
+            <h2 id="gp-home-preview-names" style="font-family:var(--font-heading);font-size:28px;font-weight:300;color:#fdfaf6;">Your Names Here</h2>
+            <p id="gp-home-preview-date" style="font-size:12px;letter-spacing:0.1em;color:var(--gold-light);margin-top:8px;text-transform:uppercase;"></p>
+          </div>
+          <div style="position:absolute;inset:0;background:rgba(44,44,44,0.45);"></div>
+        </div>
+      </div>
+      <p class="form-section-intro" style="margin-bottom:20px;">This preview updates as you fill in the fields below — it's exactly what guests see first.</p>
+
+      <div class="form-grid" style="margin-bottom:28px;">
+        <div class="form-group">
+          <label class="form-label">Cover Photo <span style="font-size:11px;color:var(--mid-gray);">(big background photo)</span></label>
+          <div class="photo-upload-box" id="gp-coverPhoto-box" style="aspect-ratio:16/9;" onclick="window.promptForPhoto('gp-coverPhotoUrl','gp-coverPhoto-box','+ Add Cover Photo')"><span class="photo-upload-label">+ Add Cover Photo</span></div>
+          <input type="hidden" id="gp-coverPhotoUrl">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Couple's Photo <span style="font-size:11px;color:var(--mid-gray);">(small circular portrait)</span></label>
+          <div class="photo-upload-box" id="gp-photo-box" style="aspect-ratio:1/1;max-width:160px;border-radius:50%;" onclick="window.promptForPhoto('gp-photoUrl','gp-photo-box','+ Add Photo')"><span class="photo-upload-label">+ Add Photo</span></div>
+          <input type="hidden" id="gp-photoUrl">
+        </div>
+      </div>
+
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Couple Names</label>
-          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value);window.updateGPHomePreview();">
         </div>
         <div class="form-group">
           <label class="form-label">Wedding Date</label>
-          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value)">
+          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value);window.updateGPHomePreview();">
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Time</label>
@@ -5377,45 +5410,68 @@
           <label class="form-label">Ceremony Location</label>
           <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
         </div>
-        <div class="form-group">
-          <label class="form-label">Ceremony Address <span style="font-size:11px;color:var(--mid-gray);">(only if different from The Seventy Five)</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="gp-content-save-btn" onclick="window.saveGuestPortalContent()">Save Guest Page Content</button>
+      </div>
+
+      <div style="margin-top:40px;border-top:1px solid var(--border);padding-top:32px;">
+        <h2 class="form-section-title">Your <em>Guest Page</em></h2>
+        <div class="guest-page-link-slot" style="background:var(--cream);border:1px solid var(--border);padding:28px 32px;"></div>
+      </div>
+
+      <div style="margin-top:32px;">
+        <h2 class="form-section-title">Guest Page <em>Access</em></h2>
+        <p class="form-section-intro">Your guest page is protected by name + wedding date. In the rare case someone who shouldn't have access gets in, add their name here to block them — they'll see a message asking them to contact you directly.</p>
+        <div style="display:flex;gap:10px;margin-bottom:16px;">
+          <input type="text" class="form-input" id="blocked-guest-newName" placeholder="Name to block..." onkeypress="if(event.key==='Enter'){event.preventDefault();window.addBlockedGuest();}">
+          <button class="btn-save" style="white-space:nowrap;" onclick="window.addBlockedGuest()">+ Block</button>
         </div>
+        <div id="blocked-guests-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No one is currently blocked.</p></div>
       </div>
     </div>
 
-    <div class="form-section-block">
-      <h2 class="form-section-title">Guest Page <em>Content</em></h2>
-      <p class="form-section-intro">Fill these in to power the tabs your guests see.</p>
+    <!-- DIRECTIONS TAB -->
+    <div id="gptab-directions" class="gp-tab-panel" style="display:none;">
+      <h2 class="form-section-title">Directions <em>Details</em></h2>
+      <p class="form-section-intro">Guests always see The Seventy Five's address for the reception. Fill in a Ceremony Address only if the ceremony happens somewhere else.</p>
       <div class="form-grid">
         <div class="form-group full">
-          <label class="form-label">Cover Photo URL <span style="font-size:11px;color:var(--mid-gray);">(the big background photo behind your names)</span></label>
-          <input type="text" class="form-input" id="gp-coverPhotoUrl" placeholder="Paste a link to a wide photo (e.g. from Google Photos, Dropbox, etc.)">
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Couple's Photo URL <span style="font-size:11px;color:var(--mid-gray);">(small circular portrait)</span></label>
-          <input type="text" class="form-input" id="gp-photoUrl" placeholder="Paste a link to a photo (e.g. from Google Photos, Dropbox, etc.)">
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Dress Code</label>
-          <textarea class="form-textarea" id="gp-dressCode" placeholder="e.g. Semi-formal — garden party attire. Ceremony and reception are outdoors on grass."></textarea>
+          <label class="form-label">Ceremony Address <span style="font-size:11px;color:var(--mid-gray);">(only if different from The Seventy Five)</span></label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
         </div>
         <div class="form-group full">
           <label class="form-label">Parking &amp; Additional Directions Notes</label>
           <textarea class="form-textarea" id="gp-parkingNotes" placeholder="e.g. Parking available on-site. Please use the gravel lot to the left of the main entrance."></textarea>
         </div>
         <div class="form-group full">
-          <label class="form-label">Property Map Image URL</label>
-          <input type="text" class="form-input" id="gp-propertyMapUrl" placeholder="Paste a link to a property/venue map image">
+          <label class="form-label">Property Map</label>
+          <div class="photo-upload-box" id="gp-propertyMap-box" style="aspect-ratio:16/10;" onclick="window.promptForPhoto('gp-propertyMapUrl','gp-propertyMap-box','+ Add Property Map')"><span class="photo-upload-label">+ Add Property Map</span></div>
+          <input type="hidden" id="gp-propertyMapUrl">
         </div>
       </div>
       <div class="form-save-row" style="margin-top:24px;">
-        <button class="btn-save" id="gp-content-save-btn" onclick="window.saveGuestPortalContent()">Save Guest Page Content</button>
+        <button class="btn-save" onclick="window.saveGuestPortalContent()">Save Directions</button>
       </div>
     </div>
 
-    <div class="form-section-block">
-      <h2 class="form-section-title">Itinerary <em>Timeline</em></h2>
+    <!-- DRESS CODE TAB -->
+    <div id="gptab-dresscode" class="gp-tab-panel" style="display:none;">
+      <h2 class="form-section-title">Dress <em>Code</em></h2>
+      <p class="form-section-intro">Let guests know what to wear.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <textarea class="form-textarea" id="gp-dressCode" placeholder="e.g. Semi-formal — garden party attire. Ceremony and reception are outdoors on grass."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" onclick="window.saveGuestPortalContent()">Save Dress Code</button>
+      </div>
+    </div>
+
+    <!-- ITINERARY TAB -->
+    <div id="gptab-itinerary" class="gp-tab-panel" style="display:none;">
+      <h2 class="form-section-title" id="it-form-title">Add to the <em>Timeline</em></h2>
       <p class="form-section-intro">Add each moment of your day — these show up as a visual timeline with icons on your guests' Itinerary tab.</p>
       <div class="form-grid">
         <div class="form-group">
@@ -5447,17 +5503,22 @@
         <button class="btn-save" id="it-save-btn" onclick="window.saveItineraryItem()">Add to Timeline</button>
         <button class="btn-back" id="it-cancel-btn" style="display:none;" onclick="window.resetItineraryForm()">Cancel Edit</button>
       </div>
+      <div style="margin-top:36px;">
+        <h2 class="form-section-title">Your <em>Itinerary</em></h2>
+        <div id="itinerary-items-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No itinerary items added yet.</p></div>
+      </div>
     </div>
 
-    <div class="form-section-block">
-      <h2 class="form-section-title">Your <em>Itinerary</em></h2>
-      <div id="itinerary-items-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No itinerary items added yet.</p></div>
-    </div>
-
-    <div class="form-section-block">
+    <!-- WEDDING PARTY TAB -->
+    <div id="gptab-party" class="gp-tab-panel" style="display:none;">
       <h2 class="form-section-title" id="wp-form-title">Add a <em>Wedding Party Member</em></h2>
       <p class="form-section-intro">Show your guests who's standing up there with you — whatever titles fit the two of you best.</p>
       <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Photo <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
+          <div class="photo-upload-box" id="wp-photo-box" style="aspect-ratio:1/1;max-width:120px;border-radius:50%;" onclick="window.promptForPhoto('wp-photoUrl','wp-photo-box','+ Add Photo')"><span class="photo-upload-label">+ Add Photo</span></div>
+          <input type="hidden" id="wp-photoUrl">
+        </div>
         <div class="form-group full">
           <label class="form-label">Name</label>
           <input type="text" class="form-input" id="wp-name" placeholder="e.g. Taylor Morgan">
@@ -5466,47 +5527,19 @@
           <label class="form-label">Role</label>
           <input type="text" class="form-input" id="wp-role" placeholder="e.g. Best Man, Maid of Honor, Best Person, Man of Honor...">
         </div>
-        <div class="form-group full">
-          <label class="form-label">Photo URL <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
-          <input type="text" class="form-input" id="wp-photoUrl" placeholder="Paste a link to a photo">
-        </div>
       </div>
       <div class="form-save-row" style="margin-top:24px;">
         <button class="btn-save" id="wp-save-btn" onclick="window.saveWeddingPartyMember()">Add Member</button>
         <button class="btn-back" id="wp-cancel-btn" style="display:none;" onclick="window.resetWeddingPartyForm()">Cancel Edit</button>
       </div>
-    </div>
-
-    <div class="form-section-block">
-      <h2 class="form-section-title">Your <em>Wedding Party</em></h2>
-      <div id="wedding-party-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No wedding party members added yet.</p></div>
-    </div>
-
-    <div class="form-section-block">
-      <h2 class="form-section-title" id="faq-form-title">Add an <em>FAQ</em></h2>
-      <p class="form-section-intro">Answer the questions guests usually ask — parking, kids, plus-ones, weather plans, whatever comes up.</p>
-      <div class="form-grid">
-        <div class="form-group full">
-          <label class="form-label">Question</label>
-          <input type="text" class="form-input" id="faq-question" placeholder="e.g. Are children welcome?">
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Answer</label>
-          <textarea class="form-textarea" id="faq-answer" placeholder="e.g. We love your little ones, but we've decided to make our wedding an adults-only celebration."></textarea>
-        </div>
-      </div>
-      <div class="form-save-row" style="margin-top:24px;">
-        <button class="btn-save" id="faq-save-btn" onclick="window.saveFAQ()">Add FAQ</button>
-        <button class="btn-back" id="faq-cancel-btn" style="display:none;" onclick="window.resetFAQForm()">Cancel Edit</button>
+      <div style="margin-top:36px;">
+        <h2 class="form-section-title">Your <em>Wedding Party</em></h2>
+        <div id="wedding-party-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No wedding party members added yet.</p></div>
       </div>
     </div>
 
-    <div class="form-section-block">
-      <h2 class="form-section-title">Your <em>FAQs</em></h2>
-      <div id="faq-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No FAQs added yet.</p></div>
-    </div>
-
-    <div class="form-section-block">
+    <!-- PLACES TO STAY TAB -->
+    <div id="gptab-stay" class="gp-tab-panel" style="display:none;">
       <h2 class="form-section-title" id="pts-form-title">Add a Place to <em>Stay</em></h2>
       <p class="form-section-intro">These show up on your guests' "Places to Stay" tab — hotels, cabins, Box Hop listings, anywhere you'd recommend.</p>
 
@@ -5550,27 +5583,34 @@
         <button class="btn-save" id="pts-save-btn" onclick="window.savePlaceToStay()">Add Place to Stay</button>
         <button class="btn-back" id="pts-cancel-btn" style="display:none;" onclick="window.resetPlaceToStayForm()">Cancel Edit</button>
       </div>
-    </div>
-
-    <div class="form-section-block">
-      <h2 class="form-section-title">Your <em>Places to Stay</em></h2>
-      <div id="places-to-stay-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No places added yet.</p></div>
-    </div>
-
-    <div class="form-section-block">
-      <h2 class="form-section-title">Pending Guest <em>Responses</em></h2>
-      <p class="form-section-intro">RSVPs guests submit through your guest page land here first. Match each one to the right person on your list (or add them as new), and it'll update automatically.</p>
-      <div id="pending-rsvp-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No pending responses.</p></div>
-    </div>
-
-    <div class="form-section-block">
-      <h2 class="form-section-title">Guest Page <em>Access</em></h2>
-      <p class="form-section-intro">Your guest page is protected by name + wedding date. In the rare case someone who shouldn't have access gets in, add their name here to block them — they'll see a message asking them to contact you directly.</p>
-      <div style="display:flex;gap:10px;margin-bottom:16px;">
-        <input type="text" class="form-input" id="blocked-guest-newName" placeholder="Name to block..." onkeypress="if(event.key==='Enter'){event.preventDefault();window.addBlockedGuest();}">
-        <button class="btn-save" style="white-space:nowrap;" onclick="window.addBlockedGuest()">+ Block</button>
+      <div style="margin-top:36px;">
+        <h2 class="form-section-title">Your <em>Places to Stay</em></h2>
+        <div id="places-to-stay-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No places added yet.</p></div>
       </div>
-      <div id="blocked-guests-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No one is currently blocked.</p></div>
+    </div>
+
+    <!-- FAQ TAB -->
+    <div id="gptab-faq" class="gp-tab-panel" style="display:none;">
+      <h2 class="form-section-title" id="faq-form-title">Add an <em>FAQ</em></h2>
+      <p class="form-section-intro">Answer the questions guests usually ask — parking, kids, plus-ones, weather plans, whatever comes up.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Question</label>
+          <input type="text" class="form-input" id="faq-question" placeholder="e.g. Are children welcome?">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Answer</label>
+          <textarea class="form-textarea" id="faq-answer" placeholder="e.g. We love your little ones, but we've decided to make our wedding an adults-only celebration."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="faq-save-btn" onclick="window.saveFAQ()">Add FAQ</button>
+        <button class="btn-back" id="faq-cancel-btn" style="display:none;" onclick="window.resetFAQForm()">Cancel Edit</button>
+      </div>
+      <div style="margin-top:36px;">
+        <h2 class="form-section-title">Your <em>FAQs</em></h2>
+        <div id="faq-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No FAQs added yet.</p></div>
+      </div>
     </div>
   </div>
 
