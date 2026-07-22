@@ -139,6 +139,11 @@
         photoEl.innerHTML = "";
       }
 
+      if (data.coverPhotoUrl) {
+        const heroBg = document.querySelector("#guest-content .hero-bg");
+        if (heroBg) heroBg.style.backgroundImage = `url('${data.coverPhotoUrl.replace(/'/g,"")}')`;
+      }
+
       if (data.weddingDate) {
         const [y, m, d] = data.weddingDate.split("-").map(Number);
         const weddingDate = new Date(y, m - 1, d);
@@ -160,27 +165,61 @@
         countdownEl.innerHTML = `<p style="font-size:13px;letter-spacing:0.1em;color:rgba(253,250,246,0.6);margin-bottom:6px;text-transform:uppercase;">${esc(formattedDate)}</p><p style="font-family:var(--font-heading);font-size:26px;color:var(--gold-light);">${countdownText}</p>`;
       }
 
-      // Directions tab
-      const mapEl = document.getElementById("guest-directions-map");
-      mapEl.innerHTML = data.propertyMapUrl ? `<img src="${esc(data.propertyMapUrl)}" alt="Property map" style="width:100%;border:1px solid var(--border);">` : "";
-      const directionsLines = [];
-      if (data.ceremonyLocation) directionsLines.push(`<p><strong>${esc(data.ceremonyLocation)}</strong></p>`);
-      directionsLines.push(`<p>10835 State Route 374, Rockbridge, Ohio 43149</p>`);
-      if (data.parkingNotes) directionsLines.push(`<p style="margin-top:16px;">${esc(data.parkingNotes)}</p>`);
-      directionsLines.push(`<div style="margin-top:28px;text-align:center;"><a href="https://maps.google.com/?q=10835+State+Route+374+Rockbridge+Ohio+43149" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:20px 44px;font-size:14px;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;border-radius:1px;">Map to The Seventy Five</a></div>`);
-      document.getElementById("guest-directions-content").innerHTML = directionsLines.join("");
+      // Directions tab — separate ceremony section if it's at a different address
+      const venueName = "The Seventy Five";
+      const venueAddress = "10835 State Route 374, Rockbridge, Ohio 43149";
+      const hasSeparateCeremony = data.ceremonyAddress && data.ceremonyAddress.trim();
+      const mapButton = (label, address) => `<div style="margin-top:20px;text-align:center;"><a href="https://maps.google.com/?q=${encodeURIComponent(address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 36px;font-size:13px;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;border-radius:1px;">${esc(label)}</a></div>`;
+
+      let directionsHtml = "";
+      if (hasSeparateCeremony) {
+        directionsHtml += `<div style="margin-bottom:36px;"><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Ceremony</p><p><strong>${esc(data.ceremonyLocation || "Ceremony Location")}</strong></p><p>${esc(data.ceremonyAddress)}</p>${mapButton("Map to Ceremony", data.ceremonyAddress)}</div>`;
+        directionsHtml += `<div><p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:6px;">Reception</p><p><strong>${esc(venueName)}</strong></p><p>${esc(venueAddress)}</p>${data.parkingNotes ? `<p style="margin-top:14px;">${esc(data.parkingNotes)}</p>` : ""}${mapButton("Map to The Seventy Five", venueAddress)}</div>`;
+      } else {
+        const label = data.ceremonyLocation && data.ceremonyLocation.trim() && data.ceremonyLocation.trim() !== venueName ? data.ceremonyLocation : venueName;
+        directionsHtml += `<p><strong>${esc(label)}</strong></p><p>${esc(venueAddress)}</p>`;
+        if (data.parkingNotes) directionsHtml += `<p style="margin-top:16px;">${esc(data.parkingNotes)}</p>`;
+        directionsHtml += mapButton("Map to The Seventy Five", venueAddress);
+      }
+      document.getElementById("guest-directions-content").innerHTML = directionsHtml;
+
+      const mapWrap = document.getElementById("guest-directions-map-wrap");
+      mapWrap.innerHTML = data.propertyMapUrl ? `<p style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:10px;">Property Map</p><img src="${esc(data.propertyMapUrl)}" alt="Property map" style="width:100%;border:1px solid var(--border);" onerror="this.parentElement.style.display='none';">` : "";
 
       // Dress code tab
-      document.getElementById("guest-dresscode-content").innerHTML = data.dressCode ? `<p>${esc(data.dressCode)}</p>` : `<p>Details coming soon!</p>`;
+      document.getElementById("guest-dresscode-content").innerHTML = data.dressCode ? `<p style="font-size:14px;color:var(--mid-gray);line-height:1.9;">${esc(data.dressCode)}</p>` : `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
 
-      // Itinerary tab
-      if (data.guestItinerary) {
-        document.getElementById("guest-itinerary-content").textContent = data.guestItinerary;
+      // Itinerary tab — visual timeline with icons
+      const itineraryEl = document.getElementById("guest-itinerary-content");
+      const items = Array.isArray(data.itineraryItems) ? data.itineraryItems : [];
+      if (items.length) {
+        const sorted = items.slice().sort((a,b) => (a.time||"").localeCompare(b.time||""));
+        itineraryEl.innerHTML = sorted.map(i => `
+          <div style="display:flex;gap:20px;align-items:flex-start;padding:16px 0;border-bottom:1px solid var(--border);">
+            <div style="font-size:28px;flex-shrink:0;width:44px;text-align:center;">${esc(i.icon||"⭐")}</div>
+            <div><div style="font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:var(--gold-dark);">${esc(i.time||"")}</div><div style="font-size:16px;color:var(--charcoal);margin-top:2px;">${esc(i.title||"")}</div></div>
+          </div>`).join("");
+      } else if (data.guestItinerary) {
+        itineraryEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);line-height:1.9;white-space:pre-line;">${esc(data.guestItinerary)}</p>`;
       } else {
         const fallback = [];
         if (data.ceremonyTime) fallback.push(`Ceremony begins ${data.ceremonyTime}`);
         if (data.receptionTime) fallback.push(`Reception to follow at ${data.receptionTime}`);
-        document.getElementById("guest-itinerary-content").textContent = fallback.length ? fallback.join("\n") : "Details coming soon!";
+        itineraryEl.innerHTML = fallback.length ? `<p style="font-size:14px;color:var(--mid-gray);line-height:1.9;">${esc(fallback.join(" · "))}</p>` : `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
+      }
+
+      // Wedding Party tab
+      const partyEl = document.getElementById("guest-party-content");
+      const party = Array.isArray(data.weddingParty) ? data.weddingParty : [];
+      if (!party.length) {
+        partyEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
+      } else {
+        partyEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:28px;">` + party.map(p => `
+          <div style="text-align:center;">
+            ${p.photoUrl ? `<img src="${esc(p.photoUrl)}" style="width:100px;height:100px;border-radius:50%;object-fit:cover;margin-bottom:10px;">` : `<div style="width:100px;height:100px;border-radius:50%;background:var(--cream);margin:0 auto 10px;"></div>`}
+            <div style="font-size:15px;color:var(--charcoal);">${esc(p.name||"")}</div>
+            <div style="font-size:12px;color:var(--gold-dark);margin-top:2px;">${esc(p.role||"")}</div>
+          </div>`).join("") + `</div>`;
       }
 
       // Places to Stay tab
@@ -200,12 +239,25 @@
           </div>`).join("");
       }
 
+      // FAQ tab
+      const faqEl = document.getElementById("guest-faq-content");
+      const faqs = Array.isArray(data.faqs) ? data.faqs : [];
+      if (!faqs.length) {
+        faqEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
+      } else {
+        faqEl.innerHTML = faqs.map(f => `
+          <div style="border-bottom:1px solid var(--border);padding:18px 0;">
+            <div style="font-size:16px;color:var(--charcoal);">${esc(f.question||"")}</div>
+            <div style="font-size:14px;color:var(--mid-gray);margin-top:8px;line-height:1.7;">${esc(f.answer||"")}</div>
+          </div>`).join("");
+      }
+
       window.switchGuestTab("rsvp");
       renderGuestRSVPForm(data, guestName);
     }
 
     window.switchGuestTab = function(tab) {
-      ["rsvp","directions","dresscode","itinerary","stay"].forEach(t => {
+      ["rsvp","directions","dresscode","itinerary","party","stay","faq"].forEach(t => {
         const panel = document.getElementById(`guest-tab-${t}`);
         const btn = document.getElementById(`guest-tabbtn-${t}`);
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
@@ -410,7 +462,7 @@
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [] });
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
@@ -980,6 +1032,12 @@
 
     let placesToStayCache = [];
     let editingPlaceToStayId = null;
+    let itineraryItemsCache = [];
+    let editingItineraryId = null;
+    let weddingPartyCache = [];
+    let editingWeddingPartyId = null;
+    let faqsCache = [];
+    let editingFAQId = null;
 
     async function loadGuestList(uid) {
       try {
@@ -992,33 +1050,42 @@
         blockedGuestsCache = Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [];
         currentCoupleSlug = data.slug || "";
         const gpc = data.guestPortalContent || {};
+        const coverEl = document.getElementById("gp-coverPhotoUrl");
         const photoEl = document.getElementById("gp-photoUrl");
         const dressEl = document.getElementById("gp-dressCode");
-        const itinEl = document.getElementById("gp-itinerary");
         const parkEl = document.getElementById("gp-parkingNotes");
         const mapEl = document.getElementById("gp-propertyMapUrl");
+        if (coverEl) coverEl.value = gpc.coverPhotoUrl || "";
         if (photoEl) photoEl.value = gpc.photoUrl || "";
         if (dressEl) dressEl.value = gpc.dressCode || "";
-        if (itinEl) itinEl.value = gpc.guestItinerary || "";
         if (parkEl) parkEl.value = gpc.parkingNotes || "";
         if (mapEl) mapEl.value = gpc.propertyMapUrl || "";
         placesToStayCache = (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY;
-      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; }
+        itineraryItemsCache = Array.isArray(data.itineraryItems) ? data.itineraryItems : [];
+        weddingPartyCache = Array.isArray(data.weddingParty) ? data.weddingParty : [];
+        faqsCache = Array.isArray(data.faqs) ? data.faqs : [];
+      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
       window.resetGuestForm();
       window.renderGuestList();
       window.resetPlaceToStayForm();
       renderPlacesToStay();
+      window.resetItineraryForm();
+      renderItineraryItems();
+      window.resetWeddingPartyForm();
+      renderWeddingParty();
+      window.resetFAQForm();
+      renderFAQs();
       loadPendingRSVPs();
     }
 
     window.saveGuestPortalContent = async function() {
       if (!currentUser) return;
       const guestPortalContent = {
+        coverPhotoUrl: document.getElementById("gp-coverPhotoUrl").value.trim(),
         photoUrl: document.getElementById("gp-photoUrl").value.trim(),
         dressCode: document.getElementById("gp-dressCode").value.trim(),
-        guestItinerary: document.getElementById("gp-itinerary").value.trim(),
         parkingNotes: document.getElementById("gp-parkingNotes").value.trim(),
         propertyMapUrl: document.getElementById("gp-propertyMapUrl").value.trim()
       };
@@ -1123,6 +1190,243 @@
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { placesToStay: placesToStayCache });
         renderPlacesToStay();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    // ── ITINERARY TIMELINE ────────────────────────────────────────
+    function renderItineraryItems() {
+      const wrap = document.getElementById("itinerary-items-list");
+      if (!wrap) return;
+      if (!itineraryItemsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No itinerary items added yet.</p>';
+        return;
+      }
+      const sorted = itineraryItemsCache.slice().sort((a,b) => (a.time||"").localeCompare(b.time||""));
+      wrap.innerHTML = sorted.map(i => `
+        <div class="note-item" style="padding:14px 0;display:flex;align-items:center;justify-content:space-between;gap:14px;">
+          <div style="display:flex;align-items:center;gap:14px;">
+            <span style="font-size:22px;">${esc(i.icon||"⭐")}</span>
+            <div><div style="font-size:14px;color:var(--charcoal);">${esc(i.title||"")}</div><div style="font-size:12px;color:var(--mid-gray);">${esc(i.time||"")}</div></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editItineraryItem('${i.id}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteItineraryItem('${i.id}')">Delete</button>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetItineraryForm = function() {
+      editingItineraryId = null;
+      const timeEl = document.getElementById("it-time"), titleEl = document.getElementById("it-title"), iconEl = document.getElementById("it-icon");
+      if (timeEl) timeEl.value = "";
+      if (titleEl) titleEl.value = "";
+      if (iconEl) iconEl.value = "🕰️";
+      const saveBtn = document.getElementById("it-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add to Timeline";
+      const cancelBtn = document.getElementById("it-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editItineraryItem = function(id) {
+      const i = itineraryItemsCache.find(x => x.id === id);
+      if (!i) return;
+      editingItineraryId = id;
+      document.getElementById("it-time").value = i.time || "";
+      document.getElementById("it-title").value = i.title || "";
+      document.getElementById("it-icon").value = i.icon || "🕰️";
+      document.getElementById("it-save-btn").textContent = "Save Changes";
+      document.getElementById("it-cancel-btn").style.display = "inline-block";
+    };
+
+    window.saveItineraryItem = async function() {
+      if (!currentUser) return;
+      const title = document.getElementById("it-title").value.trim();
+      if (!title) { alert("Please enter an event name."); return; }
+      const entry = {
+        id: editingItineraryId || Date.now().toString(),
+        time: document.getElementById("it-time").value.trim(),
+        title,
+        icon: document.getElementById("it-icon").value
+      };
+      if (editingItineraryId) {
+        const idx = itineraryItemsCache.findIndex(x => x.id === editingItineraryId);
+        if (idx > -1) itineraryItemsCache[idx] = entry; else itineraryItemsCache.push(entry);
+      } else {
+        itineraryItemsCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { itineraryItems: itineraryItemsCache });
+        window.resetItineraryForm();
+        renderItineraryItems();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteItineraryItem = async function(id) {
+      if (!currentUser) return;
+      itineraryItemsCache = itineraryItemsCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { itineraryItems: itineraryItemsCache });
+        renderItineraryItems();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    // ── WEDDING PARTY ──────────────────────────────────────────────
+    function renderWeddingParty() {
+      const wrap = document.getElementById("wedding-party-list");
+      if (!wrap) return;
+      if (!weddingPartyCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No wedding party members added yet.</p>';
+        return;
+      }
+      wrap.innerHTML = weddingPartyCache.map(p => `
+        <div class="note-item" style="padding:14px 0;display:flex;align-items:center;justify-content:space-between;gap:14px;">
+          <div style="display:flex;align-items:center;gap:14px;">
+            ${p.photoUrl ? `<img src="${esc(p.photoUrl)}" style="width:44px;height:44px;border-radius:50%;object-fit:cover;">` : ""}
+            <div><div style="font-size:14px;color:var(--charcoal);">${esc(p.name||"")}</div><div style="font-size:12px;color:var(--gold-dark);">${esc(p.role||"")}</div></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editWeddingPartyMember('${p.id}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteWeddingPartyMember('${p.id}')">Delete</button>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetWeddingPartyForm = function() {
+      editingWeddingPartyId = null;
+      ["wp-name","wp-role","wp-photoUrl"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const titleEl = document.getElementById("wp-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add a <em>Wedding Party Member</em>';
+      const saveBtn = document.getElementById("wp-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Member";
+      const cancelBtn = document.getElementById("wp-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editWeddingPartyMember = function(id) {
+      const p = weddingPartyCache.find(x => x.id === id);
+      if (!p) return;
+      editingWeddingPartyId = id;
+      document.getElementById("wp-name").value = p.name || "";
+      document.getElementById("wp-role").value = p.role || "";
+      document.getElementById("wp-photoUrl").value = p.photoUrl || "";
+      document.getElementById("wp-form-title").innerHTML = 'Edit <em>Wedding Party Member</em>';
+      document.getElementById("wp-save-btn").textContent = "Save Changes";
+      document.getElementById("wp-cancel-btn").style.display = "inline-block";
+    };
+
+    window.saveWeddingPartyMember = async function() {
+      if (!currentUser) return;
+      const name = document.getElementById("wp-name").value.trim();
+      if (!name) { alert("Please enter a name."); return; }
+      const entry = {
+        id: editingWeddingPartyId || Date.now().toString(),
+        name,
+        role: document.getElementById("wp-role").value.trim(),
+        photoUrl: document.getElementById("wp-photoUrl").value.trim()
+      };
+      if (editingWeddingPartyId) {
+        const idx = weddingPartyCache.findIndex(x => x.id === editingWeddingPartyId);
+        if (idx > -1) weddingPartyCache[idx] = entry; else weddingPartyCache.push(entry);
+      } else {
+        weddingPartyCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { weddingParty: weddingPartyCache });
+        window.resetWeddingPartyForm();
+        renderWeddingParty();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteWeddingPartyMember = async function(id) {
+      if (!currentUser) return;
+      weddingPartyCache = weddingPartyCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { weddingParty: weddingPartyCache });
+        renderWeddingParty();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    // ── FAQs ───────────────────────────────────────────────────────
+    function renderFAQs() {
+      const wrap = document.getElementById("faq-list");
+      if (!wrap) return;
+      if (!faqsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No FAQs added yet.</p>';
+        return;
+      }
+      wrap.innerHTML = faqsCache.map(f => `
+        <div class="note-item" style="padding:14px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;">
+            <div style="flex:1;">
+              <div style="font-size:14px;color:var(--charcoal);">${esc(f.question||"")}</div>
+              <div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(f.answer||"")}</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;">
+              <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editFAQ('${f.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteFAQ('${f.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetFAQForm = function() {
+      editingFAQId = null;
+      const qEl = document.getElementById("faq-question"), aEl = document.getElementById("faq-answer");
+      if (qEl) qEl.value = "";
+      if (aEl) aEl.value = "";
+      const titleEl = document.getElementById("faq-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add an <em>FAQ</em>';
+      const saveBtn = document.getElementById("faq-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add FAQ";
+      const cancelBtn = document.getElementById("faq-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editFAQ = function(id) {
+      const f = faqsCache.find(x => x.id === id);
+      if (!f) return;
+      editingFAQId = id;
+      document.getElementById("faq-question").value = f.question || "";
+      document.getElementById("faq-answer").value = f.answer || "";
+      document.getElementById("faq-form-title").innerHTML = 'Edit <em>FAQ</em>';
+      document.getElementById("faq-save-btn").textContent = "Save Changes";
+      document.getElementById("faq-cancel-btn").style.display = "inline-block";
+    };
+
+    window.saveFAQ = async function() {
+      if (!currentUser) return;
+      const question = document.getElementById("faq-question").value.trim();
+      if (!question) { alert("Please enter a question."); return; }
+      const entry = {
+        id: editingFAQId || Date.now().toString(),
+        question,
+        answer: document.getElementById("faq-answer").value.trim()
+      };
+      if (editingFAQId) {
+        const idx = faqsCache.findIndex(x => x.id === editingFAQId);
+        if (idx > -1) faqsCache[idx] = entry; else faqsCache.push(entry);
+      } else {
+        faqsCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { faqs: faqsCache });
+        window.resetFAQForm();
+        renderFAQs();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteFAQ = async function(id) {
+      if (!currentUser) return;
+      faqsCache = faqsCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { faqs: faqsCache });
+        renderFAQs();
         syncPublicProfile(currentUser.uid);
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
@@ -2167,7 +2471,7 @@
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
-    const PUBLIC_PROFILE_FIELDS = ["coupleNames", "weddingDate", "ceremonyTime", "receptionTime", "ceremonyLocation"];
+    const PUBLIC_PROFILE_FIELDS = ["coupleNames", "weddingDate", "ceremonyTime", "receptionTime", "ceremonyLocation", "ceremonyAddress"];
 
     async function syncPublicProfile(uid) {
       try {
@@ -2187,16 +2491,21 @@
           ceremonyTime: m1.ceremonyTime || "",
           receptionTime: m1.receptionTime || "",
           ceremonyLocation: m1.ceremonyLocation || "",
+          ceremonyAddress: m1.ceremonyAddress || "",
           blockedGuestNames: Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [],
           guestRoster,
           dinnerStyle: settings.dinnerStyle || "Buffet",
           mealOptions: Array.isArray(settings.mealOptions) ? settings.mealOptions : [],
           photoUrl: gpc.photoUrl || "",
+          coverPhotoUrl: gpc.coverPhotoUrl || "",
           dressCode: gpc.dressCode || "",
           guestItinerary: gpc.guestItinerary || "",
           parkingNotes: gpc.parkingNotes || "",
           propertyMapUrl: gpc.propertyMapUrl || "",
-          placesToStay: (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY
+          placesToStay: (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY,
+          weddingParty: Array.isArray(data.weddingParty) ? data.weddingParty : [],
+          faqs: Array.isArray(data.faqs) ? data.faqs : [],
+          itineraryItems: Array.isArray(data.itineraryItems) ? data.itineraryItems : []
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -3122,10 +3431,12 @@
       <div style="max-width:640px;margin:0 auto;">
         <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:48px;">
           <button class="guest-tab-btn" id="guest-tabbtn-rsvp" onclick="window.switchGuestTab('rsvp')">RSVP Here!</button>
-          <button class="guest-tab-btn" id="guest-tabbtn-directions" onclick="window.switchGuestTab('directions')">Directions to the Venue</button>
+          <button class="guest-tab-btn" id="guest-tabbtn-directions" onclick="window.switchGuestTab('directions')">Directions</button>
           <button class="guest-tab-btn" id="guest-tabbtn-dresscode" onclick="window.switchGuestTab('dresscode')">Dress Code</button>
           <button class="guest-tab-btn" id="guest-tabbtn-itinerary" onclick="window.switchGuestTab('itinerary')">Itinerary</button>
+          <button class="guest-tab-btn" id="guest-tabbtn-party" onclick="window.switchGuestTab('party')">Wedding Party</button>
           <button class="guest-tab-btn" id="guest-tabbtn-stay" onclick="window.switchGuestTab('stay')">Places to Stay</button>
+          <button class="guest-tab-btn" id="guest-tabbtn-faq" onclick="window.switchGuestTab('faq')">FAQs</button>
         </div>
 
         <div id="guest-tab-rsvp" class="guest-tab-panel">
@@ -3137,8 +3448,8 @@
         <div id="guest-tab-directions" class="guest-tab-panel" style="display:none;">
           <span class="section-label">Directions</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Getting <em style="color:var(--gold);font-style:italic;">there</em></h2>
-          <div id="guest-directions-map" style="margin-bottom:20px;"></div>
           <div id="guest-directions-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;"></div>
+          <div id="guest-directions-map-wrap" style="margin-top:40px;"></div>
         </div>
 
         <div id="guest-tab-dresscode" class="guest-tab-panel" style="display:none;">
@@ -3150,13 +3461,25 @@
         <div id="guest-tab-itinerary" class="guest-tab-panel" style="display:none;">
           <span class="section-label">Itinerary</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">The <em style="color:var(--gold);font-style:italic;">schedule</em></h2>
-          <div id="guest-itinerary-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;white-space:pre-line;"></div>
+          <div id="guest-itinerary-content"></div>
+        </div>
+
+        <div id="guest-tab-party" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">Wedding Party</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Meet the <em style="color:var(--gold);font-style:italic;">wedding party</em></h2>
+          <div id="guest-party-content"></div>
         </div>
 
         <div id="guest-tab-stay" class="guest-tab-panel" style="display:none;">
           <span class="section-label">Places to Stay</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Where to <em style="color:var(--gold);font-style:italic;">rest your head</em></h2>
           <div id="guest-stay-content"></div>
+        </div>
+
+        <div id="guest-tab-faq" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">FAQs</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Good <em style="color:var(--gold);font-style:italic;">questions</em></h2>
+          <div id="guest-faq-content"></div>
         </div>
       </div>
     </section>
@@ -3424,6 +3747,10 @@
         <div class="form-group">
           <label class="form-label">Ceremony Location Name <span class="form-label-note">If not at The Seventy Five</span></label>
           <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony Address <span class="form-label-note">Only if different from The Seventy Five</span></label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
         </div>
         <div class="form-group">
           <label class="form-label">Time of Guest Arrival</label>
@@ -5050,24 +5377,28 @@
           <label class="form-label">Ceremony Location</label>
           <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
         </div>
+        <div class="form-group">
+          <label class="form-label">Ceremony Address <span style="font-size:11px;color:var(--mid-gray);">(only if different from The Seventy Five)</span></label>
+          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
+        </div>
       </div>
     </div>
 
     <div class="form-section-block">
       <h2 class="form-section-title">Guest Page <em>Content</em></h2>
-      <p class="form-section-intro">Fill these in to power the tabs your guests see: RSVP, Directions, Dress Code, and Itinerary.</p>
+      <p class="form-section-intro">Fill these in to power the tabs your guests see.</p>
       <div class="form-grid">
         <div class="form-group full">
-          <label class="form-label">Couple's Photo URL</label>
+          <label class="form-label">Cover Photo URL <span style="font-size:11px;color:var(--mid-gray);">(the big background photo behind your names)</span></label>
+          <input type="text" class="form-input" id="gp-coverPhotoUrl" placeholder="Paste a link to a wide photo (e.g. from Google Photos, Dropbox, etc.)">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Couple's Photo URL <span style="font-size:11px;color:var(--mid-gray);">(small circular portrait)</span></label>
           <input type="text" class="form-input" id="gp-photoUrl" placeholder="Paste a link to a photo (e.g. from Google Photos, Dropbox, etc.)">
         </div>
         <div class="form-group full">
           <label class="form-label">Dress Code</label>
           <textarea class="form-textarea" id="gp-dressCode" placeholder="e.g. Semi-formal — garden party attire. Ceremony and reception are outdoors on grass."></textarea>
-        </div>
-        <div class="form-group full">
-          <label class="form-label">Itinerary (Guest-Facing)</label>
-          <textarea class="form-textarea" id="gp-itinerary" placeholder="e.g.&#10;4:00 PM — Guest Arrival&#10;4:30 PM — Ceremony&#10;5:00 PM — Cocktail Hour&#10;6:00 PM — Reception &amp; Dinner&#10;10:00 PM — Send-Off"></textarea>
         </div>
         <div class="form-group full">
           <label class="form-label">Parking &amp; Additional Directions Notes</label>
@@ -5084,8 +5415,101 @@
     </div>
 
     <div class="form-section-block">
+      <h2 class="form-section-title">Itinerary <em>Timeline</em></h2>
+      <p class="form-section-intro">Add each moment of your day — these show up as a visual timeline with icons on your guests' Itinerary tab.</p>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Time</label>
+          <input type="text" class="form-input" id="it-time" placeholder="e.g. 4:00 PM">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Event</label>
+          <input type="text" class="form-input" id="it-title" placeholder="e.g. Guest Arrival">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Icon</label>
+          <select class="form-input" id="it-icon">
+            <option value="🕰️">🕰️ Getting Ready</option>
+            <option value="💕">💕 First Look</option>
+            <option value="💍">💍 Ceremony</option>
+            <option value="🥂">🥂 Cocktail Hour</option>
+            <option value="📸">📸 Photos</option>
+            <option value="🍽️">🍽️ Dinner</option>
+            <option value="🎤">🎤 Toasts</option>
+            <option value="💃">💃 First Dance</option>
+            <option value="🎉">🎉 Dancing</option>
+            <option value="🎇">🎇 Send-Off</option>
+            <option value="⭐">⭐ Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="it-save-btn" onclick="window.saveItineraryItem()">Add to Timeline</button>
+        <button class="btn-back" id="it-cancel-btn" style="display:none;" onclick="window.resetItineraryForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Itinerary</em></h2>
+      <div id="itinerary-items-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No itinerary items added yet.</p></div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="wp-form-title">Add a <em>Wedding Party Member</em></h2>
+      <p class="form-section-intro">Show your guests who's standing up there with you — whatever titles fit the two of you best.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Name</label>
+          <input type="text" class="form-input" id="wp-name" placeholder="e.g. Taylor Morgan">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Role</label>
+          <input type="text" class="form-input" id="wp-role" placeholder="e.g. Best Man, Maid of Honor, Best Person, Man of Honor...">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Photo URL <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
+          <input type="text" class="form-input" id="wp-photoUrl" placeholder="Paste a link to a photo">
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="wp-save-btn" onclick="window.saveWeddingPartyMember()">Add Member</button>
+        <button class="btn-back" id="wp-cancel-btn" style="display:none;" onclick="window.resetWeddingPartyForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Wedding Party</em></h2>
+      <div id="wedding-party-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No wedding party members added yet.</p></div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="faq-form-title">Add an <em>FAQ</em></h2>
+      <p class="form-section-intro">Answer the questions guests usually ask — parking, kids, plus-ones, weather plans, whatever comes up.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Question</label>
+          <input type="text" class="form-input" id="faq-question" placeholder="e.g. Are children welcome?">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Answer</label>
+          <textarea class="form-textarea" id="faq-answer" placeholder="e.g. We love your little ones, but we've decided to make our wedding an adults-only celebration."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="faq-save-btn" onclick="window.saveFAQ()">Add FAQ</button>
+        <button class="btn-back" id="faq-cancel-btn" style="display:none;" onclick="window.resetFAQForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>FAQs</em></h2>
+      <div id="faq-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No FAQs added yet.</p></div>
+    </div>
+
+    <div class="form-section-block">
       <h2 class="form-section-title" id="pts-form-title">Add a Place to <em>Stay</em></h2>
       <p class="form-section-intro">These show up on your guests' "Places to Stay" tab — hotels, cabins, Box Hop listings, anywhere you'd recommend.</p>
+
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Property Name</label>
