@@ -161,11 +161,13 @@
       }
 
       // Directions tab
+      const mapEl = document.getElementById("guest-directions-map");
+      mapEl.innerHTML = data.propertyMapUrl ? `<img src="${esc(data.propertyMapUrl)}" alt="Property map" style="width:100%;border:1px solid var(--border);">` : "";
       const directionsLines = [];
       if (data.ceremonyLocation) directionsLines.push(`<p><strong>${esc(data.ceremonyLocation)}</strong></p>`);
       directionsLines.push(`<p>10835 State Route 374, Rockbridge, Ohio 43149</p>`);
       if (data.parkingNotes) directionsLines.push(`<p style="margin-top:16px;">${esc(data.parkingNotes)}</p>`);
-      directionsLines.push(`<p style="margin-top:20px;"><a href="https://maps.google.com/?q=10835+State+Route+374+Rockbridge+Ohio+43149" target="_blank" style="color:var(--gold-dark);">Get Directions on Google Maps &rarr;</a></p>`);
+      directionsLines.push(`<div style="margin-top:28px;text-align:center;"><a href="https://maps.google.com/?q=10835+State+Route+374+Rockbridge+Ohio+43149" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:20px 44px;font-size:14px;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;border-radius:1px;">Map to The Seventy Five</a></div>`);
       document.getElementById("guest-directions-content").innerHTML = directionsLines.join("");
 
       // Dress code tab
@@ -181,12 +183,29 @@
         document.getElementById("guest-itinerary-content").textContent = fallback.length ? fallback.join("\n") : "Details coming soon!";
       }
 
+      // Places to Stay tab
+      const stayEl = document.getElementById("guest-stay-content");
+      const places = Array.isArray(data.placesToStay) ? data.placesToStay : [];
+      if (!places.length) {
+        stayEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
+      } else {
+        stayEl.innerHTML = places.map(p => `
+          <div style="border-bottom:1px solid var(--border);padding:18px 0;">
+            <div style="font-size:16px;color:var(--charcoal);">${esc(p.name||"")}${p.type ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(p.type)}</span>` : ""}</div>
+            ${p.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.distance)}</div>` : ""}
+            ${p.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.address)}</div>` : ""}
+            ${p.phone ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:2px;">${esc(p.phone)}</div>` : ""}
+            ${p.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(p.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
+            ${p.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(p.notes)}</div>` : ""}
+          </div>`).join("");
+      }
+
       window.switchGuestTab("rsvp");
       renderGuestRSVPForm(data, guestName);
     }
 
     window.switchGuestTab = function(tab) {
-      ["rsvp","directions","dresscode","itinerary"].forEach(t => {
+      ["rsvp","directions","dresscode","itinerary","stay"].forEach(t => {
         const panel = document.getElementById(`guest-tab-${t}`);
         const btn = document.getElementById(`guest-tabbtn-${t}`);
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
@@ -391,13 +410,13 @@
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" } });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [] });
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
                 ceremonyTime: "", receptionTime: "", ceremonyLocation: "", blockedGuestNames: [],
                 guestRoster: [], dinnerStyle: "Buffet", mealOptions: [],
-                photoUrl: "", dressCode: "", guestItinerary: "", parkingNotes: ""
+                photoUrl: "", dressCode: "", guestItinerary: "", parkingNotes: "", propertyMapUrl: "", placesToStay: []
               });
             } catch(e) {}
           }
@@ -943,6 +962,25 @@
 
     let currentCoupleSlug = "";
 
+    const DEFAULT_PLACES_TO_STAY = [
+      { id: "default-1", name: "The Overlook", type: "Box Hop", distance: "On-property — priority access", address: "", phone: "events@theseventyfivevenue.com", link: "", notes: "3 bedrooms, 1.5 baths, hot tub overlooking Hocking Hills. Hosts 7-8 guests. 1 Queen | 2 Fulls | 1 Lofted Twin. Pet friendly. 20% discount for couples + guests — book via events@theseventyfivevenue.com (2-night minimum, 50% non-refundable deposit)." },
+      { id: "default-2", name: "The Roca", type: "Box Hop", distance: "On-property — priority access", address: "", phone: "events@theseventyfivevenue.com", link: "", notes: "2 bedrooms, 1.5 baths, hot tub for evenings under the stars. Hosts 5-6 guests. 1 King | 1 Queen | 1 Lofted Twin. Pet friendly. 20% discount for couples + guests — book via events@theseventyfivevenue.com (2-night minimum, 50% non-refundable deposit)." },
+      { id: "default-3", name: "The Ellwood", type: "Box Hop", distance: "On-property — priority access", address: "", phone: "events@theseventyfivevenue.com", link: "", notes: "Spans directly above a waterfall with a glass floor view. 2 bedrooms, 1 bath, fireplace, hot tub. Hosts 5-6 guests. 1 King | 1 Queen. Not pet friendly. 20% discount for couples + guests — book via events@theseventyfivevenue.com (2-night minimum, 50% non-refundable deposit)." },
+      { id: "default-4", name: "The OG", type: "Box Hop", distance: "~6 minutes away", address: "", phone: "events@theseventyfivevenue.com", link: "", notes: "The first Box Hop built, with a rooftop patio for summer cocktails and sunbathing. 3 bedrooms, 2 baths, hot tub. Hosts 5-6 guests. 3 Fulls. Pet friendly. 20% discount for couples + guests — book via events@theseventyfivevenue.com." },
+      { id: "default-5", name: "The Boho", type: "Box Hop", distance: "~6 minutes away", address: "", phone: "events@theseventyfivevenue.com", link: "", notes: "An intimate setting — 1 bedroom, 1 bath, hot tub, and a pull-out couch. Hosts 3-4 guests. 1 King | 1 Pull Out Couch. Not pet friendly. 20% discount for couples + guests — book via events@theseventyfivevenue.com." },
+      { id: "default-6", name: "The Hygge", type: "Box Hop", distance: "~6 minutes away", address: "", phone: "events@theseventyfivevenue.com", link: "", notes: "5 bedrooms, 2 bathrooms, 4 private balconies, a 6-person sauna, and a hot tub. Hosts up to 12 guests. 3 Queens | 2 Fulls. Pet friendly. 20% discount for couples + guests — book via events@theseventyfivevenue.com." },
+      { id: "default-7", name: "The Cliffs at Hocking Hills", type: "Cabin", distance: "~5-10 minutes from the venue", address: "", phone: "", link: "", notes: "A collection of luxury cabins set against dramatic natural landscapes with expansive views and elevated finishes. Sleeps 2-16+ guests. Best for larger groups or multiple families. Vibe: scenic, modern, spacious." },
+      { id: "default-8", name: "Dunlap Hollow Cabins", type: "Cabin", distance: "~10 minutes from the venue", address: "", phone: "", link: "", notes: "Thoughtfully designed cabins tucked into nature with high-end touches. Sleeps 2-6 guests. Best for couples or small groups. Vibe: cozy, design-forward, intimate. 15% off The Cottage & A-Frame with code SEVENTYFIVE." },
+      { id: "default-9", name: "Cherry Ridge Retreat", type: "Cabin", distance: "~15 minutes from the venue", address: "", phone: "", link: "", notes: "A secluded, adults-only retreat with private cabins for a peaceful, romantic stay. Sleeps 2-6 guests. Best for couples or small groups seeking privacy. Vibe: quiet, romantic, secluded. Complimentary early check-in for Seventy Five couples and guests." },
+      { id: "default-10", name: "Sleep Inn", type: "Hotel", distance: "~15-20 minutes from the venue", address: "Logan, Ohio", phone: "", link: "", notes: "A simple and convenient stay closest to the venue among hotel options — ideal for guests looking for an easy, affordable option. Vibe: clean, straightforward." },
+      { id: "default-11", name: "Hampton Inn", type: "Hotel", distance: "~15-20 minutes from the venue", address: "Logan, Ohio", phone: "", link: "", notes: "A polished, reliable hotel experience offering comfort and consistency a short drive from the venue. Vibe: modern, comfortable." },
+      { id: "default-12", name: "Holiday Inn Express & Suites", type: "Hotel", distance: "~30-35 minutes from the venue", address: "Lancaster, Ohio", phone: "", link: "", notes: "A spacious, convenient option for guests traveling from Columbus or preferring to stay closer to the city. Vibe: modern, accessible, travel-friendly." },
+      { id: "default-13", name: "Hampton Inn & Suites", type: "Hotel", distance: "~25-30 minutes from the venue", address: "Canal Winchester, Ohio", phone: "", link: "", notes: "A polished, reliable stay offering comfort and convenience, ideally located between Columbus and the venue. Vibe: modern, comfortable, consistent." }
+    ];
+
+    let placesToStayCache = [];
+    let editingPlaceToStayId = null;
+
     async function loadGuestList(uid) {
       try {
         const snap = await getDoc(doc(db, "couples", uid));
@@ -958,15 +996,20 @@
         const dressEl = document.getElementById("gp-dressCode");
         const itinEl = document.getElementById("gp-itinerary");
         const parkEl = document.getElementById("gp-parkingNotes");
+        const mapEl = document.getElementById("gp-propertyMapUrl");
         if (photoEl) photoEl.value = gpc.photoUrl || "";
         if (dressEl) dressEl.value = gpc.dressCode || "";
         if (itinEl) itinEl.value = gpc.guestItinerary || "";
         if (parkEl) parkEl.value = gpc.parkingNotes || "";
-      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; }
+        if (mapEl) mapEl.value = gpc.propertyMapUrl || "";
+        placesToStayCache = (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY;
+      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
       window.resetGuestForm();
       window.renderGuestList();
+      window.resetPlaceToStayForm();
+      renderPlacesToStay();
       loadPendingRSVPs();
     }
 
@@ -976,7 +1019,8 @@
         photoUrl: document.getElementById("gp-photoUrl").value.trim(),
         dressCode: document.getElementById("gp-dressCode").value.trim(),
         guestItinerary: document.getElementById("gp-itinerary").value.trim(),
-        parkingNotes: document.getElementById("gp-parkingNotes").value.trim()
+        parkingNotes: document.getElementById("gp-parkingNotes").value.trim(),
+        propertyMapUrl: document.getElementById("gp-propertyMapUrl").value.trim()
       };
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { guestPortalContent });
@@ -986,6 +1030,101 @@
         btn.textContent = "✓ Saved!";
         setTimeout(() => { btn.textContent = original; }, 1800);
       } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    function renderPlacesToStay() {
+      const wrap = document.getElementById("places-to-stay-list");
+      if (!wrap) return;
+      if (!placesToStayCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No places added yet.</p>';
+        return;
+      }
+      wrap.innerHTML = placesToStayCache.map(p => `
+        <div class="note-item" style="padding:16px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;">
+              <div style="font-size:15px;color:var(--charcoal);">${esc(p.name||"Untitled")}${p.type ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(p.type)}</span>` : ""}</div>
+              <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${p.distance ? esc(p.distance) : ""}</div>
+              ${p.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${esc(p.address)}</div>` : ""}
+              ${p.phone ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(p.phone)}</div>` : ""}
+              ${p.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(p.link)}" target="_blank" style="color:var(--gold-dark);">${esc(p.link)}</a></div>` : ""}
+              ${p.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(p.notes)}</div>` : ""}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editPlaceToStay('${p.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deletePlaceToStay('${p.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetPlaceToStayForm = function() {
+      editingPlaceToStayId = null;
+      ["pts-name","pts-distance","pts-address","pts-phone","pts-link","pts-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const typeEl = document.getElementById("pts-type");
+      if (typeEl) typeEl.value = "Box Hop";
+      const titleEl = document.getElementById("pts-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add a Place to <em>Stay</em>';
+      const saveBtn = document.getElementById("pts-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Place to Stay";
+      const cancelBtn = document.getElementById("pts-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editPlaceToStay = function(id) {
+      const p = placesToStayCache.find(x => x.id === id);
+      if (!p) return;
+      editingPlaceToStayId = id;
+      document.getElementById("pts-name").value = p.name || "";
+      document.getElementById("pts-type").value = p.type || "Box Hop";
+      document.getElementById("pts-distance").value = p.distance || "";
+      document.getElementById("pts-address").value = p.address || "";
+      document.getElementById("pts-phone").value = p.phone || "";
+      document.getElementById("pts-link").value = p.link || "";
+      document.getElementById("pts-notes").value = p.notes || "";
+      document.getElementById("pts-form-title").innerHTML = 'Edit Place to <em>Stay</em>';
+      document.getElementById("pts-save-btn").textContent = "Save Changes";
+      document.getElementById("pts-cancel-btn").style.display = "inline-block";
+      document.getElementById("pts-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.savePlaceToStay = async function() {
+      if (!currentUser) return;
+      const name = document.getElementById("pts-name").value.trim();
+      if (!name) { alert("Please enter a property name."); return; }
+      const entry = {
+        id: editingPlaceToStayId || Date.now().toString(),
+        name,
+        type: document.getElementById("pts-type").value,
+        distance: document.getElementById("pts-distance").value.trim(),
+        address: document.getElementById("pts-address").value.trim(),
+        phone: document.getElementById("pts-phone").value.trim(),
+        link: document.getElementById("pts-link").value.trim(),
+        notes: document.getElementById("pts-notes").value.trim()
+      };
+      if (editingPlaceToStayId) {
+        const idx = placesToStayCache.findIndex(x => x.id === editingPlaceToStayId);
+        if (idx > -1) placesToStayCache[idx] = entry; else placesToStayCache.push(entry);
+      } else {
+        placesToStayCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { placesToStay: placesToStayCache });
+        window.resetPlaceToStayForm();
+        renderPlacesToStay();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deletePlaceToStay = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this place to stay?")) return;
+      placesToStayCache = placesToStayCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { placesToStay: placesToStayCache });
+        renderPlacesToStay();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
     let pendingRSVPsCache = [];
@@ -2055,7 +2194,9 @@
           photoUrl: gpc.photoUrl || "",
           dressCode: gpc.dressCode || "",
           guestItinerary: gpc.guestItinerary || "",
-          parkingNotes: gpc.parkingNotes || ""
+          parkingNotes: gpc.parkingNotes || "",
+          propertyMapUrl: gpc.propertyMapUrl || "",
+          placesToStay: (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -2984,6 +3125,7 @@
           <button class="guest-tab-btn" id="guest-tabbtn-directions" onclick="window.switchGuestTab('directions')">Directions to the Venue</button>
           <button class="guest-tab-btn" id="guest-tabbtn-dresscode" onclick="window.switchGuestTab('dresscode')">Dress Code</button>
           <button class="guest-tab-btn" id="guest-tabbtn-itinerary" onclick="window.switchGuestTab('itinerary')">Itinerary</button>
+          <button class="guest-tab-btn" id="guest-tabbtn-stay" onclick="window.switchGuestTab('stay')">Places to Stay</button>
         </div>
 
         <div id="guest-tab-rsvp" class="guest-tab-panel">
@@ -2995,6 +3137,7 @@
         <div id="guest-tab-directions" class="guest-tab-panel" style="display:none;">
           <span class="section-label">Directions</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Getting <em style="color:var(--gold);font-style:italic;">there</em></h2>
+          <div id="guest-directions-map" style="margin-bottom:20px;"></div>
           <div id="guest-directions-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;"></div>
         </div>
 
@@ -3008,6 +3151,12 @@
           <span class="section-label">Itinerary</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">The <em style="color:var(--gold);font-style:italic;">schedule</em></h2>
           <div id="guest-itinerary-content" style="font-size:14px;color:var(--mid-gray);line-height:1.9;white-space:pre-line;"></div>
+        </div>
+
+        <div id="guest-tab-stay" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">Places to Stay</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Where to <em style="color:var(--gold);font-style:italic;">rest your head</em></h2>
+          <div id="guest-stay-content"></div>
         </div>
       </div>
     </section>
@@ -4924,10 +5073,64 @@
           <label class="form-label">Parking &amp; Additional Directions Notes</label>
           <textarea class="form-textarea" id="gp-parkingNotes" placeholder="e.g. Parking available on-site. Please use the gravel lot to the left of the main entrance."></textarea>
         </div>
+        <div class="form-group full">
+          <label class="form-label">Property Map Image URL</label>
+          <input type="text" class="form-input" id="gp-propertyMapUrl" placeholder="Paste a link to a property/venue map image">
+        </div>
       </div>
       <div class="form-save-row" style="margin-top:24px;">
         <button class="btn-save" id="gp-content-save-btn" onclick="window.saveGuestPortalContent()">Save Guest Page Content</button>
       </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title" id="pts-form-title">Add a Place to <em>Stay</em></h2>
+      <p class="form-section-intro">These show up on your guests' "Places to Stay" tab — hotels, cabins, Box Hop listings, anywhere you'd recommend.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Property Name</label>
+          <input type="text" class="form-input" id="pts-name" placeholder="e.g. The Box Hop — Cabin 3">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Type</label>
+          <select class="form-input" id="pts-type">
+            <option>Box Hop</option>
+            <option>Hotel</option>
+            <option>Cabin</option>
+            <option>Bed &amp; Breakfast</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Distance from Venue</label>
+          <input type="text" class="form-input" id="pts-distance" placeholder="e.g. 5 minutes away">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Address</label>
+          <input type="text" class="form-input" id="pts-address" placeholder="Street, City, State, ZIP">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Phone</label>
+          <input type="text" class="form-input" id="pts-phone" placeholder="e.g. (614) 555-1234">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Website / Booking Link</label>
+          <input type="text" class="form-input" id="pts-link" placeholder="https://...">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <textarea class="form-textarea" id="pts-notes" placeholder="e.g. Ask for the wedding discount code, sleeps 6, pet friendly..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="pts-save-btn" onclick="window.savePlaceToStay()">Add Place to Stay</button>
+        <button class="btn-back" id="pts-cancel-btn" style="display:none;" onclick="window.resetPlaceToStayForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Places to Stay</em></h2>
+      <div id="places-to-stay-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No places added yet.</p></div>
     </div>
 
     <div class="form-section-block">
