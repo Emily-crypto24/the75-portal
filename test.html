@@ -239,6 +239,22 @@
           </div>`).join("");
       }
 
+      // Things to Do tab
+      const todoEl = document.getElementById("guest-todo-content");
+      const activities = Array.isArray(data.thingsToDo) ? data.thingsToDo : [];
+      if (!activities.length) {
+        todoEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
+      } else {
+        todoEl.innerHTML = activities.map(t => `
+          <div style="border-bottom:1px solid var(--border);padding:18px 0;">
+            <div style="font-size:16px;color:var(--charcoal);">${esc(t.name||"")}${t.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(t.category)}</span>` : ""}</div>
+            ${t.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.distance)}</div>` : ""}
+            ${t.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
+            ${t.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
+            ${t.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(t.notes)}</div>` : ""}
+          </div>`).join("");
+      }
+
       // FAQ tab
       const faqEl = document.getElementById("guest-faq-content");
       const faqs = Array.isArray(data.faqs) ? data.faqs : [];
@@ -257,7 +273,7 @@
     }
 
     window.switchGPTab = function(tab) {
-      ["home","directions","dresscode","itinerary","party","stay","faq"].forEach(t => {
+      ["home","directions","dresscode","itinerary","party","stay","todo","faq"].forEach(t => {
         const panel = document.getElementById(`gptab-${t}`);
         const btn = document.getElementById(`gptab-btn-${t}`);
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
@@ -301,7 +317,7 @@
     };
 
     window.switchGuestTab = function(tab) {
-      ["rsvp","directions","dresscode","itinerary","party","stay","faq"].forEach(t => {
+      ["rsvp","directions","dresscode","itinerary","party","stay","todo","faq"].forEach(t => {
         const panel = document.getElementById(`guest-tab-${t}`);
         const btn = document.getElementById(`guest-tabbtn-${t}`);
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
@@ -506,7 +522,7 @@
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [] });
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
@@ -1082,6 +1098,8 @@
     let editingWeddingPartyId = null;
     let faqsCache = [];
     let editingFAQId = null;
+    let thingsToDoCache = [];
+    let editingThingToDoId = null;
 
     async function loadGuestList(uid) {
       try {
@@ -1114,7 +1132,8 @@
         itineraryItemsCache = Array.isArray(data.itineraryItems) ? data.itineraryItems : [];
         weddingPartyCache = Array.isArray(data.weddingParty) ? data.weddingParty : [];
         faqsCache = Array.isArray(data.faqs) ? data.faqs : [];
-      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; }
+        thingsToDoCache = Array.isArray(data.thingsToDo) ? data.thingsToDo : [];
+      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; thingsToDoCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
       window.resetGuestForm();
@@ -1127,8 +1146,11 @@
       renderWeddingParty();
       window.resetFAQForm();
       renderFAQs();
+      window.resetThingToDoForm();
+      renderThingsToDo();
       autoMergeRSVPSubmissions();
       window.switchGPTab("home");
+      if (currentUser) syncPublicProfile(currentUser.uid);
     }
 
     window.saveGuestPortalContent = async function() {
@@ -1241,6 +1263,99 @@
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { placesToStay: placesToStayCache });
         renderPlacesToStay();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    // ── THINGS TO DO ───────────────────────────────────────────────
+    function renderThingsToDo() {
+      const wrap = document.getElementById("things-to-do-list");
+      if (!wrap) return;
+      if (!thingsToDoCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No activities added yet.</p>';
+        return;
+      }
+      wrap.innerHTML = thingsToDoCache.map(t => `
+        <div class="note-item" style="padding:16px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;">
+              <div style="font-size:15px;color:var(--charcoal);">${esc(t.name||"Untitled")}${t.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(t.category)}</span>` : ""}</div>
+              <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${t.distance ? esc(t.distance) : ""}</div>
+              ${t.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
+              ${t.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">${esc(t.link)}</a></div>` : ""}
+              ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(t.notes)}</div>` : ""}
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editThingToDo('${t.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteThingToDo('${t.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetThingToDoForm = function() {
+      editingThingToDoId = null;
+      ["ttd-name","ttd-distance","ttd-address","ttd-link","ttd-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const catEl = document.getElementById("ttd-category");
+      if (catEl) catEl.value = "Hiking & Trails";
+      const titleEl = document.getElementById("ttd-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add a <em>Thing to Do</em>';
+      const saveBtn = document.getElementById("ttd-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Activity";
+      const cancelBtn = document.getElementById("ttd-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editThingToDo = function(id) {
+      const t = thingsToDoCache.find(x => x.id === id);
+      if (!t) return;
+      editingThingToDoId = id;
+      document.getElementById("ttd-name").value = t.name || "";
+      document.getElementById("ttd-category").value = t.category || "Hiking & Trails";
+      document.getElementById("ttd-distance").value = t.distance || "";
+      document.getElementById("ttd-address").value = t.address || "";
+      document.getElementById("ttd-link").value = t.link || "";
+      document.getElementById("ttd-notes").value = t.notes || "";
+      document.getElementById("ttd-form-title").innerHTML = 'Edit <em>Thing to Do</em>';
+      document.getElementById("ttd-save-btn").textContent = "Save Changes";
+      document.getElementById("ttd-cancel-btn").style.display = "inline-block";
+      document.getElementById("ttd-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveThingToDo = async function() {
+      if (!currentUser) return;
+      const name = document.getElementById("ttd-name").value.trim();
+      if (!name) { alert("Please enter an activity name."); return; }
+      const entry = {
+        id: editingThingToDoId || Date.now().toString(),
+        name,
+        category: document.getElementById("ttd-category").value,
+        distance: document.getElementById("ttd-distance").value.trim(),
+        address: document.getElementById("ttd-address").value.trim(),
+        link: document.getElementById("ttd-link").value.trim(),
+        notes: document.getElementById("ttd-notes").value.trim()
+      };
+      if (editingThingToDoId) {
+        const idx = thingsToDoCache.findIndex(x => x.id === editingThingToDoId);
+        if (idx > -1) thingsToDoCache[idx] = entry; else thingsToDoCache.push(entry);
+      } else {
+        thingsToDoCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { thingsToDo: thingsToDoCache });
+        window.resetThingToDoForm();
+        renderThingsToDo();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteThingToDo = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this activity?")) return;
+      thingsToDoCache = thingsToDoCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { thingsToDo: thingsToDoCache });
+        renderThingsToDo();
         syncPublicProfile(currentUser.uid);
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
@@ -2500,7 +2615,8 @@
           placesToStay: (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY,
           weddingParty: Array.isArray(data.weddingParty) ? data.weddingParty : [],
           faqs: Array.isArray(data.faqs) ? data.faqs : [],
-          itineraryItems: Array.isArray(data.itineraryItems) ? data.itineraryItems : []
+          itineraryItems: Array.isArray(data.itineraryItems) ? data.itineraryItems : [],
+          thingsToDo: Array.isArray(data.thingsToDo) ? data.thingsToDo : []
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -3360,9 +3476,9 @@
     .acc-prog-pct{font-size:11px;color:var(--mid-gray);width:32px;text-align:right;flex-shrink:0;}
     .acc-actions{display:flex;gap:8px;}
     .acc-btn-view{flex:1;padding:9px;background:var(--charcoal);color:var(--warm-white);border:none;font-family:var(--font-body);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;cursor:pointer;transition:background 0.2s;}
-    .guest-tab-btn{padding:14px 26px;background:none;border:1px solid var(--border);color:var(--charcoal);font-family:var(--font-body);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
-    .guest-tab-btn:hover{background:var(--cream);}
-    .guest-tab-btn.active{background:var(--charcoal);color:var(--warm-white);border-color:var(--charcoal);}
+    .guest-tab-btn{padding:14px 26px;background:none;border:1px solid rgba(253,250,246,0.35);color:rgba(253,250,246,0.9);font-family:var(--font-body);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
+    .guest-tab-btn:hover{background:rgba(253,250,246,0.15);}
+    .guest-tab-btn.active{background:var(--gold);color:var(--charcoal);border-color:var(--gold);}
     .guest-view-photo-img{width:120px;height:120px;border-radius:50%;object-fit:cover;border:2px solid rgba(253,250,246,0.4);}
     .photo-upload-box{border:2px dashed var(--border);background:var(--cream) center/cover no-repeat;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--mid-gray);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;text-align:center;padding:20px;transition:border-color 0.2s;position:relative;}
     .photo-upload-box:hover{border-color:var(--gold);}
@@ -3436,6 +3552,7 @@
         <button class="guest-tab-btn" id="guest-tabbtn-itinerary" onclick="window.switchGuestTab('itinerary')">Itinerary</button>
         <button class="guest-tab-btn" id="guest-tabbtn-party" onclick="window.switchGuestTab('party')">Wedding Party</button>
         <button class="guest-tab-btn" id="guest-tabbtn-stay" onclick="window.switchGuestTab('stay')">Places to Stay</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-todo" onclick="window.switchGuestTab('todo')">Things to Do</button>
         <button class="guest-tab-btn" id="guest-tabbtn-faq" onclick="window.switchGuestTab('faq')">FAQs</button>
       </div>
     </section>
@@ -3477,6 +3594,12 @@
           <span class="section-label">Places to Stay</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Where to <em style="color:var(--gold);font-style:italic;">rest your head</em></h2>
           <div id="guest-stay-content"></div>
+        </div>
+
+        <div id="guest-tab-todo" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">Things to Do</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Explore <em style="color:var(--gold);font-style:italic;">Hocking Hills</em></h2>
+          <div id="guest-todo-content"></div>
         </div>
 
         <div id="guest-tab-faq" class="guest-tab-panel" style="display:none;">
@@ -5359,6 +5482,7 @@
       <button class="gp-tab-btn" id="gptab-btn-itinerary" onclick="window.switchGPTab('itinerary')">Itinerary</button>
       <button class="gp-tab-btn" id="gptab-btn-party" onclick="window.switchGPTab('party')">Wedding Party</button>
       <button class="gp-tab-btn" id="gptab-btn-stay" onclick="window.switchGPTab('stay')">Places to Stay</button>
+      <button class="gp-tab-btn" id="gptab-btn-todo" onclick="window.switchGPTab('todo')">Things to Do</button>
       <button class="gp-tab-btn" id="gptab-btn-faq" onclick="window.switchGPTab('faq')">FAQs</button>
     </div>
 
@@ -5474,11 +5598,11 @@
       <h2 class="form-section-title" id="it-form-title">Add to the <em>Timeline</em></h2>
       <p class="form-section-intro">Add each moment of your day — these show up as a visual timeline with icons on your guests' Itinerary tab.</p>
       <div class="form-grid">
-        <div class="form-group">
+        <div class="form-group full">
           <label class="form-label">Time</label>
           <input type="text" class="form-input" id="it-time" placeholder="e.g. 4:00 PM">
         </div>
-        <div class="form-group">
+        <div class="form-group full">
           <label class="form-label">Event</label>
           <input type="text" class="form-input" id="it-title" placeholder="e.g. Guest Arrival">
         </div>
@@ -5586,6 +5710,54 @@
       <div style="margin-top:36px;">
         <h2 class="form-section-title">Your <em>Places to Stay</em></h2>
         <div id="places-to-stay-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No places added yet.</p></div>
+      </div>
+    </div>
+
+    <!-- THINGS TO DO TAB -->
+    <div id="gptab-todo" class="gp-tab-panel" style="display:none;">
+      <h2 class="form-section-title" id="ttd-form-title">Add a <em>Thing to Do</em></h2>
+      <p class="form-section-intro">Fun things for guests to do around Hocking Hills — hikes, waterfalls, adventure activities, local spots you love.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Activity Name</label>
+          <input type="text" class="form-input" id="ttd-name" placeholder="e.g. Old Man's Cave">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select class="form-input" id="ttd-category">
+            <option>Hiking &amp; Trails</option>
+            <option>Waterfalls</option>
+            <option>Adventure &amp; Zip Lining</option>
+            <option>Food &amp; Drink</option>
+            <option>Shopping</option>
+            <option>Scenic Spots</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Distance from Venue</label>
+          <input type="text" class="form-input" id="ttd-distance" placeholder="e.g. 10 minutes away">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Address</label>
+          <input type="text" class="form-input" id="ttd-address" placeholder="Street, City, State, ZIP">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Website / More Info Link</label>
+          <input type="text" class="form-input" id="ttd-link" placeholder="https://...">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <textarea class="form-textarea" id="ttd-notes" placeholder="e.g. Great for an easy morning hike, moderate difficulty, dog friendly..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="ttd-save-btn" onclick="window.saveThingToDo()">Add Activity</button>
+        <button class="btn-back" id="ttd-cancel-btn" style="display:none;" onclick="window.resetThingToDoForm()">Cancel Edit</button>
+      </div>
+      <div style="margin-top:36px;">
+        <h2 class="form-section-title">Your <em>Things to Do</em></h2>
+        <div id="things-to-do-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No activities added yet.</p></div>
       </div>
     </div>
 
