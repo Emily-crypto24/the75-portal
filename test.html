@@ -172,10 +172,12 @@
       const ceremonyMapButton = (label, address) => `<div style="margin-top:20px;text-align:center;"><a href="https://maps.google.com/?q=${encodeURIComponent(address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 36px;font-size:13px;letter-spacing:0.1em;text-transform:uppercase;text-decoration:none;border-radius:1px;">${esc(label)}</a></div>`;
       const venueButtonsRow = (address, mapUrl) => {
         let html = '<div style="margin-top:24px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap;">';
-        html += `<a href="https://maps.google.com/?q=${encodeURIComponent(address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Directions to The Seventy Five</a>`;
         if (mapUrl) {
-          html += `<a href="${esc(mapUrl)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Virtual Map to The Seventy Five</a>`;
+          html += `<a href="${esc(mapUrl)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Map of The Seventy Five</a>`;
+        } else {
+          html += `<span style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-align:center;opacity:0.6;cursor:default;">Map of The Seventy Five</span>`;
         }
+        html += `<a href="https://maps.google.com/?q=${encodeURIComponent(address)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Directions to The Seventy Five</a>`;
         html += '</div>';
         return html;
       };
@@ -231,21 +233,52 @@
           </div>`).join("") + `</div>`;
       }
 
-      // Places to Stay tab
+      // Places to Stay tab — grouped into sections with a booking callout under Box Hop
       const stayEl = document.getElementById("guest-stay-content");
       const places = Array.isArray(data.placesToStay) ? data.placesToStay : [];
       if (!places.length) {
         stayEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`;
       } else {
-        stayEl.innerHTML = places.map(p => `
+        const groups = { "Box Hop": [], "Cabin": [], "Hotel": [], "Other": [] };
+        places.forEach(p => {
+          const t = p.type || "Other";
+          if (groups[t]) groups[t].push(p); else groups["Other"].push(p);
+        });
+        const renderPlaceCard = p => `
           <div style="border-bottom:1px solid var(--border);padding:18px 0;">
-            <div style="font-size:16px;color:var(--charcoal);">${esc(p.name||"")}${p.type ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(p.type)}</span>` : ""}</div>
+            <div style="font-size:16px;color:var(--charcoal);">${esc(p.name||"")}</div>
             ${p.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.distance)}</div>` : ""}
             ${p.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.address)}</div>` : ""}
             ${p.phone ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:2px;">${esc(p.phone)}</div>` : ""}
             ${p.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(p.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
             ${p.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(p.notes)}</div>` : ""}
-          </div>`).join("");
+          </div>`;
+        const sectionTitle = label => `<h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:36px 0 16px;">${label}</h3>`;
+
+        let html = "";
+        if (groups["Box Hop"].length) {
+          html += sectionTitle("Box Hop");
+          const emailSubject = encodeURIComponent(`Box Hop Reservation Request${data.coupleNames ? " - " + data.coupleNames : ""}`);
+          const emailBody = encodeURIComponent("Hi Seventy Five team,\n\nWe'd like to reserve a Box Hop for our upcoming wedding. Here are our details:\n\nFull Name:\nBest Email:\nPreferred House:\nPreferred Dates:\n\nThank you!");
+          html += `<div style="background:var(--cream);border:1px solid var(--border);padding:22px 26px;margin-bottom:20px;">
+            <p style="font-size:13px;color:var(--charcoal);line-height:1.8;margin-bottom:14px;">All Box Hop homes come with a <strong>20% discount</strong> for our guests. Reserve directly with The Seventy Five's events team by email — just include your full name, best email, preferred house, and preferred dates.</p>
+            <a href="mailto:events@theseventyfivevenue.com?subject=${emailSubject}&body=${emailBody}" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:14px 26px;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;">Ready to Book? Click to Email Us!</a>
+          </div>`;
+          html += groups["Box Hop"].map(renderPlaceCard).join("");
+        }
+        if (groups["Cabin"].length) {
+          html += sectionTitle("Cabins");
+          html += groups["Cabin"].map(renderPlaceCard).join("");
+        }
+        if (groups["Hotel"].length) {
+          html += sectionTitle("Hotels");
+          html += groups["Hotel"].map(renderPlaceCard).join("");
+        }
+        if (groups["Other"].length) {
+          html += sectionTitle("Other Places to Stay");
+          html += groups["Other"].map(renderPlaceCard).join("");
+        }
+        stayEl.innerHTML = html;
       }
 
       // Things to Do tab
