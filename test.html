@@ -290,6 +290,7 @@
             <div style="font-size:16px;color:var(--charcoal);">${esc(t.name||"")}${t.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(t.category)}</span>` : ""}</div>
             ${t.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.distance)}</div>` : ""}
             ${t.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
+            ${t.phone ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:2px;">${esc(t.phone)}</div>` : ""}
             ${t.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
             ${t.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(t.notes)}</div>` : ""}
           </div>`).join("");
@@ -308,12 +309,50 @@
           </div>`).join("");
       }
 
+      // Registry tab
+      window.renderRegistryDisplay();
+
       window.switchGuestTab("rsvp");
       renderGuestRSVPForm(data, guestName);
     }
 
+    window.renderRegistryDisplay = function() {
+      const regEl = document.getElementById("guest-registry-content");
+      if (!regEl || !guestGateData) return;
+      const items = Array.isArray(guestGateData.registryItems) ? guestGateData.registryItems : [];
+      const priceFilterEl = document.getElementById("reg-filter-price");
+      const statusFilterEl = document.getElementById("reg-filter-status");
+      const priceFilter = priceFilterEl ? priceFilterEl.value : "";
+      const statusFilter = statusFilterEl ? statusFilterEl.value : "";
+      let filtered = items;
+      if (priceFilter) {
+        const [min, max] = priceFilter.split("-").map(Number);
+        filtered = filtered.filter(r => (Number(r.price)||0) >= min && (Number(r.price)||0) <= max);
+      }
+      if (statusFilter) {
+        filtered = filtered.filter(r => (r.status || "Available") === statusFilter);
+      }
+      if (!filtered.length) {
+        regEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);">${items.length ? "No items match those filters." : "Details coming soon!"}</p>`;
+        return;
+      }
+      regEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:28px;">` + filtered.map(r => {
+        const isPurchased = r.status === "Purchased";
+        return `
+        <div style="text-align:center;">
+          ${r.photoUrl ? `<img src="${esc(r.photoUrl)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;margin-bottom:10px;${isPurchased ? "opacity:0.5;" : ""}">` : `<div style="width:100%;aspect-ratio:1/1;background:var(--cream);margin-bottom:10px;"></div>`}
+          <div style="font-size:14px;color:var(--charcoal);">${esc(r.name||"")}</div>
+          ${r.price ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${formatMoney(r.price)}</div>` : ""}
+          ${isPurchased
+            ? `<div style="margin-top:10px;display:inline-block;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);border:1px solid var(--border);padding:8px 16px;">Purchased</div>`
+            : (r.link ? `<a href="${esc(r.link)}" target="_blank" style="margin-top:10px;display:inline-block;background:var(--charcoal);color:var(--warm-white);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;text-decoration:none;">Contribute</a>` : "")}
+          ${r.notes ? `<div style="font-size:11px;color:var(--mid-gray);margin-top:8px;font-style:italic;">${esc(r.notes)}</div>` : ""}
+        </div>`;
+      }).join("") + `</div>`;
+    };
+
     window.switchGPTab = function(tab) {
-      ["home","directions","dresscode","itinerary","party","stay","todo","faq"].forEach(t => {
+      ["home","directions","dresscode","itinerary","party","stay","todo","faq","registry"].forEach(t => {
         const panel = document.getElementById(`gptab-${t}`);
         const btn = document.getElementById(`gptab-btn-${t}`);
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
@@ -357,7 +396,7 @@
     };
 
     window.switchGuestTab = function(tab) {
-      ["rsvp","directions","dresscode","itinerary","party","stay","todo","faq"].forEach(t => {
+      ["rsvp","directions","dresscode","itinerary","party","stay","todo","faq","registry"].forEach(t => {
         const panel = document.getElementById(`guest-tab-${t}`);
         const btn = document.getElementById(`guest-tabbtn-${t}`);
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
@@ -562,7 +601,7 @@
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [] });
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
@@ -650,6 +689,7 @@
         html = `
           <span class="section-label">Your Guest Page</span>
           <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:8px 0 10px;">Share This Link</h3>
+          <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:12px;">This is the link to give your guests — put it on your invitations, website, or text it directly. It takes them straight to their own guest page, where they can see the details and RSVP.</p>
           <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;word-break:break-all;">
             <a href="${esc(url)}" target="_blank" style="color:var(--gold-dark);">${esc(url)}</a>
           </p>
@@ -1140,6 +1180,8 @@
     let editingFAQId = null;
     let thingsToDoCache = [];
     let editingThingToDoId = null;
+    let registryItemsCache = [];
+    let editingRegistryItemId = null;
 
     async function loadGuestList(uid) {
       try {
@@ -1172,8 +1214,9 @@
         itineraryItemsCache = Array.isArray(data.itineraryItems) ? data.itineraryItems : [];
         weddingPartyCache = Array.isArray(data.weddingParty) ? data.weddingParty : [];
         faqsCache = Array.isArray(data.faqs) ? data.faqs : [];
-        thingsToDoCache = Array.isArray(data.thingsToDo) ? data.thingsToDo : [];
-      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; thingsToDoCache = []; }
+        thingsToDoCache = (Array.isArray(data.thingsToDo) && data.thingsToDo.length) ? data.thingsToDo : DEFAULT_THINGS_TO_DO;
+        registryItemsCache = Array.isArray(data.registryItems) ? data.registryItems : [];
+      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; thingsToDoCache = []; registryItemsCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
       window.resetGuestForm();
@@ -1188,6 +1231,8 @@
       renderFAQs();
       window.resetThingToDoForm();
       renderThingsToDo();
+      window.resetRegistryForm();
+      renderRegistryItems();
       autoMergeRSVPSubmissions();
       window.switchGPTab("home");
       if (currentUser) syncPublicProfile(currentUser.uid);
@@ -1207,8 +1252,8 @@
         syncPublicProfile(currentUser.uid);
         const btn = document.getElementById("gp-content-save-btn");
         const original = btn.textContent;
-        btn.textContent = "✓ Saved!";
-        setTimeout(() => { btn.textContent = original; }, 1800);
+        btn.textContent = "Saved!";
+        setTimeout(() => { btn.textContent = original; }, 10000);
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
@@ -1308,6 +1353,15 @@
     };
 
     // ── THINGS TO DO ───────────────────────────────────────────────
+    const DEFAULT_THINGS_TO_DO = [
+      { id: "ttd-default-1", name: "Inn & Spa at Cedar Falls", category: "Other", distance: "", address: "", phone: "(740) 385-7489", link: "", notes: "Relax with a spa treatment just minutes from the venue." },
+      { id: "ttd-default-2", name: "Hocking Hills Canopy Tours", category: "Adventure & Zip Lining", distance: "", address: "", phone: "(740) 382-9477", link: "", notes: "Zip line through the treetops of Hocking Hills." },
+      { id: "ttd-default-3", name: "The View Golf Club", category: "Other", distance: "", address: "", phone: "(740) 687-1112", link: "", notes: "A scenic round of golf with sunset views over the hills." },
+      { id: "ttd-default-4", name: "Conkle's Hollow State Nature Preserve", category: "Hiking & Trails", distance: "", address: "", phone: "(740) 265-6453", link: "", notes: "A stunning gorge hike with towering cliffs and lush scenery." },
+      { id: "ttd-default-5", name: "John Glenn Astronomy Park", category: "Scenic Spots", distance: "", address: "", phone: "(740) 385-6841", link: "", notes: "Stargazing under some of the darkest skies in Ohio." },
+      { id: "ttd-default-6", name: "High Rock Adventures", category: "Adventure & Zip Lining", distance: "", address: "", phone: "(740) 385-9886", link: "", notes: "Rock climbing and rappelling adventures for all skill levels." }
+    ];
+
     function renderThingsToDo() {
       const wrap = document.getElementById("things-to-do-list");
       if (!wrap) return;
@@ -1322,6 +1376,7 @@
               <div style="font-size:15px;color:var(--charcoal);">${esc(t.name||"Untitled")}${t.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(t.category)}</span>` : ""}</div>
               <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${t.distance ? esc(t.distance) : ""}</div>
               ${t.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
+              ${t.phone ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(t.phone)}</div>` : ""}
               ${t.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">${esc(t.link)}</a></div>` : ""}
               ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(t.notes)}</div>` : ""}
             </div>
@@ -1335,7 +1390,7 @@
 
     window.resetThingToDoForm = function() {
       editingThingToDoId = null;
-      ["ttd-name","ttd-distance","ttd-address","ttd-link","ttd-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      ["ttd-name","ttd-distance","ttd-address","ttd-phone","ttd-link","ttd-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
       const catEl = document.getElementById("ttd-category");
       if (catEl) catEl.value = "Hiking & Trails";
       const titleEl = document.getElementById("ttd-form-title");
@@ -1354,6 +1409,7 @@
       document.getElementById("ttd-category").value = t.category || "Hiking & Trails";
       document.getElementById("ttd-distance").value = t.distance || "";
       document.getElementById("ttd-address").value = t.address || "";
+      document.getElementById("ttd-phone").value = t.phone || "";
       document.getElementById("ttd-link").value = t.link || "";
       document.getElementById("ttd-notes").value = t.notes || "";
       document.getElementById("ttd-form-title").innerHTML = 'Edit <em>Thing to Do</em>';
@@ -1372,6 +1428,7 @@
         category: document.getElementById("ttd-category").value,
         distance: document.getElementById("ttd-distance").value.trim(),
         address: document.getElementById("ttd-address").value.trim(),
+        phone: document.getElementById("ttd-phone").value.trim(),
         link: document.getElementById("ttd-link").value.trim(),
         notes: document.getElementById("ttd-notes").value.trim()
       };
@@ -1396,6 +1453,105 @@
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { thingsToDo: thingsToDoCache });
         renderThingsToDo();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
+    // ── REGISTRY ───────────────────────────────────────────────────
+    function renderRegistryItems() {
+      const wrap = document.getElementById("registry-items-list");
+      if (!wrap) return;
+      if (!registryItemsCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No registry items added yet.</p>';
+        return;
+      }
+      wrap.innerHTML = registryItemsCache.map(r => `
+        <div class="note-item" style="padding:16px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:220px;display:flex;gap:14px;align-items:flex-start;">
+              ${r.photoUrl ? `<img src="${esc(r.photoUrl)}" style="width:56px;height:56px;object-fit:cover;flex-shrink:0;">` : ""}
+              <div>
+                <div style="font-size:15px;color:var(--charcoal);">${esc(r.name||"Untitled")}</div>
+                <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${r.price ? formatMoney(r.price) : ""} ${r.status ? `&middot; <span style="color:${r.status==='Purchased'?'var(--mid-gray)':'var(--gold-dark)'};text-transform:uppercase;letter-spacing:0.06em;font-size:11px;">${esc(r.status)}</span>` : ""}</div>
+                ${r.link ? `<div style="font-size:12px;margin-top:4px;"><a href="${esc(r.link)}" target="_blank" style="color:var(--gold-dark);">${esc(r.link)}</a></div>` : ""}
+                ${r.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(r.notes)}</div>` : ""}
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editRegistryItem('${r.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteRegistryItem('${r.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetRegistryForm = function() {
+      editingRegistryItemId = null;
+      ["reg-name","reg-price","reg-link","reg-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const statusEl = document.getElementById("reg-status");
+      if (statusEl) statusEl.value = "Available";
+      renderPhotoBox("reg-photo-box", "", "+ Add Photo");
+      const photoInput = document.getElementById("reg-photoUrl");
+      if (photoInput) photoInput.value = "";
+      const titleEl = document.getElementById("reg-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add a <em>Registry Item</em>';
+      const saveBtn = document.getElementById("reg-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Item";
+      const cancelBtn = document.getElementById("reg-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editRegistryItem = function(id) {
+      const r = registryItemsCache.find(x => x.id === id);
+      if (!r) return;
+      editingRegistryItemId = id;
+      document.getElementById("reg-name").value = r.name || "";
+      document.getElementById("reg-price").value = r.price || "";
+      document.getElementById("reg-status").value = r.status || "Available";
+      document.getElementById("reg-link").value = r.link || "";
+      document.getElementById("reg-notes").value = r.notes || "";
+      document.getElementById("reg-photoUrl").value = r.photoUrl || "";
+      renderPhotoBox("reg-photo-box", r.photoUrl || "", "+ Add Photo");
+      document.getElementById("reg-form-title").innerHTML = 'Edit <em>Registry Item</em>';
+      document.getElementById("reg-save-btn").textContent = "Save Changes";
+      document.getElementById("reg-cancel-btn").style.display = "inline-block";
+      document.getElementById("reg-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveRegistryItem = async function() {
+      if (!currentUser) return;
+      const name = document.getElementById("reg-name").value.trim();
+      if (!name) { alert("Please enter an item name."); return; }
+      const entry = {
+        id: editingRegistryItemId || Date.now().toString(),
+        name,
+        photoUrl: document.getElementById("reg-photoUrl").value.trim(),
+        price: parseFloat(document.getElementById("reg-price").value) || 0,
+        status: document.getElementById("reg-status").value,
+        link: document.getElementById("reg-link").value.trim(),
+        notes: document.getElementById("reg-notes").value.trim()
+      };
+      if (editingRegistryItemId) {
+        const idx = registryItemsCache.findIndex(x => x.id === editingRegistryItemId);
+        if (idx > -1) registryItemsCache[idx] = entry; else registryItemsCache.push(entry);
+      } else {
+        registryItemsCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { registryItems: registryItemsCache });
+        window.resetRegistryForm();
+        renderRegistryItems();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteRegistryItem = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this registry item?")) return;
+      registryItemsCache = registryItemsCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { registryItems: registryItemsCache });
+        renderRegistryItems();
         syncPublicProfile(currentUser.uid);
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
@@ -1763,8 +1919,8 @@
         syncPublicProfile(currentUser.uid);
         const btn = document.getElementById("gl-settings-save-btn");
         const original = btn.textContent;
-        btn.textContent = "✓ Saved!";
-        setTimeout(() => { btn.textContent = original; }, 1500);
+        btn.textContent = "Saved!";
+        setTimeout(() => { btn.textContent = original; }, 10000);
       } catch(e) { alert("Couldn't save dinner settings: " + e.message); }
     };
 
@@ -2310,9 +2466,9 @@
         await updateDoc(doc(db, "couples", currentUser.uid), { rehearsalDinner });
         const btn = document.getElementById("rd-save-btn");
         const original = btn.textContent;
-        btn.textContent = "✓ Saved!";
+        btn.textContent = "Saved!";
         btn.style.background = "var(--gold)";
-        setTimeout(() => { btn.textContent = original; btn.style.background = ""; }, 1800);
+        setTimeout(() => { btn.textContent = original; btn.style.background = ""; }, 10000);
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
@@ -2656,7 +2812,8 @@
           weddingParty: Array.isArray(data.weddingParty) ? data.weddingParty : [],
           faqs: Array.isArray(data.faqs) ? data.faqs : [],
           itineraryItems: Array.isArray(data.itineraryItems) ? data.itineraryItems : [],
-          thingsToDo: Array.isArray(data.thingsToDo) ? data.thingsToDo : []
+          thingsToDo: (Array.isArray(data.thingsToDo) && data.thingsToDo.length) ? data.thingsToDo : DEFAULT_THINGS_TO_DO,
+          registryItems: Array.isArray(data.registryItems) ? data.registryItems : []
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -2693,11 +2850,11 @@
           else updates[`${meeting}.${fieldKey}`] = el.value;
         });
         await updateDoc(doc(db, "couples", currentUser.uid), updates);
-        btn.textContent = "✓ Saved!";
+        btn.textContent = "Saved!";
         btn.style.background = "var(--gold)";
         updateProgress(meeting);
         if (meeting === "meeting1") syncPublicProfile(currentUser.uid);
-        setTimeout(() => { btn.textContent = "Save Progress"; btn.style.background = ""; btn.disabled = false; }, 2000);
+        setTimeout(() => { btn.textContent = "Save Progress"; btn.style.background = ""; btn.disabled = false; }, 10000);
       } catch(e) { btn.textContent = "Save Progress"; btn.disabled = false; }
     };
 
@@ -3046,7 +3203,7 @@
         if (idx > -1) allCouplesCache[idx].leadCoordinator = leadCoordinator;
         renderAdminGrid();
         const btns = document.querySelectorAll(`button[onclick*="saveLeadCoordinator('${uid}')"]`);
-        btns.forEach(b => { b.textContent = "✓ Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = "Save Coordinator"; b.style.background=""; },2000); });
+        btns.forEach(b => { b.textContent = "Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = "Save Coordinator"; b.style.background=""; },10000); });
       } catch(e) { alert("Couldn't save coordinator: " + e.message); }
     };
 
@@ -3061,7 +3218,7 @@
         await ud(dc(db,"couples",uid), updates);
         // Flash the button green
         const btns = document.querySelectorAll(`button[onclick*="saveAdminSection('${uid}','${meetingKey}')"]`);
-        btns.forEach(b => { b.textContent = "✓ Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = `Save ${meetingKey.replace("meeting","Meeting ")}`; b.style.background=""; },2000); });
+        btns.forEach(b => { b.textContent = "Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = `Save ${meetingKey.replace("meeting","Meeting ")}`; b.style.background=""; },10000); });
         // Refresh dashboard in background
         await loadAdminDashboard();
       } catch(e) { alert("Save failed: " + e.message); }
@@ -3230,7 +3387,7 @@
       if (btn) { btn.textContent = "Saving…"; btn.disabled = true; }
       try {
         await setDoc(doc(db, "settings", "resources"), { items });
-        if (btn) { btn.textContent = "✓ Saved!"; }
+        if (btn) { btn.textContent = "Saved!"; }
         setTimeout(() => { window.closeResourceManager(); if (btn) { btn.textContent = "Save Changes"; btn.disabled = false; } }, 900);
       } catch(e) {
         if (btn) { btn.textContent = "Save Changes"; btn.disabled = false; }
@@ -3594,6 +3751,7 @@
         <button class="guest-tab-btn" id="guest-tabbtn-stay" onclick="window.switchGuestTab('stay')">Places to Stay</button>
         <button class="guest-tab-btn" id="guest-tabbtn-todo" onclick="window.switchGuestTab('todo')">Things to Do</button>
         <button class="guest-tab-btn" id="guest-tabbtn-faq" onclick="window.switchGuestTab('faq')">FAQs</button>
+        <button class="guest-tab-btn" id="guest-tabbtn-registry" onclick="window.switchGuestTab('registry')">Registry</button>
       </div>
     </section>
     <section style="background:var(--warm-white);padding:60px 24px 100px;">
@@ -3645,6 +3803,27 @@
           <span class="section-label">FAQs</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 28px;">Good <em style="color:var(--gold);font-style:italic;">questions</em></h2>
           <div id="guest-faq-content"></div>
+        </div>
+
+        <div id="guest-tab-registry" class="guest-tab-panel" style="display:none;">
+          <span class="section-label">Registry</span>
+          <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 20px;">A few <em style="color:var(--gold);font-style:italic;">ideas</em></h2>
+          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;margin-bottom:24px;">Your presence means everything to us — please don't feel you need to bring a gift. If you'd like to, here are a few things we'd love.</p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px;">
+            <select class="form-input" id="reg-filter-price" style="max-width:200px;" onchange="window.renderRegistryDisplay()">
+              <option value="">Any Price</option>
+              <option value="0-50">Under $50</option>
+              <option value="50-150">$50 &ndash; $150</option>
+              <option value="150-300">$150 &ndash; $300</option>
+              <option value="300-9999999">$300+</option>
+            </select>
+            <select class="form-input" id="reg-filter-status" style="max-width:200px;" onchange="window.renderRegistryDisplay()">
+              <option value="">All Items</option>
+              <option value="Available">Available Only</option>
+              <option value="Purchased">Purchased Only</option>
+            </select>
+          </div>
+          <div id="guest-registry-content"></div>
         </div>
       </div>
     </section>
@@ -5523,6 +5702,7 @@
       <button class="gp-tab-btn" id="gptab-btn-stay" onclick="window.switchGPTab('stay')">Places to Stay</button>
       <button class="gp-tab-btn" id="gptab-btn-todo" onclick="window.switchGPTab('todo')">Things to Do</button>
       <button class="gp-tab-btn" id="gptab-btn-faq" onclick="window.switchGPTab('faq')">FAQs</button>
+      <button class="gp-tab-btn" id="gptab-btn-registry" onclick="window.switchGPTab('registry')">Registry</button>
     </div>
 
     <!-- HOME TAB -->
@@ -5538,6 +5718,10 @@
         </div>
       </div>
       <p class="form-section-intro" style="margin-bottom:20px;">This preview updates as you fill in the fields below — it's exactly what guests see first.</p>
+
+      <div style="background:var(--cream);border:1px solid var(--border);padding:16px 20px;margin-bottom:20px;">
+        <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin:0;"><strong style="color:var(--charcoal);">A note on photo links:</strong> iCloud sharing links usually won't work here, since they open a webpage rather than the photo itself. The most reliable options are uploading the photo to your GitHub repo (same way we added the property map) or a free site like <a href="https://imgur.com/upload" target="_blank" style="color:var(--gold-dark);">imgur.com</a> — either one gives you a direct link that ends in something like .jpg or .png, which is what these boxes need.</p>
+      </div>
 
       <div class="form-grid" style="margin-bottom:28px;">
         <div class="form-group">
@@ -5676,6 +5860,7 @@
     <div id="gptab-party" class="gp-tab-panel" style="display:none;">
       <h2 class="form-section-title" id="wp-form-title">Add a <em>Wedding Party Member</em></h2>
       <p class="form-section-intro">Show your guests who's standing up there with you — whatever titles fit the two of you best.</p>
+      <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:20px;">Photo tip: iCloud share links usually won't display correctly here. Upload the photo to your GitHub repo or a free site like <a href="https://imgur.com/upload" target="_blank" style="color:var(--gold-dark);">imgur.com</a> and use that direct link instead.</p>
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Photo <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
@@ -5781,6 +5966,10 @@
           <label class="form-label">Address</label>
           <input type="text" class="form-input" id="ttd-address" placeholder="Street, City, State, ZIP">
         </div>
+        <div class="form-group">
+          <label class="form-label">Phone</label>
+          <input type="text" class="form-input" id="ttd-phone" placeholder="e.g. (740) 385-7489">
+        </div>
         <div class="form-group full">
           <label class="form-label">Website / More Info Link</label>
           <input type="text" class="form-input" id="ttd-link" placeholder="https://...">
@@ -5821,6 +6010,50 @@
       <div style="margin-top:36px;">
         <h2 class="form-section-title">Your <em>FAQs</em></h2>
         <div id="faq-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No FAQs added yet.</p></div>
+      </div>
+    </div>
+
+    <!-- REGISTRY TAB -->
+    <div id="gptab-registry" class="gp-tab-panel" style="display:none;">
+      <h2 class="form-section-title" id="reg-form-title">Add a <em>Registry Item</em></h2>
+      <p class="form-section-intro">Add gifts, experiences, or funds — anything you'd love for guests to consider. Guests will be able to filter by price and see what's still available.</p>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Item Photo <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
+          <div class="photo-upload-box" id="reg-photo-box" style="aspect-ratio:1/1;max-width:160px;" onclick="window.promptForPhoto('reg-photoUrl','reg-photo-box','+ Add Photo')"><span class="photo-upload-label">+ Add Photo</span></div>
+          <input type="hidden" id="reg-photoUrl">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Item Name</label>
+          <input type="text" class="form-input" id="reg-name" placeholder="e.g. Honeymoon Fund: Italy">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Price</label>
+          <input type="number" class="form-input" id="reg-price" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-input" id="reg-status">
+            <option>Available</option>
+            <option>Purchased</option>
+          </select>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Purchase / Contribute Link</label>
+          <input type="text" class="form-input" id="reg-link" placeholder="https:// link to Amazon, Zola, Venmo, etc.">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Notes</label>
+          <textarea class="form-textarea" id="reg-notes" placeholder="e.g. Venue: Welcome Pavilion. A wine tasting hosted at sunset."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="reg-save-btn" onclick="window.saveRegistryItem()">Add Item</button>
+        <button class="btn-back" id="reg-cancel-btn" style="display:none;" onclick="window.resetRegistryForm()">Cancel Edit</button>
+      </div>
+      <div style="margin-top:36px;">
+        <h2 class="form-section-title">Your <em>Registry</em></h2>
+        <div id="registry-items-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No registry items added yet.</p></div>
       </div>
     </div>
   </div>
