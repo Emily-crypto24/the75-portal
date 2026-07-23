@@ -34,7 +34,11 @@
     const provider = new GoogleAuthProvider();
 
     const ADMIN_EMAILS = ["emily@theboxhop.com","jess@theseventyfivevenue.com","events@theseventyfivevenue.com"];
-    const isAdmin = (email) => ADMIN_EMAILS.includes((email||"").toLowerCase());
+    const ADMIN_DOMAIN = "@theseventyfivevenue.com";
+    const isAdmin = (email) => {
+      const e = (email||"").toLowerCase();
+      return ADMIN_EMAILS.includes(e) || e.endsWith(ADMIN_DOMAIN);
+    };
 
     let currentUser = null;
     let pendingCoupleNames = "";
@@ -3257,7 +3261,8 @@
       const email = document.getElementById("signup-email").value.trim();
       const password = document.getElementById("signup-password").value;
       const btn = document.getElementById("btn-signup");
-      if (!partner1 || !partner2) { showSignupError("Please enter both partners' names."); return; }
+      const isStaffEmail = isAdmin(email);
+      if (!isStaffEmail && (!partner1 || !partner2)) { showSignupError("Please enter both partners' names."); return; }
       if (!email || !password) { showSignupError("Please enter an email and password."); return; }
       pendingCoupleNames = `${partner1} & ${partner2}`;
       pendingWeddingDate = document.getElementById("signup-weddingDate").value;
@@ -3335,6 +3340,175 @@
         grid.innerHTML = `<p style="color:#e07070;padding:40px;grid-column:1/-1;">Error: ${e.message}</p>`;
       }
     }
+
+    function coupleDisplayName(c) {
+      return (c.meeting1||{}).coupleNames || c.displayName || c.email || "Unknown Couple";
+    }
+
+    // ── ADMIN: LINEN ORDERS ──────────────────────────────────────
+    // Stored in its own top-level "linenOrders" collection (NOT on the couple's own document),
+    // so couples never have read/write access to it, even at the database level.
+    let editingLinenOrderCoupleId = null;
+    let linenOrdersCache = [];
+
+    window.showLinenOrders = async function() {
+      document.getElementById("admin-dashboard-view").style.display = "none";
+      document.getElementById("admin-linen-orders-view").style.display = "block";
+      populateLinenOrderCoupleDropdown();
+      window.resetLinenOrderForm();
+      await loadLinenOrdersCache();
+      renderLinenOrdersTable();
+    };
+
+    window.showAdminDashboard = function() {
+      document.getElementById("admin-linen-orders-view").style.display = "none";
+      document.getElementById("admin-dashboard-view").style.display = "block";
+    };
+
+    async function loadLinenOrdersCache() {
+      const tbody = document.getElementById("linen-orders-table-body");
+      if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--mid-gray);font-style:italic;">Loading...</td></tr>`;
+      try {
+        const { collection, getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        const snap = await getDocs(collection(db, "linenOrders"));
+        linenOrdersCache = [];
+        snap.forEach(d => linenOrdersCache.push({ coupleId: d.id, ...d.data() }));
+      } catch(e) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="padding:20px;text-align:center;color:#c0392b;">Error loading: ${e.message}</td></tr>`;
+        linenOrdersCache = [];
+      }
+    }
+
+    function populateLinenOrderCoupleDropdown() {
+      const sel = document.getElementById("lo-coupleId");
+      if (!sel) return;
+      const sorted = allCouplesCache.slice().sort((a,b) => coupleDisplayName(a).localeCompare(coupleDisplayName(b)));
+      sel.innerHTML = '<option value="">Select a couple...</option>' + sorted.map(c => `<option value="${c.id}">${esc(coupleDisplayName(c))}</option>`).join("");
+    }
+
+    function linenOrderTotal(lo) {
+      return (Number(lo.subtotal)||0) + (Number(lo.fuel)||0) + (Number(lo.delivery)||0) + (Number(lo.discount)||0) + (Number(lo.taxes)||0);
+    }
+
+    function renderLinenOrdersTable() {
+      const tbody = document.getElementById("linen-orders-table-body");
+      if (!tbody) return;
+      if (!linenOrdersCache.length) {
+        tbody.innerHTML = `<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--mid-gray);font-style:italic;">No linen orders added yet.</td></tr>`;
+        return;
+      }
+      const sorted = linenOrdersCache.slice().sort((a,b) => (a.eventDate||"9999-12-31").localeCompare(b.eventDate||"9999-12-31"));
+      const statusColors = {
+        "Pending Client Final Decision": "#b8965a",
+        "Ready to Order": "#5a8fb8",
+        "Ordered": "#5a8fb8",
+        "Delivered": "#7a9e6e",
+        "Checked In": "#4a7a3e",
+        "Problem Attention Needed": "#c0392b"
+      };
+      tbody.innerHTML = sorted.map(lo => {
+        const c = allCouplesCache.find(x => x.id === lo.coupleId);
+        const name = c ? coupleDisplayName(c) : (lo.coupleName || "Unknown Couple");
+        const total = linenOrderTotal(lo);
+        const paid = Number(lo.amountPaid)||0;
+        const balance = total - paid;
+        const color = statusColors[lo.status] || "var(--mid-gray)";
+        return `<tr>
+          <td style="padding:10px 12px;border:1px solid var(--border);">${esc(name)}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);">${lo.eventDate ? new Date(lo.eventDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : ""}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);"><span style="color:${color};font-size:11px;letter-spacing:0.04em;text-transform:uppercase;">${esc(lo.status||"")}</span></td>
+          <td style="padding:10px 12px;border:1px solid var(--border);">${lo.orderDate ? new Date(lo.orderDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : ""}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);">${lo.deliveryDate ? new Date(lo.deliveryDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : ""}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);">${formatMoney(total)}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);">${formatMoney(paid)}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);color:${balance > 0 ? '#c0392b' : 'var(--charcoal)'};">${formatMoney(balance)}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);white-space:nowrap;">
+            <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.editLinenOrder('${lo.coupleId}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.deleteLinenOrder('${lo.coupleId}')">Delete</button>
+          </td>
+        </tr>`;
+      }).join("");
+    }
+
+    window.resetLinenOrderForm = function() {
+      editingLinenOrderCoupleId = null;
+      ["lo-coupleId","lo-eventDate","lo-orderDate","lo-deliveryDate","lo-eventId","lo-orderDetails","lo-subtotal","lo-fuel","lo-delivery","lo-discount","lo-taxes","lo-amountPaid","lo-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const statusEl = document.getElementById("lo-status");
+      if (statusEl) statusEl.value = "Pending Client Final Decision";
+      const titleEl = document.getElementById("lo-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add a <em>Linen Order</em>';
+      const saveBtn = document.getElementById("lo-save-btn");
+      if (saveBtn) saveBtn.textContent = "Save Linen Order";
+      const cancelBtn = document.getElementById("lo-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+      const coupleSel = document.getElementById("lo-coupleId");
+      if (coupleSel) coupleSel.disabled = false;
+    };
+
+    window.editLinenOrder = function(coupleId) {
+      const lo = linenOrdersCache.find(x => x.coupleId === coupleId);
+      if (!lo) return;
+      editingLinenOrderCoupleId = coupleId;
+      document.getElementById("lo-coupleId").value = coupleId;
+      document.getElementById("lo-coupleId").disabled = true;
+      document.getElementById("lo-eventDate").value = lo.eventDate || "";
+      document.getElementById("lo-orderDate").value = lo.orderDate || "";
+      document.getElementById("lo-deliveryDate").value = lo.deliveryDate || "";
+      document.getElementById("lo-eventId").value = lo.eventId || "";
+      document.getElementById("lo-orderDetails").value = lo.orderDetails || "";
+      document.getElementById("lo-status").value = lo.status || "Pending Client Final Decision";
+      document.getElementById("lo-subtotal").value = lo.subtotal || "";
+      document.getElementById("lo-fuel").value = lo.fuel || "";
+      document.getElementById("lo-delivery").value = lo.delivery || "";
+      document.getElementById("lo-discount").value = lo.discount || "";
+      document.getElementById("lo-taxes").value = lo.taxes || "";
+      document.getElementById("lo-amountPaid").value = lo.amountPaid || "";
+      document.getElementById("lo-notes").value = lo.notes || "";
+      document.getElementById("lo-form-title").innerHTML = 'Edit <em>Linen Order</em>';
+      document.getElementById("lo-save-btn").textContent = "Save Changes";
+      document.getElementById("lo-cancel-btn").style.display = "inline-block";
+      window.scrollTo({top:0, behavior:"smooth"});
+    };
+
+    window.saveLinenOrder = async function() {
+      const coupleId = document.getElementById("lo-coupleId").value;
+      if (!coupleId) { alert("Please select a couple."); return; }
+      const c = allCouplesCache.find(x => x.id === coupleId);
+      const linenOrder = {
+        coupleName: c ? coupleDisplayName(c) : "",
+        eventDate: document.getElementById("lo-eventDate").value,
+        orderDate: document.getElementById("lo-orderDate").value,
+        deliveryDate: document.getElementById("lo-deliveryDate").value,
+        eventId: document.getElementById("lo-eventId").value.trim(),
+        orderDetails: document.getElementById("lo-orderDetails").value.trim(),
+        status: document.getElementById("lo-status").value,
+        subtotal: parseFloat(document.getElementById("lo-subtotal").value) || 0,
+        fuel: parseFloat(document.getElementById("lo-fuel").value) || 0,
+        delivery: parseFloat(document.getElementById("lo-delivery").value) || 0,
+        discount: parseFloat(document.getElementById("lo-discount").value) || 0,
+        taxes: parseFloat(document.getElementById("lo-taxes").value) || 0,
+        amountPaid: parseFloat(document.getElementById("lo-amountPaid").value) || 0,
+        notes: document.getElementById("lo-notes").value.trim()
+      };
+      try {
+        const { doc: dc, setDoc: sd } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await sd(dc(db, "linenOrders", coupleId), linenOrder);
+        const idx = linenOrdersCache.findIndex(x => x.coupleId === coupleId);
+        if (idx > -1) linenOrdersCache[idx] = { coupleId, ...linenOrder }; else linenOrdersCache.push({ coupleId, ...linenOrder });
+        window.resetLinenOrderForm();
+        renderLinenOrdersTable();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteLinenOrder = async function(coupleId) {
+      if (!confirm("Delete this linen order? This can't be undone.")) return;
+      try {
+        const { doc: dc, deleteDoc: dd } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await dd(dc(db, "linenOrders", coupleId));
+        linenOrdersCache = linenOrdersCache.filter(x => x.coupleId !== coupleId);
+        renderLinenOrdersTable();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
 
     window.setAdminFilter = function(filter) {
       adminFilter = filter;
@@ -6497,6 +6671,7 @@
   </nav>
 
   <div class="admin-body">
+    <div id="admin-dashboard-view">
     <div class="admin-header">
       <div>
         <div class="admin-title">Couple <em>Dashboard</em></div>
@@ -6504,6 +6679,7 @@
       </div>
       <div class="admin-header-right">
         <div class="admin-count-badge"><span id="admin-couple-count">—</span> Couples</div>
+        <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.showLinenOrders()">&#129525; Linen Orders</button>
         <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.openResourcePinGate()">&#128274; Manage Resources</button>
         <button class="btn-export-all" id="export-all-btn" onclick="window.exportAllCouples()">&#8595; Export All Couples to CSV</button>
       </div>
@@ -6515,6 +6691,113 @@
     </div>
 
     <div id="admin-couples-grid"></div>
+    </div>
+
+    <!-- LINEN ORDERS VIEW -->
+    <div id="admin-linen-orders-view" style="display:none;padding:40px;">
+      <div class="admin-header">
+        <div>
+          <div class="admin-title">Linen <em>Orders</em></div>
+          <div class="admin-subtitle">Track every couple's linen order, delivery, and finances in one place</div>
+        </div>
+        <div class="admin-header-right">
+          <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.showAdminDashboard()">&#8592; Back to Dashboard</button>
+        </div>
+      </div>
+
+      <div style="background:#fff;border:1px solid var(--border);padding:32px;margin-top:24px;max-width:820px;">
+        <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:300;color:var(--charcoal);margin-bottom:20px;" id="lo-form-title">Add a <em>Linen Order</em></h2>
+        <div class="form-grid">
+          <div class="form-group full">
+            <label class="form-label">Couple</label>
+            <select class="form-input" id="lo-coupleId"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Event Date</label>
+            <input type="date" class="form-input" id="lo-eventDate">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Order Date</label>
+            <input type="date" class="form-input" id="lo-orderDate">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Delivery Date</label>
+            <input type="date" class="form-input" id="lo-deliveryDate">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Event ID</label>
+            <input type="text" class="form-input" id="lo-eventId" placeholder="e.g. 657811 or 38983/657908">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Order Details</label>
+            <textarea class="form-textarea" id="lo-orderDetails" style="min-height:110px;" placeholder="e.g. 15 - Solid Ivory 90x156&#10;2 - Solid Black 90x156&#10;Napkins: 197 Buttercup Satin"></textarea>
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Status</label>
+            <select class="form-input" id="lo-status">
+              <option>Pending Client Final Decision</option>
+              <option>Ready to Order</option>
+              <option>Ordered</option>
+              <option>Delivered</option>
+              <option>Checked In</option>
+              <option>Problem Attention Needed</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Item Sub-Total</label>
+            <input type="number" class="form-input" id="lo-subtotal" step="0.01" placeholder="0.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Fuel Charge</label>
+            <input type="number" class="form-input" id="lo-fuel" step="0.01" placeholder="0.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Delivery Charge</label>
+            <input type="number" class="form-input" id="lo-delivery" step="0.01" placeholder="0.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Discount <span style="font-size:11px;color:var(--mid-gray);">(enter as negative, e.g. -50.00)</span></label>
+            <input type="number" class="form-input" id="lo-discount" step="0.01" placeholder="0.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Taxes</label>
+            <input type="number" class="form-input" id="lo-taxes" step="0.01" placeholder="0.00">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Amount Paid</label>
+            <input type="number" class="form-input" id="lo-amountPaid" step="0.01" placeholder="0.00">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Notes</label>
+            <textarea class="form-textarea" id="lo-notes" placeholder="e.g. grandfathered in when you didn't charge for additional linens"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:20px;display:flex;gap:10px;">
+          <button class="acc-btn-view" style="padding:12px 28px;font-size:11px;" onclick="window.saveLinenOrder()" id="lo-save-btn">Save Linen Order</button>
+          <button class="acc-btn-export" style="padding:12px 28px;font-size:11px;display:none;" id="lo-cancel-btn" onclick="window.resetLinenOrderForm()">Cancel Edit</button>
+        </div>
+      </div>
+
+      <h2 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:40px 0 16px;">All <em>Linen Orders</em></h2>
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;background:#fff;font-size:13px;">
+          <thead>
+            <tr style="background:var(--cream);text-align:left;">
+              <th style="padding:12px;border:1px solid var(--border);">Couple</th>
+              <th style="padding:12px;border:1px solid var(--border);">Event Date</th>
+              <th style="padding:12px;border:1px solid var(--border);">Status</th>
+              <th style="padding:12px;border:1px solid var(--border);">Order Date</th>
+              <th style="padding:12px;border:1px solid var(--border);">Delivery Date</th>
+              <th style="padding:12px;border:1px solid var(--border);">Total</th>
+              <th style="padding:12px;border:1px solid var(--border);">Paid</th>
+              <th style="padding:12px;border:1px solid var(--border);">Balance</th>
+              <th style="padding:12px;border:1px solid var(--border);"></th>
+            </tr>
+          </thead>
+          <tbody id="linen-orders-table-body"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- Modal -->
