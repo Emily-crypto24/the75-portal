@@ -386,7 +386,7 @@
     window.promptForPhoto = function(hiddenInputId, boxId, placeholder) {
       const input = document.getElementById(hiddenInputId);
       const current = input.value || "";
-      const url = prompt("Paste a link to your photo:", current);
+      const url = prompt("Paste your photo link here.\n\nNeed one? Go to imgur.com/upload, drag your photo in, then right-click it and choose \"Copy image address.\"", current);
       if (url === null) return;
       input.value = url.trim();
       renderPhotoBox(boxId, url.trim(), placeholder);
@@ -6335,7 +6335,7 @@
       <p class="form-section-intro" style="margin-bottom:20px;">This preview updates as you fill in the fields below — it's exactly what guests see first.</p>
 
       <div style="background:var(--cream);border:1px solid var(--border);padding:16px 20px;margin-bottom:20px;">
-        <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin:0;"><strong style="color:var(--charcoal);">A note on photo links:</strong> iCloud sharing links usually won't work here, since they open a webpage rather than the photo itself. The most reliable options are uploading the photo to your GitHub repo (same way we added the property map) or a free site like <a href="https://imgur.com/upload" target="_blank" style="color:var(--gold-dark);">imgur.com</a> — either one gives you a direct link that ends in something like .jpg or .png, which is what these boxes need.</p>
+        <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin:0;"><strong style="color:var(--charcoal);">How to add a photo:</strong> Go to <a href="https://imgur.com/upload" target="_blank" style="color:var(--gold-dark);">imgur.com/upload</a> (free, no account needed), drag your photo in, then right-click the uploaded image and choose "Copy image address." Paste that link into the box below. If your photo is from an iPhone, make sure it's saved as a JPG (not HEIC) before uploading.</p>
       </div>
 
       <div class="form-grid" style="margin-bottom:28px;">
@@ -6475,7 +6475,7 @@
     <div id="gptab-party" class="gp-tab-panel" style="display:none;">
       <h2 class="form-section-title" id="wp-form-title">Add a <em>Wedding Party Member</em></h2>
       <p class="form-section-intro">Show your guests who's standing up there with you — whatever titles fit the two of you best.</p>
-      <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:20px;">Photo tip: iCloud share links usually won't display correctly here. Upload the photo to your GitHub repo or a free site like <a href="https://imgur.com/upload" target="_blank" style="color:var(--gold-dark);">imgur.com</a> and use that direct link instead.</p>
+      <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:20px;">How to add a photo: go to <a href="https://imgur.com/upload" target="_blank" style="color:var(--gold-dark);">imgur.com/upload</a> (free, no account needed), drag your photo in, then right-click it and choose "Copy image address" — paste that link below.</p>
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Photo <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
