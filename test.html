@@ -1203,17 +1203,14 @@
         currentCoupleSlug = data.slug || "";
         const gpc = data.guestPortalContent || {};
         const coverEl = document.getElementById("gp-coverPhotoUrl");
-        const photoEl = document.getElementById("gp-photoUrl");
         const dressEl = document.getElementById("gp-dressCode");
         const parkEl = document.getElementById("gp-parkingNotes");
         const mapEl = document.getElementById("gp-propertyMapUrl");
         if (coverEl) coverEl.value = gpc.coverPhotoUrl || "";
-        if (photoEl) photoEl.value = gpc.photoUrl || "";
         if (dressEl) dressEl.value = gpc.dressCode || "";
         if (parkEl) parkEl.value = gpc.parkingNotes || "";
         if (mapEl) mapEl.value = gpc.propertyMapUrl || "";
         renderPhotoBox("gp-coverPhoto-box", gpc.coverPhotoUrl || "", "+ Add Cover Photo");
-        renderPhotoBox("gp-photo-box", gpc.photoUrl || "", "+ Add Photo");
         renderPhotoBox("gp-propertyMap-box", gpc.propertyMapUrl || "", "+ Add Property Map");
         const previewBg = document.getElementById("gp-home-preview-bg");
         if (previewBg && gpc.coverPhotoUrl) {
@@ -1259,7 +1256,6 @@
       if (!currentUser) return;
       const guestPortalContent = {
         coverPhotoUrl: document.getElementById("gp-coverPhotoUrl").value.trim(),
-        photoUrl: document.getElementById("gp-photoUrl").value.trim(),
         dressCode: document.getElementById("gp-dressCode").value.trim(),
         parkingNotes: document.getElementById("gp-parkingNotes").value.trim(),
         propertyMapUrl: document.getElementById("gp-propertyMapUrl").value.trim()
@@ -3143,7 +3139,6 @@
           guestRoster,
           dinnerStyle: settings.dinnerStyle || "Buffet",
           mealOptions: Array.isArray(settings.mealOptions) ? settings.mealOptions : [],
-          photoUrl: gpc.photoUrl || "",
           coverPhotoUrl: gpc.coverPhotoUrl || "",
           dressCode: gpc.dressCode || "",
           guestItinerary: gpc.guestItinerary || "",
@@ -6346,11 +6341,6 @@
           <label class="form-label">Cover Photo <span style="font-size:11px;color:var(--mid-gray);">(big background photo)</span></label>
           <div class="photo-upload-box" id="gp-coverPhoto-box" style="aspect-ratio:16/9;" onclick="window.promptForPhoto('gp-coverPhotoUrl','gp-coverPhoto-box','+ Add Cover Photo')"><span class="photo-upload-label">+ Add Cover Photo</span></div>
           <input type="hidden" id="gp-coverPhotoUrl">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Couple's Photo <span style="font-size:11px;color:var(--mid-gray);">(small circular portrait)</span></label>
-          <div class="photo-upload-box" id="gp-photo-box" style="aspect-ratio:1/1;max-width:160px;border-radius:50%;" onclick="window.promptForPhoto('gp-photoUrl','gp-photo-box','+ Add Photo')"><span class="photo-upload-label">+ Add Photo</span></div>
-          <input type="hidden" id="gp-photoUrl">
         </div>
       </div>
 
