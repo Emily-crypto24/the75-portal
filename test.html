@@ -135,18 +135,16 @@
     function renderGuestContent(data, guestName) {
       const namesEl = document.getElementById("guest-view-names");
       const countdownEl = document.getElementById("guest-view-countdown");
-      const photoEl = document.getElementById("guest-view-photo");
       namesEl.innerHTML = esc(data.coupleNames || "A Seventy Five Wedding");
-
-      if (data.photoUrl) {
-        photoEl.innerHTML = `<img src="${esc(data.photoUrl)}" class="guest-view-photo-img" alt="${esc(data.coupleNames||"")}">`;
-      } else {
-        photoEl.innerHTML = "";
-      }
 
       if (data.coverPhotoUrl) {
         const heroBg = document.querySelector("#guest-content .hero-bg");
-        if (heroBg) heroBg.style.backgroundImage = `url('${data.coverPhotoUrl.replace(/'/g,"")}')`;
+        if (heroBg) {
+          heroBg.style.backgroundImage = `url('${data.coverPhotoUrl.replace(/'/g,"")}')`;
+          heroBg.style.backgroundSize = "contain";
+          heroBg.style.backgroundRepeat = "no-repeat";
+          heroBg.style.backgroundPosition = "center";
+        }
       }
 
       if (data.weddingDate) {
@@ -1218,7 +1216,13 @@
         renderPhotoBox("gp-photo-box", gpc.photoUrl || "", "+ Add Photo");
         renderPhotoBox("gp-propertyMap-box", gpc.propertyMapUrl || "", "+ Add Property Map");
         const previewBg = document.getElementById("gp-home-preview-bg");
-        if (previewBg && gpc.coverPhotoUrl) previewBg.style.backgroundImage = `url('${gpc.coverPhotoUrl.replace(/'/g,"")}')`;
+        if (previewBg && gpc.coverPhotoUrl) {
+          previewBg.style.backgroundImage = `url('${gpc.coverPhotoUrl.replace(/'/g,"")}')`;
+          previewBg.style.backgroundSize = "contain";
+          previewBg.style.backgroundRepeat = "no-repeat";
+          previewBg.style.backgroundPosition = "center";
+          previewBg.style.backgroundColor = "var(--charcoal)";
+        }
         window.updateGPHomePreview();
         placesToStayCache = (Array.isArray(data.placesToStay) && data.placesToStay.length) ? data.placesToStay : DEFAULT_PLACES_TO_STAY;
         itineraryItemsCache = Array.isArray(data.itineraryItems) ? data.itineraryItems : [];
@@ -4034,7 +4038,7 @@
 
     /* ── HERO ── */
     .hero{height:100vh;min-height:700px;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;}
-    .hero-bg{position:absolute;inset:0;background-image:url('https://images.unsplash.com/photo-1519225421980-715cb0215aed?auto=format&fit=crop&w=1920&q=80');background-size:cover;background-position:center;filter:brightness(0.45);}
+    .hero-bg{position:absolute;inset:0;background-color:var(--charcoal);background-image:url('https://images.unsplash.com/photo-1519225421980-715cb0215aed?auto=format&fit=crop&w=1920&q=80');background-size:cover;background-position:center;filter:brightness(0.45);}
     .hero-content{position:relative;text-align:center;padding:0 40px;max-width:860px;animation:fadeUp 1.2s ease both;}
     .hero-eyebrow{font-size:10px;font-weight:400;letter-spacing:0.3em;text-transform:uppercase;color:var(--gold-light);margin-bottom:28px;}
     .hero-title{font-family:var(--font-heading);font-size:clamp(52px,8vw,96px);font-weight:300;color:#FDFAF6;line-height:1.1;margin-bottom:24px;}
@@ -4295,7 +4299,6 @@
     <section class="hero" style="height:100vh;position:relative;">
       <div class="hero-bg"></div>
       <div class="hero-content">
-        <div id="guest-view-photo" style="margin-bottom:20px;"></div>
         <p class="hero-eyebrow" id="guest-view-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
         <h1 class="hero-title" id="guest-view-names">Loading&hellip;</h1>
         <div id="guest-view-countdown"></div>
