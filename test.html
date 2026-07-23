@@ -318,37 +318,41 @@
 
     window.renderRegistryDisplay = function() {
       const regEl = document.getElementById("guest-registry-content");
+      const linksEl = document.getElementById("guest-registry-links");
+      const fundsHeadingEl = document.getElementById("guest-registry-funds-heading");
       if (!regEl || !guestGateData) return;
+
+      // Registry links (Amazon, Crate & Barrel, MyRegistry.com, etc.) — simple click-through buttons
+      const links = Array.isArray(guestGateData.registryLinks) ? guestGateData.registryLinks : [];
+      if (linksEl) {
+        linksEl.innerHTML = links.length ? `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px;">` + links.map(l =>
+          `<a href="${esc(l.url)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:16px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;">${esc(l.name)}</a>`
+        ).join("") + `</div>` : "";
+      }
+
       const items = Array.isArray(guestGateData.registryItems) ? guestGateData.registryItems : [];
+      if (fundsHeadingEl) fundsHeadingEl.style.display = items.length ? "block" : "none";
+
       const priceFilterEl = document.getElementById("reg-filter-price");
-      const statusFilterEl = document.getElementById("reg-filter-status");
       const priceFilter = priceFilterEl ? priceFilterEl.value : "";
-      const statusFilter = statusFilterEl ? statusFilterEl.value : "";
       let filtered = items;
       if (priceFilter) {
         const [min, max] = priceFilter.split("-").map(Number);
         filtered = filtered.filter(r => (Number(r.price)||0) >= min && (Number(r.price)||0) <= max);
       }
-      if (statusFilter) {
-        filtered = filtered.filter(r => (r.status || "Available") === statusFilter);
-      }
+
       if (!filtered.length) {
-        regEl.innerHTML = `<p style="font-size:14px;color:var(--mid-gray);">${items.length ? "No items match those filters." : "Details coming soon!"}</p>`;
+        regEl.innerHTML = (items.length && priceFilter) ? `<p style="font-size:14px;color:var(--mid-gray);">No items match that amount.</p>` : (links.length ? "" : `<p style="font-size:14px;color:var(--mid-gray);">Details coming soon!</p>`);
         return;
       }
-      regEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:28px;">` + filtered.map(r => {
-        const isPurchased = r.status === "Purchased";
-        return `
+      regEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:28px;">` + filtered.map(r => `
         <div style="text-align:center;">
-          ${r.photoUrl ? `<img src="${esc(r.photoUrl)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;margin-bottom:10px;${isPurchased ? "opacity:0.5;" : ""}">` : `<div style="width:100%;aspect-ratio:1/1;background:var(--cream);margin-bottom:10px;"></div>`}
+          ${r.photoUrl ? `<img src="${esc(r.photoUrl)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;margin-bottom:10px;">` : `<div style="width:100%;aspect-ratio:1/1;background:var(--cream);margin-bottom:10px;"></div>`}
           <div style="font-size:14px;color:var(--charcoal);">${esc(r.name||"")}</div>
           ${r.price ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${formatMoney(r.price)}</div>` : ""}
-          ${isPurchased
-            ? `<div style="margin-top:10px;display:inline-block;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);border:1px solid var(--border);padding:8px 16px;">Purchased</div>`
-            : (r.link ? `<a href="${esc(r.link)}" target="_blank" style="margin-top:10px;display:inline-block;background:var(--charcoal);color:var(--warm-white);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;text-decoration:none;">Contribute</a>` : "")}
+          ${r.link ? `<a href="${esc(r.link)}" target="_blank" style="margin-top:10px;display:inline-block;background:var(--charcoal);color:var(--warm-white);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;text-decoration:none;">Contribute</a>` : ""}
           ${r.notes ? `<div style="font-size:11px;color:var(--mid-gray);margin-top:8px;font-style:italic;">${esc(r.notes)}</div>` : ""}
-        </div>`;
-      }).join("") + `</div>`;
+        </div>`).join("") + `</div>`;
     };
 
     window.switchGPTab = function(tab) {
@@ -601,7 +605,7 @@
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [], registryLinks: [] });
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
@@ -1216,7 +1220,8 @@
         faqsCache = Array.isArray(data.faqs) ? data.faqs : [];
         thingsToDoCache = (Array.isArray(data.thingsToDo) && data.thingsToDo.length) ? data.thingsToDo : DEFAULT_THINGS_TO_DO;
         registryItemsCache = Array.isArray(data.registryItems) ? data.registryItems : [];
-      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; thingsToDoCache = []; registryItemsCache = []; }
+        registryLinksCache = Array.isArray(data.registryLinks) ? data.registryLinks : [];
+      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; thingsToDoCache = []; registryItemsCache = []; registryLinksCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
       window.resetGuestForm();
@@ -1231,6 +1236,8 @@
       renderFAQs();
       window.resetThingToDoForm();
       renderThingsToDo();
+      window.resetRegistryLinkForm();
+      renderRegistryLinks();
       window.resetRegistryForm();
       renderRegistryItems();
       autoMergeRSVPSubmissions();
@@ -1458,11 +1465,88 @@
     };
 
     // ── REGISTRY ───────────────────────────────────────────────────
+    let registryLinksCache = [];
+    let editingRegistryLinkId = null;
+
+    function renderRegistryLinks() {
+      const wrap = document.getElementById("registry-links-list");
+      if (!wrap) return;
+      if (!registryLinksCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No registries added yet.</p>';
+        return;
+      }
+      wrap.innerHTML = registryLinksCache.map(r => `
+        <div class="note-item" style="padding:14px 0;display:flex;align-items:center;justify-content:space-between;gap:14px;">
+          <div>
+            <div style="font-size:14px;color:var(--charcoal);">${esc(r.name||"Untitled")}</div>
+            <div style="font-size:12px;color:var(--mid-gray);margin-top:2px;word-break:break-all;">${esc(r.url||"")}</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-shrink:0;">
+            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editRegistryLink('${r.id}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteRegistryLink('${r.id}')">Delete</button>
+          </div>
+        </div>`).join("");
+    }
+
+    window.resetRegistryLinkForm = function() {
+      editingRegistryLinkId = null;
+      ["rl-name","rl-url"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const titleEl = document.getElementById("rl-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add a <em>Registry Link</em>';
+      const saveBtn = document.getElementById("rl-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Registry";
+      const cancelBtn = document.getElementById("rl-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editRegistryLink = function(id) {
+      const r = registryLinksCache.find(x => x.id === id);
+      if (!r) return;
+      editingRegistryLinkId = id;
+      document.getElementById("rl-name").value = r.name || "";
+      document.getElementById("rl-url").value = r.url || "";
+      document.getElementById("rl-form-title").innerHTML = 'Edit <em>Registry Link</em>';
+      document.getElementById("rl-save-btn").textContent = "Save Changes";
+      document.getElementById("rl-cancel-btn").style.display = "inline-block";
+      document.getElementById("rl-form-title").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveRegistryLink = async function() {
+      if (!currentUser) return;
+      const name = document.getElementById("rl-name").value.trim();
+      const url = document.getElementById("rl-url").value.trim();
+      if (!name || !url) { alert("Please enter both a store name and a link."); return; }
+      const entry = { id: editingRegistryLinkId || Date.now().toString(), name, url };
+      if (editingRegistryLinkId) {
+        const idx = registryLinksCache.findIndex(x => x.id === editingRegistryLinkId);
+        if (idx > -1) registryLinksCache[idx] = entry; else registryLinksCache.push(entry);
+      } else {
+        registryLinksCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { registryLinks: registryLinksCache });
+        window.resetRegistryLinkForm();
+        renderRegistryLinks();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteRegistryLink = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Remove this registry link?")) return;
+      registryLinksCache = registryLinksCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { registryLinks: registryLinksCache });
+        renderRegistryLinks();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
     function renderRegistryItems() {
       const wrap = document.getElementById("registry-items-list");
       if (!wrap) return;
       if (!registryItemsCache.length) {
-        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No registry items added yet.</p>';
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No items added yet.</p>';
         return;
       }
       wrap.innerHTML = registryItemsCache.map(r => `
@@ -1472,7 +1556,7 @@
               ${r.photoUrl ? `<img src="${esc(r.photoUrl)}" style="width:56px;height:56px;object-fit:cover;flex-shrink:0;">` : ""}
               <div>
                 <div style="font-size:15px;color:var(--charcoal);">${esc(r.name||"Untitled")}</div>
-                <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${r.price ? formatMoney(r.price) : ""} ${r.status ? `&middot; <span style="color:${r.status==='Purchased'?'var(--mid-gray)':'var(--gold-dark)'};text-transform:uppercase;letter-spacing:0.06em;font-size:11px;">${esc(r.status)}</span>` : ""}</div>
+                ${r.price ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${formatMoney(r.price)}</div>` : ""}
                 ${r.link ? `<div style="font-size:12px;margin-top:4px;"><a href="${esc(r.link)}" target="_blank" style="color:var(--gold-dark);">${esc(r.link)}</a></div>` : ""}
                 ${r.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(r.notes)}</div>` : ""}
               </div>
@@ -1488,13 +1572,11 @@
     window.resetRegistryForm = function() {
       editingRegistryItemId = null;
       ["reg-name","reg-price","reg-link","reg-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
-      const statusEl = document.getElementById("reg-status");
-      if (statusEl) statusEl.value = "Available";
       renderPhotoBox("reg-photo-box", "", "+ Add Photo");
       const photoInput = document.getElementById("reg-photoUrl");
       if (photoInput) photoInput.value = "";
       const titleEl = document.getElementById("reg-form-title");
-      if (titleEl) titleEl.innerHTML = 'Add a <em>Registry Item</em>';
+      if (titleEl) titleEl.innerHTML = 'Add a <em>Fund or Experience</em>';
       const saveBtn = document.getElementById("reg-save-btn");
       if (saveBtn) saveBtn.textContent = "Add Item";
       const cancelBtn = document.getElementById("reg-cancel-btn");
@@ -1507,12 +1589,11 @@
       editingRegistryItemId = id;
       document.getElementById("reg-name").value = r.name || "";
       document.getElementById("reg-price").value = r.price || "";
-      document.getElementById("reg-status").value = r.status || "Available";
       document.getElementById("reg-link").value = r.link || "";
       document.getElementById("reg-notes").value = r.notes || "";
       document.getElementById("reg-photoUrl").value = r.photoUrl || "";
       renderPhotoBox("reg-photo-box", r.photoUrl || "", "+ Add Photo");
-      document.getElementById("reg-form-title").innerHTML = 'Edit <em>Registry Item</em>';
+      document.getElementById("reg-form-title").innerHTML = 'Edit <em>Fund or Experience</em>';
       document.getElementById("reg-save-btn").textContent = "Save Changes";
       document.getElementById("reg-cancel-btn").style.display = "inline-block";
       document.getElementById("reg-form-title").scrollIntoView({behavior:"smooth", block:"center"});
@@ -1521,13 +1602,12 @@
     window.saveRegistryItem = async function() {
       if (!currentUser) return;
       const name = document.getElementById("reg-name").value.trim();
-      if (!name) { alert("Please enter an item name."); return; }
+      if (!name) { alert("Please enter a name."); return; }
       const entry = {
         id: editingRegistryItemId || Date.now().toString(),
         name,
         photoUrl: document.getElementById("reg-photoUrl").value.trim(),
         price: parseFloat(document.getElementById("reg-price").value) || 0,
-        status: document.getElementById("reg-status").value,
         link: document.getElementById("reg-link").value.trim(),
         notes: document.getElementById("reg-notes").value.trim()
       };
@@ -1547,7 +1627,7 @@
 
     window.deleteRegistryItem = async function(id) {
       if (!currentUser) return;
-      if (!confirm("Remove this registry item?")) return;
+      if (!confirm("Remove this item?")) return;
       registryItemsCache = registryItemsCache.filter(x => x.id !== id);
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { registryItems: registryItemsCache });
@@ -2813,7 +2893,8 @@
           faqs: Array.isArray(data.faqs) ? data.faqs : [],
           itineraryItems: Array.isArray(data.itineraryItems) ? data.itineraryItems : [],
           thingsToDo: (Array.isArray(data.thingsToDo) && data.thingsToDo.length) ? data.thingsToDo : DEFAULT_THINGS_TO_DO,
-          registryItems: Array.isArray(data.registryItems) ? data.registryItems : []
+          registryItems: Array.isArray(data.registryItems) ? data.registryItems : [],
+          registryLinks: Array.isArray(data.registryLinks) ? data.registryLinks : []
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -3808,20 +3889,19 @@
         <div id="guest-tab-registry" class="guest-tab-panel" style="display:none;">
           <span class="section-label">Registry</span>
           <h2 style="font-family:var(--font-heading);font-size:32px;font-weight:300;color:var(--charcoal);margin:8px 0 20px;">A few <em style="color:var(--gold);font-style:italic;">ideas</em></h2>
-          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;margin-bottom:24px;">Your presence means everything to us — please don't feel you need to bring a gift. If you'd like to, here are a few things we'd love.</p>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px;">
-            <select class="form-input" id="reg-filter-price" style="max-width:200px;" onchange="window.renderRegistryDisplay()">
-              <option value="">Any Price</option>
-              <option value="0-50">Under $50</option>
-              <option value="50-150">$50 &ndash; $150</option>
-              <option value="150-300">$150 &ndash; $300</option>
-              <option value="300-9999999">$300+</option>
-            </select>
-            <select class="form-input" id="reg-filter-status" style="max-width:200px;" onchange="window.renderRegistryDisplay()">
-              <option value="">All Items</option>
-              <option value="Available">Available Only</option>
-              <option value="Purchased">Purchased Only</option>
-            </select>
+          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;margin-bottom:28px;">Your presence means everything to us — please don't feel you need to bring a gift. If you'd like to, here are a few places to start.</p>
+          <div id="guest-registry-links"></div>
+          <div id="guest-registry-funds-heading" style="display:none;margin-top:20px;">
+            <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin-bottom:16px;">Funds &amp; Experiences</h3>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:28px;">
+              <select class="form-input" id="reg-filter-price" style="max-width:200px;" onchange="window.renderRegistryDisplay()">
+                <option value="">Any Amount</option>
+                <option value="0-50">Under $50</option>
+                <option value="50-150">$50 &ndash; $150</option>
+                <option value="150-300">$150 &ndash; $300</option>
+                <option value="300-9999999">$300+</option>
+              </select>
+            </div>
           </div>
           <div id="guest-registry-content"></div>
         </div>
@@ -6015,32 +6095,52 @@
 
     <!-- REGISTRY TAB -->
     <div id="gptab-registry" class="gp-tab-panel" style="display:none;">
-      <h2 class="form-section-title" id="reg-form-title">Add a <em>Registry Item</em></h2>
-      <p class="form-section-intro">Add gifts, experiences, or funds — anything you'd love for guests to consider. Guests will be able to filter by price and see what's still available.</p>
+      <h2 class="form-section-title" id="rl-form-title">Add a <em>Registry Link</em></h2>
+      <p class="form-section-intro">Add a button for each store you're registered with — Amazon, Crate &amp; Barrel, Target, MyRegistry.com, wherever. Guests click straight through to that store's page, where purchases and availability are already tracked for you — nothing to manage on our end.</p>
       <div class="form-grid">
         <div class="form-group full">
-          <label class="form-label">Item Photo <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
+          <label class="form-label">Store Name</label>
+          <input type="text" class="form-input" id="rl-name" placeholder="e.g. Amazon">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Registry Link</label>
+          <input type="text" class="form-input" id="rl-url" placeholder="https:// link to your registry on this site">
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="rl-save-btn" onclick="window.saveRegistryLink()">Add Registry</button>
+        <button class="btn-back" id="rl-cancel-btn" style="display:none;" onclick="window.resetRegistryLinkForm()">Cancel Edit</button>
+      </div>
+      <div style="margin-top:24px;">
+        <h2 class="form-section-title">Your <em>Registries</em></h2>
+        <div id="registry-links-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No registries added yet.</p></div>
+      </div>
+
+      <div class="form-section-block" style="margin-top:8px;padding-top:32px;border-top:1px solid var(--border);">
+      <h2 class="form-section-title" id="reg-form-title">Add a <em>Fund or Experience</em></h2>
+      <p class="form-section-intro">For anything without its own registry page — a honeymoon fund, or one of our event add-ons like a coffee station or cigar lounge — guests can contribute any amount, anytime, with no "sold out" state to manage.</p>
+      <div style="background:var(--cream);border:1px solid var(--border);padding:16px 20px;margin-bottom:24px;">
+        <p style="font-size:12px;color:var(--charcoal);line-height:1.7;margin:0 0 10px;">💡 <strong>Add your honeymoon fund here!</strong> Link via Venmo, Apple Pay, PayPal, or any other fund collection link you use — guests can contribute whatever they'd like.</p>
+        <p style="font-size:12px;color:var(--charcoal);line-height:1.7;margin:0;">💡 <strong>Want one of our event enhancements?</strong> Things like a coffee station, cigar lounge, late-night snack bar, or photo booth can go here too — guests contribute straight to the same fund collection link you're already using. Just let your lead coordinator know you'd like to add one, and we'll take care of invoicing you for it through HoneyBook as usual.</p>
+      </div>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Photo <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
           <div class="photo-upload-box" id="reg-photo-box" style="aspect-ratio:1/1;max-width:160px;" onclick="window.promptForPhoto('reg-photoUrl','reg-photo-box','+ Add Photo')"><span class="photo-upload-label">+ Add Photo</span></div>
           <input type="hidden" id="reg-photoUrl">
         </div>
         <div class="form-group full">
-          <label class="form-label">Item Name</label>
-          <input type="text" class="form-input" id="reg-name" placeholder="e.g. Honeymoon Fund: Italy">
+          <label class="form-label">Name</label>
+          <input type="text" class="form-input" id="reg-name" placeholder="e.g. Honeymoon Fund: Italy, or Coffee Station Add-On">
         </div>
         <div class="form-group">
-          <label class="form-label">Price</label>
+          <label class="form-label">Suggested Amount <span style="font-size:11px;color:var(--mid-gray);">(optional)</span></label>
           <input type="number" class="form-input" id="reg-price" min="0" step="0.01" placeholder="0.00">
         </div>
-        <div class="form-group">
-          <label class="form-label">Status</label>
-          <select class="form-input" id="reg-status">
-            <option>Available</option>
-            <option>Purchased</option>
-          </select>
-        </div>
         <div class="form-group full">
-          <label class="form-label">Purchase / Contribute Link</label>
-          <input type="text" class="form-input" id="reg-link" placeholder="https:// link to Amazon, Zola, Venmo, etc.">
+          <label class="form-label">Contribute Link</label>
+          <input type="text" class="form-input" id="reg-link" placeholder="Your own Venmo, PayPal.me, Zelle, etc.">
+          <p style="font-size:11px;color:var(--mid-gray);line-height:1.6;margin-top:8px;">Make sure this links to a payment method you fully control directly — like your own Venmo, PayPal.me, or Zelle — so contributions come straight to you, with no third party holding the money. For event add-ons, you'll pay us as usual through your regular invoice.</p>
         </div>
         <div class="form-group full">
           <label class="form-label">Notes</label>
@@ -6052,8 +6152,8 @@
         <button class="btn-back" id="reg-cancel-btn" style="display:none;" onclick="window.resetRegistryForm()">Cancel Edit</button>
       </div>
       <div style="margin-top:36px;">
-        <h2 class="form-section-title">Your <em>Registry</em></h2>
-        <div id="registry-items-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No registry items added yet.</p></div>
+        <h2 class="form-section-title">Your <em>Funds &amp; Experiences</em></h2>
+        <div id="registry-items-list"><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No items added yet.</p></div>
       </div>
     </div>
   </div>
