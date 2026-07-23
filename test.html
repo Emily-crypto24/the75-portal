@@ -12,6 +12,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Jost:wght@300;400;500&family=Pinyon+Script&display=swap" rel="stylesheet">
 
   <!-- Firebase SDKs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -605,7 +606,7 @@
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [], registryLinks: [] });
+            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [], registryLinks: [], notesTool: [] });
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
@@ -628,6 +629,7 @@
           await loadRehearsalDinner(user.uid);
           await loadTimelineItems(user.uid);
           await loadIdeaBoard(user.uid);
+          await loadNotesTool(user.uid);
         }
       } else {
         currentUser = null;
@@ -2240,6 +2242,158 @@
       URL.revokeObjectURL(url);
     };
 
+    // ── GUEST LIST IMPORT (CSV/EXCEL) ─────────────────────────────
+    let pendingGuestImportRows = [];
+
+    window.downloadGuestImportTemplate = function() {
+      const rows = [
+        ["Guest Name", "Address", "Plus One Name", "RSVP Status", "Meal Choice", "Allergies", "Table Number", "Notes"],
+        ["Jane Smith", "123 Main St, Columbus, OH 43215", "John Smith", "Attending", "Chicken", "Peanut allergy", "5", ""]
+      ];
+      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "guest_list_template.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
+    function findImportColumn(headers, keywords, excludeKeywords) {
+      excludeKeywords = excludeKeywords || [];
+      const idx = headers.findIndex(h => {
+        const lower = (h || "").toLowerCase();
+        if (excludeKeywords.some(ex => lower.includes(ex))) return false;
+        return keywords.some(k => lower.includes(k));
+      });
+      return idx;
+    }
+
+    function normalizeRSVPStatus(val) {
+      const v = (val || "").toString().trim().toLowerCase();
+      if (["yes","attending","confirmed","coming","y"].includes(v)) return "Attending";
+      if (["no","not attending","declined","not coming","n"].includes(v)) return "Not Attending";
+      return "Pending";
+    }
+
+    window.handleGuestImportFile = function(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const sheet = workbook.Sheets[firstSheetName];
+          const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+          if (!rows.length) { alert("That file looks empty."); return; }
+          const headers = rows[0].map(h => String(h || ""));
+          const dataRows = rows.slice(1).filter(r => r.some(cell => String(cell || "").trim()));
+
+          const nameCol = findImportColumn(headers, ["name"], ["plus"]);
+          const addressCol = findImportColumn(headers, ["address"]);
+          const plusOneCol = findImportColumn(headers, ["plus"]);
+          const rsvpCol = findImportColumn(headers, ["rsvp", "status", "attending"]);
+          const mealCol = findImportColumn(headers, ["meal"]);
+          const allergyCol = findImportColumn(headers, ["allerg", "dietary"]);
+          const tableCol = findImportColumn(headers, ["table"]);
+          const notesCol = findImportColumn(headers, ["note"]);
+
+          pendingGuestImportRows = dataRows.map(r => {
+            const plusOneName = plusOneCol > -1 ? String(r[plusOneCol] || "").trim() : "";
+            return {
+              guestName: nameCol > -1 ? String(r[nameCol] || "").trim() : "",
+              address: addressCol > -1 ? String(r[addressCol] || "").trim() : "",
+              plusOneAllowed: !!plusOneName,
+              plusOneName,
+              rsvpStatus: rsvpCol > -1 ? normalizeRSVPStatus(r[rsvpCol]) : "Pending",
+              mealChoice: mealCol > -1 ? String(r[mealCol] || "").trim() : "",
+              allergies: allergyCol > -1 ? String(r[allergyCol] || "").trim() : "",
+              tableNumber: tableCol > -1 ? String(r[tableCol] || "").trim() : "",
+              notes: notesCol > -1 ? String(r[notesCol] || "").trim() : ""
+            };
+          }).filter(g => g.guestName);
+
+          renderGuestImportPreview(nameCol > -1);
+        } catch(err) {
+          alert("Couldn't read that file. Please make sure it's a valid .csv or .xlsx file.");
+        }
+        event.target.value = "";
+      };
+      reader.readAsArrayBuffer(file);
+    };
+
+    function renderGuestImportPreview(foundNameColumn) {
+      const wrap = document.getElementById("gl-import-preview");
+      if (!wrap) return;
+      if (!pendingGuestImportRows.length) {
+        wrap.innerHTML = `<p style="font-size:13px;color:#c0392b;">${foundNameColumn ? "No guest rows found in that file." : "We couldn't find a name column in that file — please check your headers or use our template."}</p>`;
+        return;
+      }
+      const previewRows = pendingGuestImportRows.slice(0, 8);
+      wrap.innerHTML = `
+        <p style="font-size:13px;color:var(--charcoal);margin-bottom:12px;"><strong>${pendingGuestImportRows.length} guest${pendingGuestImportRows.length===1?"":"s"} found.</strong> Here's a preview of the first ${previewRows.length}:</p>
+        <div style="overflow-x:auto;margin-bottom:16px;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <tr style="background:var(--cream);text-align:left;">
+              <th style="padding:8px;border:1px solid var(--border);">Name</th>
+              <th style="padding:8px;border:1px solid var(--border);">Plus One</th>
+              <th style="padding:8px;border:1px solid var(--border);">RSVP</th>
+              <th style="padding:8px;border:1px solid var(--border);">Meal</th>
+              <th style="padding:8px;border:1px solid var(--border);">Allergies</th>
+              <th style="padding:8px;border:1px solid var(--border);">Table</th>
+            </tr>
+            ${previewRows.map(g => `
+            <tr>
+              <td style="padding:8px;border:1px solid var(--border);">${esc(g.guestName)}</td>
+              <td style="padding:8px;border:1px solid var(--border);">${esc(g.plusOneName)}</td>
+              <td style="padding:8px;border:1px solid var(--border);">${esc(g.rsvpStatus)}</td>
+              <td style="padding:8px;border:1px solid var(--border);">${esc(g.mealChoice)}</td>
+              <td style="padding:8px;border:1px solid var(--border);">${esc(g.allergies)}</td>
+              <td style="padding:8px;border:1px solid var(--border);">${esc(g.tableNumber)}</td>
+            </tr>`).join("")}
+          </table>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <button class="btn-save" onclick="window.confirmGuestImport()">Import These ${pendingGuestImportRows.length} Guests</button>
+          <button class="btn-back" onclick="window.cancelGuestImport()">Cancel</button>
+        </div>`;
+    }
+
+    window.confirmGuestImport = async function() {
+      if (!currentUser || !pendingGuestImportRows.length) return;
+      const newEntries = pendingGuestImportRows.map(g => ({
+        id: Date.now().toString() + Math.floor(Math.random()*10000),
+        guestName: g.guestName,
+        address: g.address,
+        plusOneAllowed: g.plusOneAllowed,
+        plusOneName: g.plusOneName,
+        rsvpStatus: g.rsvpStatus,
+        mealChoice: g.mealChoice,
+        allergies: g.allergies,
+        tableNumber: g.tableNumber,
+        notes: g.notes,
+        children: []
+      }));
+      guestListCache = guestListCache.concat(newEntries);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
+        pendingGuestImportRows = [];
+        document.getElementById("gl-import-preview").innerHTML = `<p style="font-size:13px;color:var(--gold-dark);">✓ Imported successfully!</p>`;
+        window.renderGuestList();
+        syncPublicProfile(currentUser.uid);
+      } catch(e) { alert("Couldn't import: " + e.message); }
+    };
+
+    window.cancelGuestImport = function() {
+      pendingGuestImportRows = [];
+      document.getElementById("gl-import-preview").innerHTML = "";
+    };
+
     // ── BACHELOR/BACHELORETTE PLANNER (PLANNING TOOL) ─────────────
     let bachPartiesCache = [];
     let editingBachPartyId = null;
@@ -2687,6 +2841,105 @@
       renderIdeas();
       renderChecklist();
     }
+
+    // ── NOTES (PLANNING TOOL) ──────────────────────────────────────
+    let notesToolCache = [];
+    let editingNoteId = null;
+
+    async function loadNotesTool(uid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        notesToolCache = Array.isArray(data.notesTool) ? data.notesTool : [];
+      } catch(e) { notesToolCache = []; }
+      window.resetNoteForm();
+      renderNotesTool();
+    }
+
+    function renderNotesTool() {
+      const wrap = document.getElementById("notes-tool-grid");
+      if (!wrap) return;
+      const addCard = `
+        <div onclick="document.getElementById('pn-form-block').scrollIntoView({behavior:'smooth'});document.getElementById('pn-title').focus();" style="border:2px dashed var(--border);min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;color:var(--mid-gray);transition:border-color 0.2s;" onmouseover="this.style.borderColor='var(--gold)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="font-size:28px;margin-bottom:8px;">+</div>
+          <div style="font-size:13px;letter-spacing:0.04em;">Add a Note</div>
+        </div>`;
+      const sorted = notesToolCache.slice().sort((a,b) => new Date(b.updatedAt||0) - new Date(a.updatedAt||0));
+      const noteCards = sorted.map(n => {
+        const preview = (n.content || "").slice(0, 120);
+        const dateStr = n.updatedAt ? new Date(n.updatedAt).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) + " · " + new Date(n.updatedAt).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : "";
+        return `
+        <div style="border:1px solid var(--border);background:var(--cream);min-height:160px;padding:20px;display:flex;flex-direction:column;cursor:pointer;" onclick="window.editNote('${n.id}')">
+          <div style="font-size:15px;color:var(--charcoal);font-weight:500;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(n.title||"Untitled note")}</div>
+          <div style="font-size:12px;color:var(--mid-gray);line-height:1.6;flex:1;overflow:hidden;">${esc(preview)}${(n.content||"").length > 120 ? "…" : ""}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;">
+            <span style="font-size:10px;color:var(--mid-gray);letter-spacing:0.03em;">${dateStr ? "Edited " + dateStr : ""}</span>
+            <button onclick="event.stopPropagation();window.deleteNote('${n.id}')" style="background:none;border:none;color:var(--mid-gray);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Delete</button>
+          </div>
+        </div>`;
+      }).join("");
+      wrap.innerHTML = addCard + noteCards;
+    }
+
+    window.resetNoteForm = function() {
+      editingNoteId = null;
+      const titleInput = document.getElementById("pn-title");
+      const contentInput = document.getElementById("pn-content");
+      if (titleInput) titleInput.value = "";
+      if (contentInput) contentInput.value = "";
+      const titleEl = document.getElementById("pn-form-title");
+      if (titleEl) titleEl.innerHTML = 'Add a <em>Note</em>';
+      const saveBtn = document.getElementById("pn-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Note";
+      const cancelBtn = document.getElementById("pn-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.editNote = function(id) {
+      const n = notesToolCache.find(x => x.id === id);
+      if (!n) return;
+      editingNoteId = id;
+      document.getElementById("pn-title").value = n.title || "";
+      document.getElementById("pn-content").value = n.content || "";
+      document.getElementById("pn-form-title").innerHTML = 'Edit <em>Note</em>';
+      document.getElementById("pn-save-btn").textContent = "Save Changes";
+      document.getElementById("pn-cancel-btn").style.display = "inline-block";
+      document.getElementById("pn-form-block").scrollIntoView({behavior:"smooth", block:"center"});
+    };
+
+    window.saveNote = async function() {
+      if (!currentUser) return;
+      const title = document.getElementById("pn-title").value.trim();
+      const content = document.getElementById("pn-content").value.trim();
+      if (!title && !content) { alert("Please enter a title or some note content."); return; }
+      const entry = {
+        id: editingNoteId || Date.now().toString(),
+        title,
+        content,
+        updatedAt: new Date().toISOString()
+      };
+      if (editingNoteId) {
+        const idx = notesToolCache.findIndex(x => x.id === editingNoteId);
+        if (idx > -1) notesToolCache[idx] = entry; else notesToolCache.push(entry);
+      } else {
+        notesToolCache.push(entry);
+      }
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { notesTool: notesToolCache });
+        window.resetNoteForm();
+        renderNotesTool();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.deleteNote = async function(id) {
+      if (!currentUser) return;
+      if (!confirm("Delete this note?")) return;
+      notesToolCache = notesToolCache.filter(x => x.id !== id);
+      try {
+        await updateDoc(doc(db, "couples", currentUser.uid), { notesTool: notesToolCache });
+        renderNotesTool();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
 
     function renderIdeas() {
       const wrap = document.getElementById("ideas-list");
@@ -3979,6 +4232,7 @@
         <a href="#" onclick="window.showPage('rehearsal');return false;">Rehearsal Dinner Planner</a>
         <a href="#" onclick="window.showPage('timeline');return false;">Wedding Day Timeline</a>
         <a href="#" onclick="window.showPage('ideas');return false;">Ideas &amp; Inspiration Board</a>
+        <a href="#" onclick="window.showPage('notes');return false;">Notes</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('guestportal');return false;">Guest Portal</a></li>
@@ -5460,6 +5714,20 @@
     </div>
 
     <div class="form-section-block">
+      <h2 class="form-section-title">Import <em>Guest List</em></h2>
+      <p class="form-section-intro">Already started a spreadsheet? Upload it here (.csv or .xlsx) and we'll read it in and add each row as a guest — no retyping needed. We'll show you a preview first so you can double check everything looks right before it's added.</p>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+        <button class="btn-back" onclick="window.downloadGuestImportTemplate()">&#8595; Download a Template</button>
+        <label class="btn-save" style="cursor:pointer;margin:0;">
+          Choose File to Import
+          <input type="file" id="gl-import-file" accept=".csv,.xlsx,.xls" style="display:none;" onchange="window.handleGuestImportFile(event)">
+        </label>
+      </div>
+      <p style="font-size:11px;color:var(--mid-gray);line-height:1.7;">We'll do our best to match your column headers automatically (things like "Name," "Address," "Plus One," "Meal," "Allergies," "Table," or "Notes" in any order) — but using our template guarantees the cleanest results.</p>
+      <div id="gl-import-preview" style="margin-top:20px;"></div>
+    </div>
+
+    <div class="form-section-block">
       <h2 class="form-section-title">Your <em>Guest List</em></h2>
       <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin-bottom:24px;">
         <div class="form-group full" style="max-width:340px;margin-bottom:0;">
@@ -5758,6 +6026,49 @@
     <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
   </div>
 </div><!-- end page-ideas -->
+
+<!-- ══════════════════ NOTES (PLANNING TOOL) ══════════════════ -->
+<div id="page-notes" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting3-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Your <em>Notes</em></h1>
+      <p>Jot down anything — nothing fancy, just a place to keep track.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:32px;line-height:1.8;font-style:italic;">Use this for anything that doesn't fit anywhere else — quick thoughts, questions for your coordinator, random reminders.</p>
+
+    <div class="form-section-block" id="pn-form-block">
+      <h2 class="form-section-title" id="pn-form-title">Add a <em>Note</em></h2>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Title</label>
+          <input type="text" class="form-input" id="pn-title" placeholder="e.g. Questions for the caterer">
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Note</label>
+          <textarea class="form-textarea" id="pn-content" style="min-height:160px;" placeholder="Start typing..."></textarea>
+        </div>
+      </div>
+      <div class="form-save-row" style="margin-top:24px;">
+        <button class="btn-save" id="pn-save-btn" onclick="window.saveNote()">Add Note</button>
+        <button class="btn-back" id="pn-cancel-btn" style="display:none;" onclick="window.resetNoteForm()">Cancel Edit</button>
+      </div>
+    </div>
+
+    <div class="form-section-block">
+      <h2 class="form-section-title">Your <em>Notes</em></h2>
+      <div id="notes-tool-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px;"></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-notes -->
 
 <!-- ══════════════════ GUEST PORTAL ══════════════════ -->
 <div id="page-guestportal" class="page">
