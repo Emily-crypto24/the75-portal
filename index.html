@@ -2829,6 +2829,113 @@
       URL.revokeObjectURL(url);
     };
 
+    // ── ADMIN: CLIENT TIMELINE MODAL ───────────────────────────────
+    let currentTimelineCoupleId = null;
+    let adminTimelineCache = [];
+    let editingAdminTimelineId = null;
+
+    window.openClientTimeline = async function(uid, coupleName) {
+      currentTimelineCoupleId = uid;
+      document.getElementById("admin-timeline-modal-title").textContent = `${coupleName} — Client Timeline`;
+      document.getElementById("admin-timeline-modal").style.display = "flex";
+      window.adminResetTimelineForm();
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        adminTimelineCache = Array.isArray(data.timelineItems) ? data.timelineItems : [];
+      } catch(e) { adminTimelineCache = []; }
+      renderAdminTimelineList();
+    };
+
+    window.closeClientTimeline = function() {
+      document.getElementById("admin-timeline-modal").style.display = "none";
+      currentTimelineCoupleId = null;
+    };
+
+    function renderAdminTimelineList() {
+      const wrap = document.getElementById("admin-timeline-list");
+      if (!wrap) return;
+      if (!adminTimelineCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No timeline items added yet.</p>';
+        return;
+      }
+      const sorted = adminTimelineCache.slice().sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+      wrap.innerHTML = sorted.map(t => `
+        <div class="note-item" style="padding:14px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:200px;display:flex;gap:16px;">
+              <div style="font-family:var(--font-heading);font-size:15px;color:var(--gold-dark);min-width:70px;">${t.time ? formatMeetingTime(t.time) : "—"}</div>
+              <div>
+                <div style="font-size:14px;color:var(--charcoal);">${esc(t.activity||"Untitled")}</div>
+                ${t.location ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(t.location)}</div>` : ""}
+                ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:4px;font-style:italic;">${esc(t.notes)}</div>` : ""}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0;">
+              <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.adminEditTimelineItem('${t.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.adminDeleteTimelineItem('${t.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.adminResetTimelineForm = function() {
+      editingAdminTimelineId = null;
+      ["admin-tl-time","admin-tl-activity","admin-tl-location","admin-tl-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const saveBtn = document.getElementById("admin-tl-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Timeline Item";
+      const cancelBtn = document.getElementById("admin-tl-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.adminEditTimelineItem = function(id) {
+      const t = adminTimelineCache.find(x => x.id === id);
+      if (!t) return;
+      editingAdminTimelineId = id;
+      document.getElementById("admin-tl-time").value = t.time || "";
+      document.getElementById("admin-tl-activity").value = t.activity || "";
+      document.getElementById("admin-tl-location").value = t.location || "";
+      document.getElementById("admin-tl-notes").value = t.notes || "";
+      document.getElementById("admin-tl-save-btn").textContent = "Save Changes";
+      document.getElementById("admin-tl-cancel-btn").style.display = "inline-block";
+    };
+
+    window.adminSaveTimelineItem = async function() {
+      if (!currentTimelineCoupleId) return;
+      const activity = document.getElementById("admin-tl-activity").value.trim();
+      if (!activity) { alert("Please enter an event or activity."); return; }
+      const entry = {
+        id: editingAdminTimelineId || Date.now().toString(),
+        time: document.getElementById("admin-tl-time").value,
+        activity,
+        location: document.getElementById("admin-tl-location").value.trim(),
+        notes: document.getElementById("admin-tl-notes").value.trim()
+      };
+      if (editingAdminTimelineId) {
+        const idx = adminTimelineCache.findIndex(x => x.id === editingAdminTimelineId);
+        if (idx > -1) adminTimelineCache[idx] = entry; else adminTimelineCache.push(entry);
+      } else {
+        adminTimelineCache.push(entry);
+      }
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
+        window.adminResetTimelineForm();
+        renderAdminTimelineList();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.adminDeleteTimelineItem = async function(id) {
+      if (!currentTimelineCoupleId) return;
+      if (!confirm("Remove this timeline item?")) return;
+      adminTimelineCache = adminTimelineCache.filter(x => x.id !== id);
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
+        renderAdminTimelineList();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
     // ── IDEAS & INSPIRATION BOARD (PLANNING TOOL) ─────────────────
     let ideaItemsCache = [];
     let editingIdeaId = null;
@@ -3608,6 +3715,7 @@
             <button class="acc-btn-view" onclick="window.openCouple('${c.id}')">View / Edit</button>
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
         </div>`;
@@ -3680,11 +3788,14 @@
       const notesHTML = `<div class="amd-section">
         <div class="amd-stitle">Internal Notes <span style="font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;">(only visible to Emily, Jess &amp; coordinators)</span></div>
         <div class="notes-list" id="notes-list-${uid}">
-          ${notes.length ? notes.slice().reverse().map(n => `
+          ${notes.length ? notes.map((n, i) => i).reverse().map(origIdx => { const n = notes[origIdx]; return `
             <div class="note-item">
-              <div class="note-meta"><span class="note-author">${esc(n.author||"Unknown")}</span> &middot; <span class="note-date">${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span></div>
+              <div class="note-meta" style="display:flex;justify-content:space-between;align-items:center;">
+                <span><span class="note-author">${esc(n.author||"Unknown")}</span> &middot; <span class="note-date">${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span></span>
+                <button onclick="window.deleteCoupleNote('${uid}',${origIdx})" style="background:none;border:none;color:var(--mid-gray);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Delete</button>
+              </div>
               <div class="note-text">${esc(n.text||"")}</div>
-            </div>`).join("") : `<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:8px 0;">No internal notes yet.</p>`}
+            </div>`; }).join("") : `<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:8px 0;">No internal notes yet.</p>`}
         </div>
         <div class="note-add-row">
           <textarea class="amd-input amd-textarea" id="note-input-${uid}" placeholder="Add an internal note about this couple..." rows="2"></textarea>
@@ -3745,6 +3856,18 @@
         await ud(dc(db,"couples",uid), { notes: arrayUnion(note) });
         await window.openCouple(uid); // refresh modal with new note
       } catch(e) { alert("Couldn't save note: " + e.message); }
+    };
+
+    window.deleteCoupleNote = async function(uid, index) {
+      if (!confirm("Delete this internal note?")) return;
+      const { doc: dc, getDoc: gd, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      try {
+        const snap = await gd(dc(db,"couples",uid));
+        const notes = Array.isArray(snap.data().notes) ? snap.data().notes : [];
+        notes.splice(index, 1);
+        await ud(dc(db,"couples",uid), { notes });
+        await window.openCouple(uid); // refresh modal
+      } catch(e) { alert("Couldn't delete note: " + e.message); }
     };
 
     window.saveLeadCoordinator = async function(uid) {
@@ -4246,6 +4369,7 @@
     .acc-btn-export:hover{background:var(--gold);color:var(--warm-white);border-color:var(--gold);}
     /* Admin Modal */
     #admin-modal{display:none;position:fixed;inset:0;z-index:500;background:rgba(44,44,44,0.7);align-items:center;justify-content:center;padding:24px;}
+    #admin-timeline-modal{display:none;position:fixed;inset:0;z-index:500;background:rgba(44,44,44,0.7);align-items:center;justify-content:center;padding:24px;}
     .admin-modal-box{background:var(--warm-white);width:100%;max-width:780px;max-height:85vh;display:flex;flex-direction:column;border-radius:2px;overflow:hidden;}
     .admin-modal-header{padding:28px 32px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
     .admin-modal-header h2{font-family:var(--font-heading);font-size:26px;font-weight:300;color:var(--charcoal);}
@@ -6853,6 +6977,44 @@
         <button class="admin-modal-close" onclick="window.closeAdminModal()">&#10005;</button>
       </div>
       <div class="admin-modal-body" id="admin-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Client Timeline Modal -->
+  <div id="admin-timeline-modal">
+    <div class="admin-modal-box">
+      <div class="admin-modal-header">
+        <h2 id="admin-timeline-modal-title">Client Timeline</h2>
+        <button class="admin-modal-close" onclick="window.closeClientTimeline()">&#10005;</button>
+      </div>
+      <div class="admin-modal-body">
+        <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:20px;">This is the same Wedding Day Timeline the couple sees and edits on their own side — changes made here or by the couple show up for both of you automatically.</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Time</label>
+            <input type="time" class="amd-input" id="admin-tl-time">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Event / Activity</label>
+            <input type="text" class="amd-input" id="admin-tl-activity" placeholder="e.g. Hair &amp; Makeup Begins">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Location</label>
+            <input type="text" class="amd-input" id="admin-tl-location" placeholder="e.g. Bridal Suite">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Notes</label>
+            <textarea class="amd-input amd-textarea" id="admin-tl-notes"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:16px;display:flex;gap:10px;">
+          <button class="acc-btn-view" style="padding:10px 24px;font-size:11px;" id="admin-tl-save-btn" onclick="window.adminSaveTimelineItem()">Add Timeline Item</button>
+          <button class="acc-btn-export" style="padding:10px 24px;font-size:11px;display:none;" id="admin-tl-cancel-btn" onclick="window.adminResetTimelineForm()">Cancel Edit</button>
+        </div>
+        <div style="margin-top:28px;border-top:1px solid var(--border);padding-top:20px;">
+          <div id="admin-timeline-list"></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
