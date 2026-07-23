@@ -3397,14 +3397,20 @@
         tbody.innerHTML = `<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--mid-gray);font-style:italic;">No linen orders added yet.</td></tr>`;
         return;
       }
-      const sorted = linenOrdersCache.slice().sort((a,b) => (a.eventDate||"9999-12-31").localeCompare(b.eventDate||"9999-12-31"));
+      const sorted = linenOrdersCache.slice().sort((a,b) => {
+        const aComplete = a.status === "Event Complete" ? 1 : 0;
+        const bComplete = b.status === "Event Complete" ? 1 : 0;
+        if (aComplete !== bComplete) return aComplete - bComplete;
+        return (a.eventDate||"9999-12-31").localeCompare(b.eventDate||"9999-12-31");
+      });
       const statusColors = {
         "Pending Client Final Decision": "#b8965a",
         "Ready to Order": "#5a8fb8",
         "Ordered": "#5a8fb8",
         "Delivered": "#7a9e6e",
         "Checked In": "#4a7a3e",
-        "Problem Attention Needed": "#c0392b"
+        "Problem Attention Needed": "#c0392b",
+        "Event Complete": "#a8a29a"
       };
       tbody.innerHTML = sorted.map(lo => {
         const c = allCouplesCache.find(x => x.id === lo.coupleId);
@@ -3413,7 +3419,9 @@
         const paid = Number(lo.amountPaid)||0;
         const balance = total - paid;
         const color = statusColors[lo.status] || "var(--mid-gray)";
-        return `<tr>
+        const isComplete = lo.status === "Event Complete";
+        const rowStyle = isComplete ? "color:#a8a29a;background:#faf9f7;" : "";
+        return `<tr style="${rowStyle}">
           <td style="padding:10px 12px;border:1px solid var(--border);">${esc(name)}</td>
           <td style="padding:10px 12px;border:1px solid var(--border);">${lo.eventDate ? new Date(lo.eventDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : ""}</td>
           <td style="padding:10px 12px;border:1px solid var(--border);"><span style="color:${color};font-size:11px;letter-spacing:0.04em;text-transform:uppercase;">${esc(lo.status||"")}</span></td>
@@ -3421,7 +3429,7 @@
           <td style="padding:10px 12px;border:1px solid var(--border);">${lo.deliveryDate ? new Date(lo.deliveryDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : ""}</td>
           <td style="padding:10px 12px;border:1px solid var(--border);">${formatMoney(total)}</td>
           <td style="padding:10px 12px;border:1px solid var(--border);">${formatMoney(paid)}</td>
-          <td style="padding:10px 12px;border:1px solid var(--border);color:${balance > 0 ? '#c0392b' : 'var(--charcoal)'};">${formatMoney(balance)}</td>
+          <td style="padding:10px 12px;border:1px solid var(--border);color:${isComplete ? '#a8a29a' : (balance > 0 ? '#c0392b' : 'var(--charcoal)')};">${formatMoney(balance)}</td>
           <td style="padding:10px 12px;border:1px solid var(--border);white-space:nowrap;">
             <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.editLinenOrder('${lo.coupleId}')">Edit</button>
             <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.deleteLinenOrder('${lo.coupleId}')">Delete</button>
@@ -3510,6 +3518,32 @@
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
+    window.exportLinenOrdersCSV = function() {
+      if (!linenOrdersCache.length) { alert("No linen orders to export yet."); return; }
+      const rows = [["Couple","Event Date","Order Date","Delivery Date","Status","Event ID","Order Details","Item Sub-Total","Fuel Charge","Delivery Charge","Discount","Taxes","Total","Amount Paid","Balance","Notes"]];
+      linenOrdersCache.slice().sort((a,b) => (a.eventDate||"9999-12-31").localeCompare(b.eventDate||"9999-12-31")).forEach(lo => {
+        const c = allCouplesCache.find(x => x.id === lo.coupleId);
+        const name = c ? coupleDisplayName(c) : (lo.coupleName || "Unknown Couple");
+        const total = linenOrderTotal(lo);
+        const paid = Number(lo.amountPaid)||0;
+        rows.push([
+          name, lo.eventDate||"", lo.orderDate||"", lo.deliveryDate||"", lo.status||"", lo.eventId||"",
+          lo.orderDetails||"", lo.subtotal||0, lo.fuel||0, lo.delivery||0, lo.discount||0, lo.taxes||0,
+          total, paid, (total-paid), lo.notes||""
+        ]);
+      });
+      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "linen_orders.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
     window.setAdminFilter = function(filter) {
       adminFilter = filter;
       document.querySelectorAll(".admin-tab").forEach(t => t.classList.remove("active"));
@@ -3555,11 +3589,17 @@
         const coordinatorLine = lc.name
           ? `<div class="acc-email" style="color:var(--gold-dark);">&#128100; ${esc(lc.name)}</div>`
           : `<div class="acc-email" style="color:var(--mid-gray);font-style:italic;">&#128100; No coordinator assigned</div>`;
+        const guestList = Array.isArray(c.guestList) ? c.guestList : [];
+        const attendingCount = guestList.reduce((sum, g) => {
+          if (g.rsvpStatus !== "Attending") return sum;
+          return sum + 1 + (g.plusOneAllowed && g.plusOneName ? 1 : 0);
+        }, 0);
         return `<div class="acc-card">
           <div class="acc-top">
             <div class="acc-names">${esc(names)}</div>
             <div class="acc-date">&#128197; ${wDate}</div>
             <div class="acc-email">${esc(c.email||"")}</div>
+            <div class="acc-email">&#128101; Guest Count: ${attendingCount}</div>
             ${coordinatorLine}
           </div>
           <div class="acc-progress">
@@ -3569,10 +3609,20 @@
             <button class="acc-btn-view" onclick="window.openCouple('${c.id}')">View / Edit</button>
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
         </div>`;
       }).join("");
     }
+
+    window.sendCouplePasswordReset = async function(email) {
+      if (!email) { alert("No email on file for this couple."); return; }
+      if (!confirm(`Send a password reset email to ${email}?`)) return;
+      try {
+        await sendPasswordResetEmail(auth, email);
+        alert(`Password reset email sent to ${email}.`);
+      } catch(e) { alert("Couldn't send reset email: " + e.message); }
+    };
 
     window.toggleCoupleStatus = async function(uid, newStatus) {
       const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -6702,6 +6752,7 @@
           <div class="admin-subtitle">Track every couple's linen order, delivery, and finances in one place</div>
         </div>
         <div class="admin-header-right">
+          <button class="btn-export-all" onclick="window.exportLinenOrdersCSV()">&#8595; Export to CSV</button>
           <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.showAdminDashboard()">&#8592; Back to Dashboard</button>
         </div>
       </div>
@@ -6742,6 +6793,7 @@
               <option>Delivered</option>
               <option>Checked In</option>
               <option>Problem Attention Needed</option>
+              <option>Event Complete</option>
             </select>
           </div>
           <div class="form-group">
