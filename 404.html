@@ -6,13 +6,13 @@
   <script>
     // GitHub Pages shows this 404 page for any URL that isn't a real file —
     // like planning.theseventyfivevenue.com/emilyandjames (a guest link, not a file).
-    // We grab whatever was typed after the slash and forward it to test.html,
+    // We grab whatever was typed after the slash and forward it to the root,
     // which reads it and shows that couple's guest page.
     var path = window.location.pathname.replace(/^\//, "").replace(/\/$/, "");
     if (path) {
-      window.location.replace("/test.html?guest=" + encodeURIComponent(path));
+      window.location.replace("/?guest=" + encodeURIComponent(path));
     } else {
-      window.location.replace("/test.html");
+      window.location.replace("/");
     }
   </script>
   <style>
