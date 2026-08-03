@@ -1,6 +1,7 @@
 
 
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3223,6 +3224,16 @@
 
     const PUBLIC_PROFILE_FIELDS = ["coupleNames", "weddingDate", "ceremonyTime", "receptionTime", "ceremonyLocation", "ceremonyAddress"];
 
+    // Canonical list of every question field that exists in each planning meeting form,
+    // in the same order they appear on the couple's side. Used by the admin dashboard so
+    // View/Edit and progress % reflect the FULL form — not just whatever fields happen to
+    // already have data saved in Firestore for a given couple.
+    const MEETING_FIELD_DEFS = {
+  meeting1: [["coupleNames","text"],["bridePhone","text"],["groomPhone","text"],["weddingDate","date"],["weddingPlanner","text"],["ceremonyTime","text"],["receptionTime","text"],["ceremonyLocation","text"],["ceremonyAddress","text"],["guestArrival","text"],["guestCount","text"],["familyDynamic","textarea"],["children","radio"],["accessibility","textarea"],["styleTheme","textarea"],["weddingFeel","textarea"],["colorPalette","textarea"],["specificTheme","text"],["addOns","textarea"],["traditionsCeremony","textarea"],["traditionsPost","textarea"],["dayflow_timeline","checkbox"],["dayflow_flexible","checkbox"],["dayflow_dinner","checkbox"],["dayflow_illusion","checkbox"],["decor75_yes","checkbox"],["decor75_no","checkbox"],["decor75_unsure","checkbox"],["guestExperience","textarea"],["cat_cameron","checkbox"],["cat_la","checkbox"],["cat_berwick","checkbox"],["cat_together","checkbox"],["cat_sweet","checkbox"],["cat_emilios","checkbox"],["cake_birdies","checkbox"],["cake_crystal","checkbox"],["cake_kitties","checkbox"],["cake_spencer","checkbox"],["cake_other","checkbox"],["photo_asteria","checkbox"],["photo_feelstory","checkbox"],["photo_kismet","checkbox"],["photo_other","checkbox"],["dj_brad","checkbox"],["dj_fasttracks","checkbox"],["dj_josh","checkbox"],["dj_turnup","checkbox"],["dj_soundlight","checkbox"],["dj_other","checkbox"],["flor_bearroots","checkbox"],["flor_blooms","checkbox"],["flor_dashing","checkbox"],["flor_evergreen","checkbox"],["flor_madison","checkbox"],["flor_other","checkbox"],["trans_cardinal","checkbox"],["trans_funbus","checkbox"],["trans_other","checkbox"],["rent_borrow","checkbox"],["rent_lostandfound","checkbox"],["rent_pr","checkbox"],["rent_partyplus","checkbox"],["rent_personal","checkbox"],["rent_other","checkbox"],["food_johnson","checkbox"],["food_pizza","checkbox"],["food_roosters","checkbox"],["food_other","checkbox"],["reh_rhonemus","checkbox"],["reh_hocking","checkbox"],["reh_cedar","checkbox"],["reh_millstone","checkbox"],["reh_58west","checkbox"],["reh_other","checkbox"],["lodge_boxhop","checkbox"],["lodge_cliffs","checkbox"],["lodge_dunlap","checkbox"],["lodge_hampton","checkbox"],["lodge_holiday","checkbox"],["lodge_sleep","checkbox"],["lodge_other","checkbox"],["cer_outdoor_pad","checkbox"],["cer_outdoor_other","checkbox"],["cer_indoor_main","checkbox"],["cer_indoor_other","checkbox"],["cer_notsure","checkbox"],["ceremonyBackdrop","textarea"],["mustHaveTraditions","textarea"],["priv_vows","checkbox"],["priv_gifts","checkbox"],["priv_letters","checkbox"],["priv_other","checkbox"],["ceremonyVibe","text"],["guestSeating","text"],["venue_notAtAll","checkbox"],["venue_cocktailOnly","checkbox"],["venue_wholeVenue","checkbox"],["walk_grandparents","checkbox"],["walk_parents","checkbox"],["walk_groomsmen","checkbox"],["walk_bridesmaids","checkbox"],["walk_ringbearer","checkbox"],["walk_flowergirl","checkbox"],["boxHopsInterest","textarea"],["alternativeLodging","textarea"],["lodging_booked","checkbox"],["lodging_needalt","checkbox"],["lodging_taken","checkbox"],["lodging_6month","checkbox"],["extraNotes","textarea"]],
+  meeting2: [["placeSettings","textarea"],["decor75Items","textarea"],["decorPerTable","textarea"],["decorBroughtIn","textarea"],["addOns","textarea"],["staff_tier1","checkbox"],["staff_tier2","checkbox"],["staff_tier3","checkbox"],["staff_no","checkbox"],["staff_unsure","checkbox"],["candles_yes","checkbox"],["candles_no","checkbox"],["candles_deciding","checkbox"],["candles_75provide","checkbox"],["decorDropoff","textarea"],["napkinColor","text"],["napkinFold","text"],["napkinQty","text"],["cocktailLinen","text"],["guestTableLinen","textarea"],["headTableLinen","textarea"],["styleChanges","textarea"],["vendorsBooked","textarea"],["vendorNames","textarea"],["vendorArrival","textarea"],["vendorPickup","textarea"],["catering_plated","checkbox"],["catering_buffet_cat","checkbox"],["catering_buffet_75","checkbox"],["catering_family","checkbox"],["cake_toptierhome","checkbox"],["cake_fullserve","checkbox"],["cake_sheetcakes","checkbox"],["vendorsPending","textarea"],["vendorRecs","textarea"],["appetizers","textarea"],["postCeremonySnacks","textarea"],["lateNightSnacks","textarea"],["financePerson","textarea"],["matronOfHonor","text"],["bestMan","text"],["foodHome","textarea"],["cakeHome","textarea"],["alcoholHome","textarea"],["decorHome","textarea"],["numBridesmaids","text"],["numGroomsmen","text"],["accessibilityGuests","textarea"],["shuttleService","textarea"],["shuttleTimes","textarea"],["specialSendOff","textarea"],["peopleToNote","textarea"],["evt_grandentrance","checkbox"],["evt_speeches","checkbox"],["evt_cakecutting","checkbox"],["evt_firstdance","checkbox"],["evt_fatherdaughter","checkbox"],["evt_motherson","checkbox"],["evt_anniversary","checkbox"],["evt_bouquet","checkbox"],["evt_garter","checkbox"],["evt_latenight","checkbox"],["evt_newlywed","checkbox"],["evt_specialdances","checkbox"],["evt_sendoff","checkbox"],["evt_sunset","checkbox"],["evt_privatelastdance","checkbox"],["evt_welcome","checkbox"],["evt_other","checkbox"],["eventsNotes","textarea"],["orderOfEvents","textarea"],["ge_coupleonly","checkbox"],["ge_bridalparty","checkbox"],["ge_curtains","checkbox"],["ge_fireplace","checkbox"],["rain_halfflip","checkbox"],["rain_california","checkbox"],["rain_alltables","checkbox"],["bh_og","checkbox"],["bh_hygge","checkbox"],["bh_roca","checkbox"],["bh_ellwood","checkbox"],["bh_boho","checkbox"],["bh_overlook","checkbox"],["bh_none","checkbox"],["bh_6month","checkbox"],["extraNotes","textarea"]],
+  meeting3: [["finalGuestCount","text"],["rehearsalTime","text"],["brideArrival","text"],["groomArrival","text"],["catererArrival","text"],["floristArrival","text"],["photoArrival","text"],["cakeArrival","text"],["decorArrival","text"],["djArrival","text"],["guestArrival","text"],["ceremonyStart","text"],["ceremonyLength","text"],["cocktailStart","text"],["receptionStart","text"],["dinnerStart","text"],["shuttleTimes","textarea"],["otherVendorTimes","textarea"],["groomWalkWith","text"],["brideWalkWith","text"],["bm_individually","checkbox"],["bm_withgroomsmen","checkbox"],["bm_other","checkbox"],["gm_individually","checkbox"],["gm_withbridesmaids","checkbox"],["gm_other","checkbox"],["bridesmaidsOrder","textarea"],["groomsmenOrder","textarea"],["gp_topstairs","checkbox"],["gp_ramp","checkbox"],["gp_seated","checkbox"],["following_flowergirl","checkbox"],["following_ringbearer","checkbox"],["following_pet","checkbox"],["following_other","checkbox"],["seating_brideleft","checkbox"],["seating_brideright","checkbox"],["seating_mixed","checkbox"],["seating_freeforall","checkbox"],["officiant","textarea"],["decorMovement","textarea"],["rainPlanDecor","textarea"],["golfCartGuests","textarea"],["rainPlanFinal","textarea"],["guests_cocktailarea","checkbox"],["guests_cocktailreception","checkbox"],["guests_bathrooms","checkbox"],["guests_straightto","checkbox"],["curtain_closed","checkbox"],["curtain_open","checkbox"],["barClosed","radio"],["privateMoment_yes","checkbox"],["privateMoment_no","checkbox"],["privateMomentInterrupt","text"],["champagneWhen","text"],["champ_walkfill","checkbox"],["champ_kitchen","checkbox"],["postCeremonySnacks","textarea"],["preEntranceDrinks","textarea"],["couplePlate","radio"],["foodPreferences","textarea"],["tableBreakdown","textarea"],["prismmFinalized","radio"],["sparklers","radio"],["catererName","textarea"],["cat_breakfast","checkbox"],["cat_charcuterie","checkbox"],["cat_appetizers","checkbox"],["cat_dinner","checkbox"],["cat_dessert","checkbox"],["dessertsCake","textarea"],["djBandConfirm","textarea"],["floristConfirm","textarea"],["foodTruck","textarea"],["photoConfirm","textarea"],["transportConfirm","textarea"],["otherVendors","textarea"],["specialDeliveries","textarea"],["endNightPickup","textarea"],["extraNotes","textarea"]],
+};
+
     async function syncPublicProfile(uid) {
       try {
         const snap = await getDoc(doc(db, "couples", uid));
@@ -3687,9 +3698,9 @@
         const names = (c.meeting1||{}).coupleNames || c.displayName || c.email || "Unknown Couple";
         const rawDate = (c.meeting1||{}).weddingDate;
         const wDate = rawDate ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "Date not set";
-        const m1 = calcPct(c.meeting1||{});
-        const m2 = calcPct(c.meeting2||{});
-        const m3 = calcPct(c.meeting3||{});
+        const m1 = calcPct(c.meeting1||{}, "meeting1");
+        const m2 = calcPct(c.meeting2||{}, "meeting2");
+        const m3 = calcPct(c.meeting3||{}, "meeting3");
         const isCompleted = c.status === "completed";
         const lc = c.leadCoordinator || {};
         const coordinatorLine = lc.name
@@ -3741,12 +3752,16 @@
       } catch(e) { alert("Couldn't update status: " + e.message); }
     };
 
-    function calcPct(data) {
-      // Only count text/textarea fields (strings), not checkboxes (booleans)
-      const textVals = Object.values(data).filter(v => typeof v === "string");
-      if (!textVals.length) return 0;
-      const filled = textVals.filter(v => v.trim() !== "").length;
-      return Math.round((filled / textVals.length) * 100);
+    function calcPct(data, meetingKey) {
+      const defs = MEETING_FIELD_DEFS[meetingKey];
+      if (!defs) return 0; // unknown meeting key — shouldn't happen
+      let filled = 0;
+      const total = defs.length;
+      defs.forEach(([k, t]) => {
+        if (t === "checkbox") { if (data[k] === true) filled++; }
+        else { if (typeof data[k] === "string" && data[k].trim() !== "") filled++; }
+      });
+      return total > 0 ? Math.round((filled / total) * 100) : 0;
     }
 
     function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
@@ -3810,26 +3825,28 @@
       ];
       const sections = meetings.map(m => {
         const mData = data[m.key] || {};
-        const textEntries = Object.entries(mData).filter(([k,v]) => typeof v === "string");
-        const boolEntries = Object.entries(mData).filter(([k,v]) => typeof v === "boolean" && v === true);
-        if (!textEntries.length && !boolEntries.length) {
-          return `<div class="amd-section"><div class="amd-stitle">${m.label}</div><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No answers recorded yet.</p></div>`;
-        }
-        const textRows = textEntries.map(([k,v]) => `
+        const defs = MEETING_FIELD_DEFS[m.key] || [];
+        const textDefs = defs.filter(([k,t]) => t === "text" || t === "date" || t === "textarea" || t === "radio");
+        const checkDefs = defs.filter(([k,t]) => t === "checkbox");
+        const textRows = textDefs.map(([k,t]) => {
+          const v = typeof mData[k] === "string" ? mData[k] : "";
+          const useTextarea = t === "textarea" || v.length > 80;
+          return `
           <div class="amd-row amd-row-edit">
             <div class="amd-key">${fmtKey(k)}</div>
             <div class="amd-val">
-              ${v.length > 80 ?
-                `<textarea class="amd-input amd-textarea" data-meeting="${m.key}" data-field="${k}">${esc(v)}</textarea>` :
-                `<input class="amd-input" type="text" data-meeting="${m.key}" data-field="${k}" value="${esc(v)}">`
+              ${useTextarea ?
+                `<textarea class="amd-input amd-textarea" data-meeting="${m.key}" data-field="${k}" data-type="${t}">${esc(v)}</textarea>` :
+                `<input class="amd-input" type="text" data-meeting="${m.key}" data-field="${k}" data-type="${t}" value="${esc(v)}">`
               }
             </div>
-          </div>`).join("");
-        const checkRows = boolEntries.length ? `
+          </div>`;
+        }).join("");
+        const checkRows = checkDefs.length ? `
           <div class="amd-row">
-            <div class="amd-key" style="color:var(--mid-gray);">Selections</div>
-            <div class="amd-val" style="display:flex;flex-wrap:wrap;gap:6px;">
-              ${boolEntries.map(([k]) => `<span class="amd-chip">&#10003; ${fmtKey(k)}</span>`).join("")}
+            <div class="amd-key" style="color:var(--mid-gray);">Selections <span style="font-size:10px;font-weight:400;text-transform:none;">(check/uncheck to edit)</span></div>
+            <div class="amd-val" style="display:flex;flex-wrap:wrap;gap:10px;">
+              ${checkDefs.map(([k]) => `<label class="amd-chip" style="cursor:pointer;display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" data-meeting="${m.key}" data-field="${k}" data-type="checkbox" ${mData[k] === true ? "checked" : ""} style="margin:0;">${fmtKey(k)}</label>`).join("")}
             </div>
           </div>` : "";
         return `<div class="amd-section">
@@ -3892,7 +3909,9 @@
       const inputs = document.querySelectorAll(`[data-meeting="${meetingKey}"]`);
       const updates = {};
       inputs.forEach(el => {
-        updates[`${meetingKey}.${el.getAttribute("data-field")}`] = el.value;
+        const field = el.getAttribute("data-field");
+        const type = el.getAttribute("data-type");
+        updates[`${meetingKey}.${field}`] = (type === "checkbox") ? el.checked : el.value;
       });
       try {
         await ud(dc(db,"couples",uid), updates);
