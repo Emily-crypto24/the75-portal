@@ -2,7 +2,6 @@
 
 
 
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -19,6 +18,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBmqd_uayeu-aCAteNoC5N5TIigbJhiKt8",
@@ -31,6 +31,15 @@
     };
 
     const app = initializeApp(firebaseConfig);
+
+    // App Check: verifies requests are coming from this actual website (not a
+    // direct script/API call like the one used to bulk-read publicCouples).
+    // reCAPTCHA v3 runs silently in the background — no puzzle, no visible UI.
+    initializeAppCheck(app, {
+      provider: new ReCaptchaV3Provider("6LdsO4EtAAAAAKVEBS0NqETVfApZoa3xZO_rqqyk"),
+      isTokenAutoRefreshEnabled: true
+    });
+
     const auth = getAuth(app);
     const db = getFirestore(app);
     const provider = new GoogleAuthProvider();
@@ -3727,7 +3736,6 @@
             <button class="acc-btn-view" onclick="window.openCouple('${c.id}')">View / Edit</button>
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
-          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openKeyInfo('${c.id}')">&#128273; Key Information</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
@@ -3863,250 +3871,6 @@
         <button class="acc-btn-export" style="padding:14px 40px;font-size:11px;" onclick="window.exportCouple('${uid}','couple')">&#8595; Export This Couple to CSV</button>
       </div>`;
     }
-
-    // ══════════════════ KEY INFORMATION (Event Shift Handoff) ══════════════════
-
-    function ki(label, value, full) {
-      if (!value) value = "";
-      return `<div class="ki-snap-row${full ? " full" : ""}"><span class="ki-snap-label">${esc(label)}</span><span>${esc(value)}</span></div>`;
-    }
-
-    function vendorSummaryLines(m1) {
-      const groups = [
-        { label: "Catering", prefix: "cat_" },
-        { label: "Cake / Desserts", prefix: "cake_" },
-        { label: "Photography", prefix: "photo_" },
-        { label: "DJ / Entertainment", prefix: "dj_" },
-        { label: "Florals", prefix: "flor_" },
-        { label: "Transportation", prefix: "trans_" }
-      ];
-      const lines = [];
-      groups.forEach(g => {
-        const picked = Object.keys(m1).filter(k => k.startsWith(g.prefix) && m1[k] === true).map(k => fmtKey(k.slice(g.prefix.length)));
-        if (picked.length) lines.push(`${g.label}: ${picked.join(", ")}`);
-      });
-      return lines;
-    }
-
-    function rainPlanSummary(m2, m3) {
-      const opts = [];
-      if (m2.rain_halfflip) opts.push("Half Flip");
-      if (m2.rain_california) opts.push("California Style");
-      if (m2.rain_alltables) opts.push("All Guests at Tables");
-      let s = opts.length ? opts.join(" / ") : "Not yet selected";
-      if (m3.rainPlanFinal) s += ` — Final: ${m3.rainPlanFinal}`;
-      return s;
-    }
-
-    function buildKeyInfoSnapshot(data) {
-      const m1 = data.meeting1 || {}, m2 = data.meeting2 || {}, m3 = data.meeting3 || {};
-      const guestCount = m3.finalGuestCount || m1.guestCount || "";
-      const guestArrival = m3.guestArrival || m1.guestArrival || "";
-      const ceremonyStart = m3.ceremonyStart || m1.ceremonyTime || "";
-      const receptionStart = m3.receptionStart || m1.receptionTime || "";
-      const addOns = [m1.addOns, m2.addOns].filter(Boolean).join(" | ");
-      const vendorLines = vendorSummaryLines(m1);
-      const vendorConfirmLines = [m3.catererName, m3.djBandConfirm, m3.floristConfirm, m3.photoConfirm, m3.transportConfirm, m3.otherVendors].filter(Boolean);
-
-      return `<div class="ki-snapshot">
-        <div class="amd-stitle" style="border:none;margin-bottom:10px;padding-bottom:0;font-size:16px;">Event Snapshot <span style="font-size:10px;color:var(--mid-gray);text-transform:none;letter-spacing:0;">(pulled from planning meetings — edit on the couple's meeting tabs)</span></div>
-        <div class="ki-snapshot-grid">
-          ${ki("Guest Count", guestCount)}
-          ${ki("Guest Arrival Time", guestArrival)}
-          ${ki("Ceremony Start", ceremonyStart)}
-          ${ki("Reception Start", receptionStart)}
-          ${ki("Add-Ons", addOns, true)}
-          ${ki("Rain Plan", rainPlanSummary(m2, m3), true)}
-          ${ki("Who Moves Rain Plan Decor", m3.rainPlanDecor, true)}
-          ${ki("Appetizer / Table Flip Notes", m2.appetizers, true)}
-          ${ki("Special Ceremony Touches", m1.traditionsCeremony, true)}
-          ${ki("Post-Ceremony Traditions", m1.traditionsPost, true)}
-          ${vendorLines.length ? ki("Vendors Selected", vendorLines.join("  |  "), true) : ""}
-          ${vendorConfirmLines.length ? ki("Vendor Confirmations", vendorConfirmLines.join("  |  "), true) : ""}
-        </div>
-      </div>`;
-    }
-
-    function kiField(path, value, opts) {
-      opts = opts || {};
-      const tag = opts.textarea ? "textarea" : "input";
-      const v = esc(value || "");
-      if (opts.textarea) {
-        return `<textarea class="amd-input amd-textarea" style="${opts.style||""}" data-ki="${path}" placeholder="${esc(opts.placeholder||"")}">${v}</textarea>`;
-      }
-      return `<input class="amd-input" style="${opts.style||""}" type="text" data-ki="${path}" value="${v}" placeholder="${esc(opts.placeholder||"")}">`;
-    }
-
-    function kiYesNo(path, value) {
-      return `<div class="ki-yn">
-        <label><input type="radio" name="${path}" data-ki="${path}" value="Yes" ${value==="Yes"?"checked":""}> Yes</label>
-        <label><input type="radio" name="${path}" data-ki="${path}" value="No" ${value==="No"?"checked":""}> No</label>
-      </div>`;
-    }
-
-    function vendorPickupBlock(title, key, sh, extraFields) {
-      const v = (sh.vendorPickups && sh.vendorPickups[key]) || {};
-      extraFields = extraFields || [];
-      return `<div class="ki-vendor-block">
-        <div class="ki-vendor-title">${esc(title)}</div>
-        <div class="ki-row3">
-          <div><div class="amd-key" style="margin-bottom:4px;">Point Person</div>${kiField(`vendorPickups.${key}.pointPerson`, v.pointPerson)}</div>
-          ${extraFields.map(f => `<div><div class="amd-key" style="margin-bottom:4px;">${esc(f.label)}</div>${kiField(`vendorPickups.${key}.${f.key}`, v[f.key])}</div>`).join("")}
-        </div>
-        <div style="margin-top:10px;"><div class="amd-key" style="margin-bottom:4px;">Special Notes</div>${kiField(`vendorPickups.${key}.notes`, v.notes, {textarea:true})}</div>
-        <div style="display:flex;gap:32px;flex-wrap:wrap;">
-          <div><div class="amd-key" style="margin-bottom:4px;">On Time?</div>${kiYesNo(`vendorPickups.${key}.onTime`, v.onTime)}</div>
-          <div><div class="amd-key" style="margin-bottom:4px;">Followed 75 Policy?</div>${kiYesNo(`vendorPickups.${key}.followedPolicy`, v.followedPolicy)}</div>
-        </div>
-      </div>`;
-    }
-
-    function buildKeyInfo(data, uid) {
-      const sh = data.shiftHandoff || {};
-      const st = sh.staffing || {}, lg = sh.logistics || {}, oh = sh.openingHandoff || {}, co = sh.closeout || {}, wu = sh.wrapUp || {};
-      const names = (data.meeting1||{}).coupleNames || data.displayName || data.email || "Couple";
-      const rawDate = (data.meeting1||{}).weddingDate;
-      const wDate = rawDate ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "Date not set";
-
-      return `
-        <div class="ki-print-header">
-          <div style="font-family:var(--font-heading);font-size:24px;">${esc(names)} — Event Shift Handoff</div>
-          <div style="font-size:13px;color:var(--mid-gray);">${wDate}</div>
-        </div>
-
-        ${buildKeyInfoSnapshot(data)}
-
-        <div class="amd-section">
-          <div class="amd-stitle">Staffing — Shift Leads &amp; Teams</div>
-          <div class="ki-row3">
-            <div><div class="amd-key" style="margin-bottom:4px;">Opening Shift Lead (Morning)</div>${kiField("staffing.openingLead", st.openingLead)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Closing — Lead Coordinator</div>${kiField("staffing.closingLead", st.closingLead)}</div>
-            <div></div>
-          </div>
-          <div class="ki-row3" style="margin-top:10px;">
-            <div><div class="amd-key" style="margin-bottom:4px;">Team Member 1</div>${kiField("staffing.teamMember1", st.teamMember1)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Team Member 2</div>${kiField("staffing.teamMember2", st.teamMember2)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Team Member 3</div>${kiField("staffing.teamMember3", st.teamMember3)}</div>
-          </div>
-        </div>
-
-        <div class="amd-section">
-          <div class="amd-stitle">Event Stats &amp; Logistics</div>
-          <div class="ki-row3">
-            <div><div class="amd-key" style="margin-bottom:4px;">Security Deposit Collected</div>${kiField("logistics.securityDeposit", lg.securityDeposit)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Planner (if applicable)</div>${kiField("logistics.planner", lg.planner)}</div>
-            <div></div>
-          </div>
-          <div style="margin-top:10px;"><div class="amd-key" style="margin-bottom:4px;">Day-Of Point People</div>
-            <div class="ki-subgrid">
-              ${[1,2,3,4].map(i => kiField(`logistics.pointPerson${i}`, lg[`pointPerson${i}`])).join("")}
-            </div>
-          </div>
-          <div style="margin-top:10px;"><div class="amd-key" style="margin-bottom:4px;">Who Is Taking Home Leftover Food</div>
-            <div class="ki-row3">${[1,2,3].map(i => kiField(`logistics.leftoverFood${i}`, lg[`leftoverFood${i}`])).join("")}</div>
-          </div>
-          <div style="margin-top:10px;"><div class="amd-key" style="margin-bottom:4px;">Who Is Taking Home Decor / Rentals</div>${kiField("logistics.decorRentalsHome", lg.decorRentalsHome)}</div>
-        </div>
-
-        <div class="amd-section">
-          <div class="amd-stitle">Vendor Pickups</div>
-          ${vendorPickupBlock("Caterer", "caterer", sh, [{label:"Facility Fee Paid", key:"facilityFeePaid"}])}
-          ${vendorPickupBlock("Florals", "florals", sh)}
-          ${vendorPickupBlock("Rentals", "rentals", sh, [{label:"Pickup Time", key:"pickupTime"}])}
-          ${vendorPickupBlock("Cake / Desserts", "cake", sh)}
-          ${vendorPickupBlock("Other", "other1", sh, [{label:"Specify Vendor", key:"label"}])}
-          ${vendorPickupBlock("Other", "other2", sh, [{label:"Specify Vendor", key:"label"}])}
-        </div>
-
-        <div class="amd-section">
-          <div class="amd-stitle">Shift Handoff — Opening Lead</div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Layout / Setup Changes</div><div class="amd-val">${kiField("openingHandoff.layoutChanges", oh.layoutChanges, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Vendor Timeline Adjustments</div><div class="amd-val">${kiField("openingHandoff.vendorTimelineAdj", oh.vendorTimelineAdj, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Couple / Planner Notes</div><div class="amd-val">${kiField("openingHandoff.coupleNotes", oh.coupleNotes, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Decor / Add-On Adjustments</div><div class="amd-val">${kiField("openingHandoff.decorAddonAdj", oh.decorAddonAdj, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Weather / Ceremony Relocation Notes</div><div class="amd-val">${kiField("openingHandoff.weatherNotes", oh.weatherNotes, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Special Notes for Open Shift</div><div class="amd-val">${kiField("openingHandoff.specialNotesOpen", oh.specialNotesOpen, {textarea:true})}</div></div>
-          <div class="ki-row3" style="margin-top:10px;">
-            <div><div class="amd-key" style="margin-bottom:4px;">Opening Lead Signature</div>${kiField("openingHandoff.openingSignature", oh.openingSignature)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Time</div>${kiField("openingHandoff.openingTime", oh.openingTime)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Closing Lead Initials (at handoff)</div>${kiField("openingHandoff.closingInitials", oh.closingInitials)}</div>
-          </div>
-        </div>
-
-        <div class="amd-section">
-          <div class="amd-stitle">Event Closeout — Closing Lead</div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Missing / Damaged Items?</div><div class="amd-val">${kiYesNo("closeout.missingDamaged", co.missingDamaged)}${kiField("closeout.missingDamagedDetails", co.missingDamagedDetails, {textarea:true, placeholder:"If yes, list details..."})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Decor / Rentals Left Behind?</div><div class="amd-val">${kiField("closeout.decorLeftBehind", co.decorLeftBehind, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Bar Shortages / Inventory Issues?</div><div class="amd-val">${kiField("closeout.barShortages", co.barShortages, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Staff Late / Left Early / No-Show?</div><div class="amd-val">${kiField("closeout.staffIssues", co.staffIssues, {textarea:true, placeholder:"Which staff member, and what happened..."})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Exceptional Moments / Shoutouts</div><div class="amd-val">${kiField("closeout.exceptionalMoments", co.exceptionalMoments, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Couple / Planner Feedback</div><div class="amd-val">${kiField("closeout.coupleFeedback", co.coupleFeedback, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Guest Compliments / Complaints / Escalations</div><div class="amd-val">${kiField("closeout.guestFeedback", co.guestFeedback, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Facility / Maintenance Issues</div><div class="amd-val">${kiField("closeout.facilityIssues", co.facilityIssues, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Policy, Setup, or Logistics Issues</div><div class="amd-val">${kiField("closeout.policyIssues", co.policyIssues, {textarea:true})}</div></div>
-          <div class="amd-row amd-row-edit"><div class="amd-key">Items Left Behind (Guests/Vendors)</div><div class="amd-val">${kiField("closeout.itemsLeftBehind", co.itemsLeftBehind, {textarea:true})}</div></div>
-        </div>
-
-        <div class="amd-section">
-          <div class="amd-stitle">Final Wrap-Up</div>
-          <div class="ki-row3">
-            <div><div class="amd-key" style="margin-bottom:4px;">Guest Exit Time</div>${kiField("wrapUp.guestExitTime", wu.guestExitTime)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Staff Exit Time</div>${kiField("wrapUp.staffExitTime", wu.staffExitTime)}</div>
-            <div><div class="amd-key" style="margin-bottom:4px;">Closing Lead Signature</div>${kiField("wrapUp.closingSignature", wu.closingSignature)}</div>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:18px;margin-top:14px;">
-            <label class="check-item" style="cursor:pointer;"><input type="checkbox" data-ki="wrapUp.venueReset" ${wu.venueReset?"checked":""}><span>Venue fully reset &amp; cleaned</span></label>
-            <label class="check-item" style="cursor:pointer;"><input type="checkbox" data-ki="wrapUp.doorsLocked" ${wu.doorsLocked?"checked":""}><span>All doors locked and lights off</span></label>
-            <label class="check-item" style="cursor:pointer;"><input type="checkbox" data-ki="wrapUp.staffSOPChecked" ${wu.staffSOPChecked?"checked":""}><span>All staff SOP checked and approved</span></label>
-            <label class="check-item" style="cursor:pointer;"><input type="checkbox" data-ki="wrapUp.keyReturned" ${wu.keyReturned?"checked":""}><span>Building key returned to lock box</span></label>
-          </div>
-          <div style="margin-top:14px;"><div class="amd-key" style="margin-bottom:4px;">Special Notes for Closing Shift</div>${kiField("wrapUp.specialNotesClosing", wu.specialNotesClosing, {textarea:true})}</div>
-        </div>
-
-        <div class="ki-no-print" style="text-align:center;margin-top:24px;padding-bottom:8px;border-top:1px solid var(--border);padding-top:24px;display:flex;gap:12px;justify-content:center;">
-          <button class="acc-btn-view" style="padding:12px 30px;font-size:11px;flex:none;" onclick="window.saveKeyInfo('${uid}')">Save Key Information</button>
-          <button class="acc-btn-export" style="padding:12px 30px;font-size:11px;flex:none;" onclick="window.printKeyInfo()">&#128424; Print</button>
-        </div>
-      `;
-    }
-
-    window.openKeyInfo = async function(uid) {
-      const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-      const snap = await gd(dc(db,"couples",uid));
-      if (!snap.exists()) return;
-      const data = snap.data();
-      document.getElementById("keyinfo-modal-title").textContent = "Key Information — " + ((data.meeting1||{}).coupleNames || data.displayName || data.email || "Couple");
-      document.getElementById("keyinfo-modal-body").innerHTML = buildKeyInfo(data, uid);
-      document.getElementById("keyinfo-modal").style.display = "flex";
-    };
-
-    window.closeKeyInfoModal = function() { document.getElementById("keyinfo-modal").style.display = "none"; };
-
-    window.saveKeyInfo = async function(uid) {
-      const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-      const body = document.getElementById("keyinfo-modal-body");
-      const shiftHandoff = {};
-      body.querySelectorAll("[data-ki]").forEach(el => {
-        const path = el.getAttribute("data-ki").split(".");
-        if (el.type === "radio" && !el.checked) return;
-        let val;
-        if (el.type === "checkbox") val = el.checked;
-        else val = el.value;
-        let obj = shiftHandoff;
-        for (let i = 0; i < path.length - 1; i++) {
-          obj[path[i]] = obj[path[i]] || {};
-          obj = obj[path[i]];
-        }
-        obj[path[path.length - 1]] = val;
-      });
-      try {
-        await ud(dc(db,"couples",uid), { shiftHandoff });
-        const btns = document.querySelectorAll(`button[onclick*="saveKeyInfo('${uid}')"]`);
-        btns.forEach(b => { b.textContent = "Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = "Save Key Information"; b.style.background=""; },3000); });
-      } catch(e) { alert("Save failed: " + e.message); }
-    };
-
-    window.printKeyInfo = function() { window.print(); };
 
     window.addNote = async function(uid) {
       const { doc: dc, updateDoc: ud, arrayUnion } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -4657,36 +4421,6 @@
     .amd-input:focus{border-color:var(--gold);}
     .amd-textarea{min-height:70px;resize:vertical;line-height:1.5;}
     .amd-chip{display:inline-flex;align-items:center;padding:4px 10px;background:rgba(184,150,90,0.1);border:1px solid rgba(184,150,90,0.3);font-size:11px;color:var(--gold-dark);border-radius:2px;}
-
-    /* Key Information (Shift Handoff) */
-    #keyinfo-modal{display:none;position:fixed;inset:0;z-index:500;background:rgba(44,44,44,0.7);align-items:center;justify-content:center;padding:24px;}
-    .ki-snapshot{background:var(--cream);border:1px solid var(--border);padding:20px 22px;margin-bottom:28px;border-radius:2px;}
-    .ki-snapshot-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 28px;}
-    @media(max-width:600px){.ki-snapshot-grid{grid-template-columns:1fr;}}
-    .ki-snap-row{font-size:13px;color:var(--charcoal);padding:5px 0;border-bottom:1px solid rgba(232,224,213,0.6);display:flex;gap:8px;}
-    .ki-snap-row .ki-snap-label{color:var(--mid-gray);font-size:11px;letter-spacing:0.06em;text-transform:uppercase;flex-shrink:0;min-width:130px;padding-top:1px;}
-    .ki-snap-row.full{grid-column:1/-1;flex-direction:column;gap:3px;}
-    .ki-subgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
-    @media(max-width:700px){.ki-subgrid{grid-template-columns:1fr 1fr;}}
-    .ki-vendor-block{border:1px solid var(--border);padding:16px;border-radius:2px;margin-bottom:14px;}
-    .ki-vendor-title{font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-bottom:10px;font-weight:600;}
-    .ki-yn{display:flex;gap:16px;align-items:center;margin-top:8px;font-size:12px;color:var(--mid-gray);}
-    .ki-yn label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;}
-    .ki-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
-    @media(max-width:700px){.ki-row3{grid-template-columns:1fr;}}
-    .ki-print-header{display:none;}
-    @media print{
-      body *{visibility:hidden;}
-      #keyinfo-modal, #keyinfo-modal .admin-modal-box, #keyinfo-modal .admin-modal-box *{visibility:visible;}
-      #keyinfo-modal{position:absolute;inset:auto;background:none;padding:0;display:block !important;}
-      #keyinfo-modal .admin-modal-box{max-width:100%;max-height:none;overflow:visible;}
-      #keyinfo-modal .admin-modal-body{overflow:visible;padding:0 12px;}
-      #keyinfo-modal .admin-modal-header, #keyinfo-modal .ki-no-print{display:none !important;}
-      #keyinfo-modal .ki-print-header{display:block;margin-bottom:16px;}
-      #keyinfo-modal .amd-input, #keyinfo-modal input, #keyinfo-modal textarea{border:none;background:none;padding:2px 0;}
-      #keyinfo-modal .ki-vendor-block, #keyinfo-modal .ki-snapshot{border:1px solid #999;break-inside:avoid;}
-      #keyinfo-modal .amd-section{break-inside:avoid;}
-    }
 
   </style>
 </head>
@@ -7272,17 +7006,6 @@
         <button class="admin-modal-close" onclick="window.closeAdminModal()">&#10005;</button>
       </div>
       <div class="admin-modal-body" id="admin-modal-body"></div>
-    </div>
-  </div>
-
-  <!-- Key Information / Event Shift Handoff Modal -->
-  <div id="keyinfo-modal">
-    <div class="admin-modal-box" style="max-width:820px;">
-      <div class="admin-modal-header">
-        <h2 id="keyinfo-modal-title">Key Information</h2>
-        <button class="admin-modal-close" onclick="window.closeKeyInfoModal()">&#10005;</button>
-      </div>
-      <div class="admin-modal-body" id="keyinfo-modal-body"></div>
     </div>
   </div>
 
