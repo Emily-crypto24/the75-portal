@@ -4037,10 +4037,12 @@
       const modal = document.getElementById("signup-code-modal");
       const input = document.getElementById("signup-code-input");
       const status = document.getElementById("signup-code-status");
+      const copyBtn = document.getElementById("signup-code-copy-btn");
       const changeBtn = document.getElementById("signup-code-change-btn");
       const saveBtn = document.getElementById("signup-code-save-btn");
       if (status) status.style.display = "none";
       if (input) { input.value = "Loading…"; input.disabled = true; }
+      if (copyBtn) copyBtn.style.display = "inline-block";
       if (changeBtn) changeBtn.style.display = "inline-block";
       if (saveBtn) saveBtn.style.display = "none";
       if (modal) modal.style.display = "flex";
@@ -4057,6 +4059,22 @@
       if (modal) modal.style.display = "none";
     };
 
+    window.copySignupCode = async function() {
+      const input = document.getElementById("signup-code-input");
+      const status = document.getElementById("signup-code-status");
+      const code = input ? input.value : "";
+      if (!/^\d{4}$/.test(code)) {
+        if (status) { status.textContent = "No valid code to copy yet."; status.style.color = "#c0392b"; status.style.display = "block"; }
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(code);
+        if (status) { status.textContent = "Copied to clipboard!"; status.style.color = "#2e7d32"; status.style.display = "block"; }
+      } catch (e) {
+        if (status) { status.textContent = "Couldn't copy automatically — please select and copy manually."; status.style.color = "#c0392b"; status.style.display = "block"; }
+      }
+    };
+
     // Owners (and anyone with the PIN) click this to unlock editing.
     window.requestSignupCodeChange = function() {
       // Hide the Signup Code modal first — it shares the PIN modal's z-index and
@@ -4070,6 +4088,7 @@
     window.saveSignupCode = async function() {
       const input = document.getElementById("signup-code-input");
       const status = document.getElementById("signup-code-status");
+      const copyBtn = document.getElementById("signup-code-copy-btn");
       const changeBtn = document.getElementById("signup-code-change-btn");
       const saveBtn = document.getElementById("signup-code-save-btn");
       const code = input ? input.value.trim() : "";
@@ -4081,6 +4100,7 @@
         await setDoc(doc(db, "settings", "signupCode"), { code, updatedAt: new Date().toISOString() });
         if (status) { status.textContent = "Saved! Update the HoneyBook email template with this code."; status.style.color = "#2e7d32"; status.style.display = "block"; }
         if (input) input.disabled = true;
+        if (copyBtn) copyBtn.style.display = "inline-block";
         if (changeBtn) changeBtn.style.display = "inline-block";
         if (saveBtn) saveBtn.style.display = "none";
       } catch (e) {
@@ -4133,10 +4153,12 @@
       if (pinGateTarget === "signupCode") {
         const scModal = document.getElementById("signup-code-modal");
         const codeInput = document.getElementById("signup-code-input");
+        const copyBtn = document.getElementById("signup-code-copy-btn");
         const changeBtn = document.getElementById("signup-code-change-btn");
         const saveBtn = document.getElementById("signup-code-save-btn");
         if (scModal) scModal.style.display = "flex";
         if (codeInput) { codeInput.disabled = false; codeInput.value = /^\d{4}$/.test(codeInput.value) ? codeInput.value : ""; codeInput.focus(); }
+        if (copyBtn) copyBtn.style.display = "none";
         if (changeBtn) changeBtn.style.display = "none";
         if (saveBtn) saveBtn.style.display = "inline-block";
       } else {
@@ -7193,7 +7215,8 @@
     </div>
   <!-- ══════════════════ SIGNUP CODE MODAL ══════════════════ -->
   <div id="signup-code-modal" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(44,44,44,0.75);align-items:center;justify-content:center;padding:24px;">
-    <div style="background:var(--warm-white);width:100%;max-width:400px;padding:36px 32px;border-radius:2px;">
+    <div style="background:var(--warm-white);width:100%;max-width:400px;padding:36px 32px;border-radius:2px;position:relative;">
+      <span onclick="window.closeSignupCodeModal()" style="position:absolute;top:16px;right:20px;font-size:22px;color:var(--mid-gray);cursor:pointer;line-height:1;">&times;</span>
       <div style="font-size:28px;margin-bottom:8px;text-align:center;">&#128273;</div>
       <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:400;color:var(--charcoal);margin-bottom:8px;text-align:center;">Couple Signup Code</h2>
       <p style="font-size:12px;color:var(--mid-gray);margin-bottom:20px;line-height:1.6;text-align:center;">The 4-digit code couples need to create an account. Copy it into your HoneyBook welcome email template. Only venue ownership can change it.</p>
@@ -7201,7 +7224,7 @@
       <input type="text" inputmode="numeric" maxlength="4" id="signup-code-input" class="login-input" disabled style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
       <p id="signup-code-status" style="display:none;font-size:12px;margin-top:10px;text-align:center;"></p>
       <div style="display:flex;gap:10px;margin-top:20px;">
-        <button class="btn-back" style="flex:1;" onclick="window.closeSignupCodeModal()">Close</button>
+        <button class="btn-back" id="signup-code-copy-btn" style="flex:1;" onclick="window.copySignupCode()">Copy Code</button>
         <button class="btn-save" id="signup-code-change-btn" style="flex:1;" onclick="window.requestSignupCodeChange()">Change Code</button>
         <button class="btn-save" id="signup-code-save-btn" style="flex:1;display:none;" onclick="window.saveSignupCode()">Save</button>
       </div>
