@@ -4034,6 +4034,12 @@
 
     // ── SIGNUP CODE (VIEWABLE BY ALL ADMINS, EDITABLE ONLY WITH OWNER PIN) ─
     window.openSignupCodeModal = async function() {
+      // Close any Manage Resources modals first so nothing stacks visually.
+      const resourcePin = document.getElementById("resource-pin-modal");
+      const resourceMgr = document.getElementById("resource-manager-modal");
+      if (resourcePin) resourcePin.style.display = "none";
+      if (resourceMgr) resourceMgr.style.display = "none";
+
       const modal = document.getElementById("signup-code-modal");
       const input = document.getElementById("signup-code-input");
       const status = document.getElementById("signup-code-status");
@@ -4148,6 +4154,12 @@
     let resourceRowSeq = 0;
 
     window.openResourcePinGate = function() {
+      // Close any Signup Code modals first so nothing stacks visually.
+      const scModal = document.getElementById("signup-code-modal");
+      const signupPin = document.getElementById("signup-pin-modal");
+      if (scModal) scModal.style.display = "none";
+      if (signupPin) signupPin.style.display = "none";
+
       const modal = document.getElementById("resource-pin-modal");
       const input = document.getElementById("resource-pin-input");
       const err = document.getElementById("resource-pin-error");
@@ -7237,6 +7249,7 @@
         <button class="acc-btn-view" style="flex:1;" id="save-resources-btn" onclick="window.saveResources()">Save Changes</button>
       </div>
     </div>
+  </div>
   <!-- ══════════════════ SIGNUP CODE MODAL ══════════════════ -->
   <div id="signup-code-modal" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(44,44,44,0.75);align-items:center;justify-content:center;padding:24px;">
     <div style="background:var(--warm-white);width:100%;max-width:400px;padding:36px 32px;border-radius:2px;position:relative;">
