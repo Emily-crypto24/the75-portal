@@ -4059,6 +4059,11 @@
 
     // Owners (and anyone with the PIN) click this to unlock editing.
     window.requestSignupCodeChange = function() {
+      // Hide the Signup Code modal first — it shares the PIN modal's z-index and
+      // sits later in the page, so it would otherwise render on top and hide the
+      // PIN prompt entirely, even though it's technically opened underneath.
+      const scModal = document.getElementById("signup-code-modal");
+      if (scModal) scModal.style.display = "none";
       window.openResourcePinGate("signupCode");
     };
 
@@ -4105,6 +4110,16 @@
       if (modal) modal.style.display = "none";
     };
 
+    // If someone cancels the PIN prompt while trying to change the signup code,
+    // bring the (still view-only) Signup Code box back instead of leaving nothing on screen.
+    window.cancelResourcePinGate = function() {
+      window.closeResourcePinGate();
+      if (pinGateTarget === "signupCode") {
+        const scModal = document.getElementById("signup-code-modal");
+        if (scModal) scModal.style.display = "flex";
+      }
+    };
+
     window.submitResourcePin = async function() {
       const input = document.getElementById("resource-pin-input");
       const err = document.getElementById("resource-pin-error");
@@ -4116,9 +4131,11 @@
       }
       window.closeResourcePinGate();
       if (pinGateTarget === "signupCode") {
+        const scModal = document.getElementById("signup-code-modal");
         const codeInput = document.getElementById("signup-code-input");
         const changeBtn = document.getElementById("signup-code-change-btn");
         const saveBtn = document.getElementById("signup-code-save-btn");
+        if (scModal) scModal.style.display = "flex";
         if (codeInput) { codeInput.disabled = false; codeInput.value = /^\d{4}$/.test(codeInput.value) ? codeInput.value : ""; codeInput.focus(); }
         if (changeBtn) changeBtn.style.display = "none";
         if (saveBtn) saveBtn.style.display = "inline-block";
@@ -7155,7 +7172,7 @@
       <input type="password" inputmode="numeric" maxlength="4" id="resource-pin-input" class="login-input" style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
       <p id="resource-pin-error" style="display:none;color:#c0392b;font-size:12px;margin-top:10px;"></p>
       <div style="display:flex;gap:10px;margin-top:20px;">
-        <button class="btn-back" style="flex:1;" onclick="window.closeResourcePinGate()">Cancel</button>
+        <button class="btn-back" style="flex:1;" onclick="window.cancelResourcePinGate()">Cancel</button>
         <button class="btn-save" style="flex:1;" onclick="window.submitResourcePin()">Unlock</button>
       </div>
     </div>
