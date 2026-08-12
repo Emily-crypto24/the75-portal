@@ -16,7 +16,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
     import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
 
@@ -600,11 +600,29 @@
       }
     };
 
+    // Tracks whether we've already sent a verification email this page session,
+    // so we don't re-send every time onAuthStateChanged fires.
+    let verificationEmailSent = false;
+
     // ── AUTH STATE ──────────────────────────────────────────────
     onAuthStateChanged(auth, async (user) => {
       if (isGuestViewMode) return;
       if (user) {
         currentUser = user;
+
+        // Admin accounts must have a verified email (required by our Firestore rules).
+        // Google sign-in verifies automatically; email/password accounts need to
+        // click a one-time confirmation link. This only ever happens once per account.
+        if (isAdmin(user.email) && !user.emailVerified) {
+          if (!verificationEmailSent) {
+            verificationEmailSent = true;
+            try { await sendEmailVerification(user); } catch (e) {}
+          }
+          showLoginError(`Almost there — we've sent a verification link to ${user.email}. Check your inbox (and spam folder), click the link, then log in again.`, true);
+          await signOut(auth);
+          return;
+        }
+
         document.getElementById("login-screen").style.display = "none";
         if (isAdmin(user.email)) {
           document.getElementById("portal-root").style.display = "none";
