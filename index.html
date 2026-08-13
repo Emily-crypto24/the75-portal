@@ -2,6 +2,7 @@
 
 
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3770,6 +3771,7 @@
             <button class="acc-btn-view" onclick="window.openCouple('${c.id}')">View / Edit</button>
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openDayOfDisplay('${c.id}')">&#128250; Day-Of TV Display</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
@@ -3995,6 +3997,245 @@
         dlCSV(buildCSV(couples), `The75_AllCouples_${new Date().toISOString().slice(0,10)}.csv`);
       } catch(e) { alert("Export failed: " + e.message); }
       if (btn) { btn.textContent = "&#8595; Export All Couples to CSV"; btn.disabled = false; }
+    };
+
+    // ===== Day-Of TV Display =====
+    const VENDOR_LABELS = {
+      cat_cameron:"Cameron Mitchell Premier Events", cat_la:"L.A. Catering", cat_berwick:"The Berwick",
+      cat_together:"Together & Co.", cat_sweet:"Sweet Carrot", cat_emilios:"Emilio's",
+      cake_birdies:"Birdies Cupcakes", cake_crystal:"Cakes Creatively by Crystal", cake_kitties:"Kittie's Cakes",
+      cake_spencer:"Spencer's Sugar Shop",
+      photo_asteria:"Asteria Photography", photo_feelstory:"Feelstory Photography", photo_kismet:"Kismet Visuals & Co",
+      dj_brad:"Brad McPherson", dj_fasttracks:"Fast Tracks DJ", dj_josh:"Josh Staley Productions",
+      dj_turnup:"Turn Up Columbus", dj_soundlight:"Sound and Light Creative",
+      flor_bearroots:"Bear Roots Floral", flor_blooms:"Blooms By Amanda", flor_dashing:"Dashing Designs",
+      flor_evergreen:"Evergreen Flower Co", flor_madison:"Madison House Designs"
+    };
+    function dofVendorFor(m1, prefix, confirmText) {
+      const picked = Object.keys(VENDOR_LABELS).filter(k => k.startsWith(prefix+"_") && m1[k] === true).map(k => VENDOR_LABELS[k]);
+      if (m1[prefix+"_other"] === true) picked.push("Other (see notes)");
+      const base = picked.join(", ");
+      if (confirmText && confirmText.trim()) return base ? `${base} — ${confirmText.trim()}` : confirmText.trim();
+      return base || "";
+    }
+    const DOF_SECTIONS = [
+      {key:"morning", label:"Morning Arrival", tasks:[]},
+      {key:"preceremony", label:"Pre-Ceremony", tasks:["Introduce Lead Closer to Bride & Groom & their Parents, say goodbyes","VENDOR HUDDLE","Final walk of ceremony pad, staircase, & patio; finishing touches","Leaf blow where needed","Check bathrooms are cleaned and stocked","Check all place settings are complete","Make sure personal belongings are moved from GS to BS"]},
+      {key:"ceremony", label:"Ceremony", tasks:["Block driveway","Final preparation of cocktail room and paver patio","Move couples decor & vendor equipment into groom suite","Wipe down ADA toilet, restock TP & paper towels — open to public, lock from groom suite","Lock exterior and interior doors of bridal suite and groom suite","Prepare a tray of waters to take to B&G and family for pictures","Light candles in cocktail area","Set out corn hole, jenga, ring toss","Unblock driveway"]},
+      {key:"cocktail", label:"Cocktail Hour", tasks:["Take tray of water to B&G and family at family picture site","Trash sweep of ceremony pad","Prepare Bride and Groom drinks and apps and have ready in bridal suite","Light candle at tables","Bathroom check","Change garbage in bridal suite","Clean & re-stock bridal bathroom after private moment","Set a stack of plates, silverware and extra cloth napkins for vendors on end of bar behind the curtain","Give linen bag to caterers for napkin collection","Spot sweep around cocktail food"]},
+      {key:"reception", label:"Reception", tasks:["Trash sweep of indoor and outdoor cocktail areas","Window smudge check in cocktail room","Fold napkins for flip","Check bathrooms","Cocktail trash check","REMIND CATERERS: no scraping plates outside of kitchen","Periodic spot sweep around buffet tables and tables in main hall","Outdoor lighting on at dusk","Buff all silverware — only buffed into black sorters (cover with Saran Wrap)","Buff glassware (caterer should help accomplish this)"]},
+      {key:"closing", label:"Closing", tasks:["Complete SOPS & Cleaning/Closeout Checklist"]}
+    ];
+
+    let dofCurrentUid = null, dofCurrentData = null, dofTimelineCache = [], dofSectionIdx = 0;
+
+    window.openDayOfDisplay = async function(uid) {
+      document.getElementById("dayof-modal").style.display = "flex";
+      dofCurrentUid = uid;
+      dofSectionIdx = 0;
+      await dofLoad(uid);
+    };
+
+    window.refreshDayOfDisplay = async function() {
+      if (dofCurrentUid) await dofLoad(dofCurrentUid);
+    };
+
+    window.closeDayOfDisplay = function() {
+      document.getElementById("dayof-modal").style.display = "none";
+      dofCurrentUid = null; dofCurrentData = null;
+    };
+
+    async function dofLoad(uid) {
+      const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const snap = await gd(dc(db,"couples",uid));
+      if (!snap.exists()) { alert("Couldn't load couple data."); return; }
+      dofCurrentData = snap.data();
+      dofTimelineCache = Array.isArray(dofCurrentData.timelineItems) ? dofCurrentData.timelineItems : [];
+      const names = (dofCurrentData.meeting1||{}).coupleNames || dofCurrentData.displayName || "Couple";
+      const rawDate = (dofCurrentData.meeting1||{}).weddingDate;
+      const wDate = rawDate ? new Date(rawDate+"T12:00:00").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "";
+      document.getElementById("dof-couple-name").textContent = names;
+      document.getElementById("dof-meta").textContent = [wDate, (dofCurrentData.meeting1||{}).ceremonyTime ? `Ceremony ${(dofCurrentData.meeting1||{}).ceremonyTime}` : ""].filter(Boolean).join("  ·  ");
+      dofSyncStamp();
+      dofRenderTabs();
+      dofRenderTimeline();
+      dofRenderNotes();
+      dofRenderSection();
+    }
+
+    function dofSyncStamp() {
+      const el = document.getElementById("dof-sync");
+      if (el) el.textContent = "Last synced " + new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+    }
+
+    function dofRenderTabs() {
+      const wrap = document.getElementById("dof-tabs");
+      wrap.innerHTML = DOF_SECTIONS.map((s,i) => `<button class="dof-tab ${i===dofSectionIdx?"active":""}" onclick="window.dofSetSection(${i})">${s.label}</button>`).join("");
+    }
+
+    window.dofSetSection = function(idx) {
+      dofSectionIdx = idx;
+      dofRenderTabs();
+      dofRenderSection();
+    };
+
+    function dofRenderTimeline() {
+      const wrap = document.getElementById("dof-timeline-list");
+      if (!dofTimelineCache.length) { wrap.innerHTML = '<p style="color:rgba(253,250,246,0.35);font-size:12px;font-style:italic;">No timeline items added yet.</p>'; return; }
+      const sorted = dofTimelineCache.slice().sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+      wrap.innerHTML = sorted.map(t => `<div class="dof-tl-item"><div class="dof-tl-time">${t.time ? esc(formatMeetingTime(t.time)) : ""}</div><div class="dof-tl-label">${esc(t.activity||"")}</div></div>`).join("");
+    }
+
+    function dofRenderNotes() {
+      const wrap = document.getElementById("dof-notes-list");
+      const notes = (dofCurrentData.dayOf && Array.isArray(dofCurrentData.dayOf.uniqueNotes)) ? dofCurrentData.dayOf.uniqueNotes : [];
+      if (!notes.length) { wrap.innerHTML = '<p style="color:rgba(253,250,246,0.35);font-size:12px;font-style:italic;">No notes yet.</p>'; return; }
+      const sorted = notes.slice().reverse();
+      wrap.innerHTML = sorted.map(n => `<div class="dof-note">
+        <div class="dof-note-meta"><span>${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span><button class="dof-note-del" onclick="window.dofDeleteNote('${n.id}')">Delete</button></div>
+        <div class="dof-note-text">${esc(n.text)}</div>
+      </div>`).join("");
+    }
+
+    window.dofAddNote = async function() {
+      const input = document.getElementById("dof-note-input");
+      const text = input.value.trim();
+      if (!text) return;
+      const note = { id: Date.now().toString(), text, timestamp: new Date().toISOString() };
+      if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+      if (!Array.isArray(dofCurrentData.dayOf.uniqueNotes)) dofCurrentData.dayOf.uniqueNotes = [];
+      dofCurrentData.dayOf.uniqueNotes.push(note);
+      input.value = "";
+      dofRenderNotes();
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",dofCurrentUid), { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
+        dofSyncStamp();
+      } catch(e) { alert("Couldn't save note: " + e.message); }
+    };
+
+    window.dofDeleteNote = async function(id) {
+      if (!dofCurrentData.dayOf || !Array.isArray(dofCurrentData.dayOf.uniqueNotes)) return;
+      dofCurrentData.dayOf.uniqueNotes = dofCurrentData.dayOf.uniqueNotes.filter(n => n.id !== id);
+      dofRenderNotes();
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",dofCurrentUid), { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
+        dofSyncStamp();
+      } catch(e) { alert("Couldn't delete note: " + e.message); }
+    };
+
+    function dofFieldHTML(labelText, key, multiline) {
+      const val = (dofCurrentData.dayOf||{})[key] || "";
+      return `<div class="dof-field">
+        <div class="dof-field-label">${esc(labelText)}</div>
+        <div class="dof-field-val dof-editable ${val?"":"empty"}" id="dof-fv-${key}" onclick="window.dofStartEdit('${key}',${multiline?"true":"false"})">${val ? esc(val) : "Tap to add"}</div>
+      </div>`;
+    }
+
+    function dofStaticFieldHTML(labelText, val) {
+      return `<div class="dof-field">
+        <div class="dof-field-label">${esc(labelText)}</div>
+        <div class="dof-field-val ${val?"":"empty"}">${val ? esc(val) : "Not entered yet"}</div>
+      </div>`;
+    }
+
+    window.dofStartEdit = function(key, multiline) {
+      const wrap = document.getElementById(`dof-fv-${key}`);
+      if (!wrap) return;
+      const val = (dofCurrentData.dayOf||{})[key] || "";
+      wrap.innerHTML = multiline
+        ? `<textarea class="dof-edit-input" id="dof-editinput-${key}" rows="3">${esc(val)}</textarea>`
+        : `<input class="dof-edit-input" id="dof-editinput-${key}" type="text" value="${esc(val)}">`;
+      const inputEl = document.getElementById(`dof-editinput-${key}`);
+      inputEl.focus();
+      inputEl.addEventListener("blur", () => window.dofSaveEdit(key));
+      if (!multiline) inputEl.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); inputEl.blur(); } });
+    };
+
+    window.dofSaveEdit = async function(key) {
+      const inputEl = document.getElementById(`dof-editinput-${key}`);
+      if (!inputEl) return;
+      const val = inputEl.value;
+      if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+      dofCurrentData.dayOf[key] = val;
+      const wrap = document.getElementById(`dof-fv-${key}`);
+      if (wrap) { wrap.textContent = val || "Tap to add"; wrap.className = "dof-field-val dof-editable" + (val ? "" : " empty"); }
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",dofCurrentUid), { [`dayOf.${key}`]: val });
+        dofSyncStamp();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    function dofRenderSection() {
+      const s = DOF_SECTIONS[dofSectionIdx];
+      const m1 = dofCurrentData.meeting1 || {}, m2 = dofCurrentData.meeting2 || {}, m3 = dofCurrentData.meeting3 || {};
+      let fieldsHTML = "";
+      if (s.key === "morning") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Bride Arrival", m3.brideArrival)}
+          ${dofStaticFieldHTML("Groom Arrival", m3.groomArrival)}
+          ${dofStaticFieldHTML("Florist", dofVendorFor(m1,"flor",m3.floristConfirm))}
+          ${dofStaticFieldHTML("Caterer", dofVendorFor(m1,"cat",m3.catererName))}
+          ${dofStaticFieldHTML("DJ / Band", dofVendorFor(m1,"dj",m3.djBandConfirm))}
+          ${dofStaticFieldHTML("Photographer", dofVendorFor(m1,"photo",m3.photoConfirm))}
+          ${dofStaticFieldHTML("Dessert", dofVendorFor(m1,"cake",m3.dessertsCake))}
+          ${dofStaticFieldHTML("Guest Count", m1.guestCount)}
+          ${dofFieldHTML("Bride's Parents", "brideParents", false)}
+          ${dofFieldHTML("Groom's Parents", "groomParents", false)}
+          ${dofFieldHTML("75 Decor Quantity Used", "decorQtyUsed", true)}
+          ${dofStaticFieldHTML("Couples Large Decor", m2.decorBroughtIn)}
+          ${dofStaticFieldHTML("Linen Napkin Fold", m2.napkinFold)}
+          ${dofStaticFieldHTML("Rain Plan", m3.rainPlanFinal)}
+        </div>`;
+      } else if (s.key === "preceremony") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Guest Arrival Time", m1.guestArrival || m3.guestArrival)}
+          ${dofStaticFieldHTML("Shuttle / Transportation Times", m3.shuttleTimes || m2.shuttleTimes)}
+          ${dofStaticFieldHTML("Ceremony Length", m3.ceremonyLength)}
+          ${dofStaticFieldHTML("Cocktail Hour Start", m3.cocktailStart)}
+          ${dofStaticFieldHTML("Reception Start", m3.receptionStart)}
+          ${dofStaticFieldHTML("Dinner", m3.dinnerStart)}
+        </div>`;
+      } else if (s.key === "ceremony") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Ceremony Time", m1.ceremonyTime)}
+          ${dofStaticFieldHTML("Officiant", m3.officiant)}
+          ${dofFieldHTML("Transportation Notes", "transportNotes", true)}
+        </div>`;
+      } else if (s.key === "cocktail") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Cocktail Hour Start", m3.cocktailStart)}
+          ${dofStaticFieldHTML("Dinner Time", m3.dinnerStart)}
+          ${dofStaticFieldHTML("Champagne", m3.champagneWhen)}
+          ${dofStaticFieldHTML("Post-Ceremony Snacks", m3.postCeremonySnacks)}
+        </div>`;
+      } else if (s.key === "reception") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Dinner Time", m3.dinnerStart)}
+          ${dofStaticFieldHTML("Late Night Snacks", m2.lateNightSnacks)}
+          ${dofStaticFieldHTML("Table Breakdown", m3.tableBreakdown)}
+          ${dofStaticFieldHTML("Special Send-Off", m2.specialSendOff)}
+        </div>`;
+      } else if (s.key === "closing") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Food Delegation", m2.foodHome)}
+          ${dofStaticFieldHTML("Cake Delegation", m2.cakeHome)}
+          ${dofStaticFieldHTML("Alcohol Delegation", m2.alcoholHome)}
+          ${dofStaticFieldHTML("Decor Delegation", m2.decorHome)}
+          ${dofFieldHTML("Gifts Delegation", "giftsDelegation", false)}
+          ${dofFieldHTML("Florals Delegation", "floralsDelegation", false)}
+          ${dofFieldHTML("75 Decor Quantity Used", "decorQtyUsed", true)}
+        </div>`;
+      }
+      const tasksHTML = s.tasks.length ? `<div class="dof-tasks-title">Shift Tasks</div>${s.tasks.map((t,i) => `<label class="dof-task" id="dof-task-${dofSectionIdx}-${i}"><input type="checkbox" onchange="window.dofToggleTask(${dofSectionIdx},${i})"><span>${esc(t)}</span></label>`).join("")}` : "";
+      document.getElementById("dof-main").innerHTML = `<div class="dof-section-title">${s.label}</div>${fieldsHTML}${tasksHTML}`;
+    }
+
+    window.dofToggleTask = function(sIdx, tIdx) {
+      const el = document.getElementById(`dof-task-${sIdx}-${tIdx}`);
+      if (el) el.classList.toggle("checked");
     };
 
     function buildCSV(couples) {
@@ -4577,6 +4818,49 @@
     .amd-input:focus{border-color:var(--gold);}
     .amd-textarea{min-height:70px;resize:vertical;line-height:1.5;}
     .amd-chip{display:inline-flex;align-items:center;padding:4px 10px;background:rgba(184,150,90,0.1);border:1px solid rgba(184,150,90,0.3);font-size:11px;color:var(--gold-dark);border-radius:2px;}
+
+    /* ===== Day-Of TV Display ===== */
+    #dayof-modal{display:none;position:fixed;inset:0;z-index:600;background:var(--charcoal);flex-direction:column;}
+    .dof-topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#232323;border-bottom:1px solid rgba(255,255,255,0.08);flex-shrink:0;}
+    .dof-couple-name{font-family:var(--font-heading);font-size:24px;color:var(--warm-white);}
+    .dof-meta{font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-light);margin-top:2px;}
+    .dof-sync{font-size:10px;color:rgba(253,250,246,0.4);margin-top:2px;}
+    .dof-close{background:transparent;border:1px solid rgba(253,250,246,0.3);color:var(--warm-white);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;padding:10px 18px;cursor:pointer;border-radius:2px;}
+    .dof-close:hover{background:rgba(253,250,246,0.1);}
+    .dof-tabs{display:flex;gap:0;background:#1c1c1c;flex-shrink:0;overflow-x:auto;}
+    .dof-tab{flex:1;min-width:130px;padding:14px 10px;text-align:center;background:transparent;border:none;border-bottom:3px solid transparent;color:rgba(253,250,246,0.5);font-family:var(--font-body);font-size:12px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
+    .dof-tab.active{color:var(--gold-light);border-bottom-color:var(--gold);background:rgba(184,150,90,0.08);}
+    .dof-tab:hover{color:var(--warm-white);}
+    .dof-body{flex:1;display:flex;overflow:hidden;}
+    .dof-rail{width:320px;flex-shrink:0;background:#232323;border-right:1px solid rgba(255,255,255,0.08);padding:20px;overflow-y:auto;}
+    .dof-main{flex:1;padding:28px 36px;overflow-y:auto;color:var(--warm-white);}
+    .dof-rail-title{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--gold-light);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.1);}
+    .dof-tl-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06);}
+    .dof-tl-time{font-size:11px;color:var(--gold-light);flex-shrink:0;width:64px;}
+    .dof-tl-label{font-size:12px;color:rgba(253,250,246,0.85);line-height:1.4;}
+    .dof-notes-wrap{margin-top:28px;}
+    .dof-note{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:3px;padding:10px 12px;margin-bottom:8px;}
+    .dof-note-meta{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:rgba(253,250,246,0.4);margin-bottom:4px;}
+    .dof-note-del{background:none;border:none;color:rgba(253,250,246,0.4);font-size:10px;text-decoration:underline;cursor:pointer;padding:0;}
+    .dof-note-del:hover{color:#d98;}
+    .dof-note-text{font-size:13px;color:rgba(253,250,246,0.9);line-height:1.5;white-space:pre-wrap;}
+    .dof-note-add{margin-top:10px;}
+    .dof-note-input{width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:var(--warm-white);font-family:var(--font-body);font-size:12px;padding:8px;border-radius:2px;resize:vertical;min-height:50px;outline:none;}
+    .dof-note-add-btn{margin-top:6px;width:100%;padding:8px;background:var(--gold-dark);color:var(--warm-white);border:none;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;border-radius:2px;}
+    .dof-section-title{font-family:var(--font-heading);font-size:28px;font-weight:300;color:var(--warm-white);margin-bottom:20px;}
+    .dof-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px 32px;margin-bottom:28px;}
+    .dof-field{border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:10px;}
+    .dof-field-label{font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-light);margin-bottom:4px;}
+    .dof-field-val{font-size:15px;color:var(--warm-white);line-height:1.5;white-space:pre-wrap;}
+    .dof-field-val.empty{color:rgba(253,250,246,0.35);font-style:italic;}
+    .dof-editable{cursor:pointer;padding:4px 6px;margin:-4px -6px;border-radius:3px;transition:background 0.15s;}
+    .dof-editable:hover{background:rgba(184,150,90,0.12);}
+    .dof-edit-input{width:100%;background:rgba(255,255,255,0.08);border:1px solid var(--gold);color:var(--warm-white);font-family:var(--font-body);font-size:14px;padding:6px 8px;border-radius:2px;outline:none;}
+    .dof-tasks-title{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--gold-light);margin:24px 0 12px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);}
+    .dof-task{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:14px;color:rgba(253,250,246,0.9);}
+    .dof-task input{width:16px;height:16px;accent-color:var(--gold);}
+    .dof-task.checked{color:rgba(253,250,246,0.4);text-decoration:line-through;}
+    @media (max-width:900px){.dof-rail{width:230px;}.dof-grid{grid-template-columns:1fr;}}
 
   </style>
 </head>
@@ -7164,6 +7448,37 @@
         <button class="admin-modal-close" onclick="window.closeAdminModal()">&#10005;</button>
       </div>
       <div class="admin-modal-body" id="admin-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Day-Of TV Display -->
+  <div id="dayof-modal">
+    <div class="dof-topbar">
+      <div>
+        <div class="dof-couple-name" id="dof-couple-name">Couple</div>
+        <div class="dof-meta" id="dof-meta"></div>
+        <div class="dof-sync" id="dof-sync"></div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button class="dof-close" onclick="window.refreshDayOfDisplay()">&#8635; Refresh</button>
+        <button class="dof-close" onclick="window.closeDayOfDisplay()">&#10005; Close</button>
+      </div>
+    </div>
+    <div class="dof-tabs" id="dof-tabs"></div>
+    <div class="dof-body">
+      <div class="dof-rail">
+        <div class="dof-rail-title">Full Day-Of Timeline</div>
+        <div id="dof-timeline-list"></div>
+        <div class="dof-notes-wrap">
+          <div class="dof-rail-title">Unique Notes</div>
+          <div id="dof-notes-list"></div>
+          <div class="dof-note-add">
+            <textarea class="dof-note-input" id="dof-note-input" placeholder="Add a note for the team..."></textarea>
+            <button class="dof-note-add-btn" onclick="window.dofAddNote()">Add Note</button>
+          </div>
+        </div>
+      </div>
+      <div class="dof-main" id="dof-main"></div>
     </div>
   </div>
 
