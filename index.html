@@ -3772,6 +3772,7 @@
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openDayOfDisplay('${c.id}')">&#128250; Day-Of TV Display</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:#3a3a3a;" onclick="window.openCloseoutSheet('${c.id}')">&#128424;&#65039; Event Closeout Sheet</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
@@ -4237,6 +4238,182 @@
       const el = document.getElementById(`dof-task-${sIdx}-${tIdx}`);
       if (el) el.classList.toggle("checked");
     };
+
+    // ===== Event Closeout Sheet =====
+    Object.assign(VENDOR_LABELS, { trans_cardinal:"Cardinal Transportation", trans_funbus:"Fun Bus" });
+    let clsCurrentUid = null, clsCurrentData = null;
+
+    window.openCloseoutSheet = async function(uid) {
+      document.getElementById("closeout-modal").style.display = "flex";
+      clsCurrentUid = uid;
+      const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const snap = await gd(dc(db,"couples",uid));
+      if (!snap.exists()) { alert("Couldn't load couple data."); return; }
+      clsCurrentData = snap.data();
+      clsRender();
+    };
+
+    window.closeCloseoutSheet = function() {
+      document.getElementById("closeout-modal").style.display = "none";
+      clsCurrentUid = null; clsCurrentData = null;
+    };
+
+    window.clsSaveField = async function(key, val) {
+      if (!clsCurrentData.closeoutSheet) clsCurrentData.closeoutSheet = {};
+      clsCurrentData.closeoutSheet[key] = val;
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",clsCurrentUid), { [`closeoutSheet.${key}`]: val });
+      } catch(e) { console.error(e); }
+    };
+
+    function clsField(labelText, key, isTextarea) {
+      const val = (clsCurrentData.closeoutSheet||{})[key] || "";
+      return isTextarea
+        ? `<div class="cls-field"><label>${esc(labelText)}</label><textarea class="cls-textarea" onblur="window.clsSaveField('${key}',this.value)">${esc(val)}</textarea></div>`
+        : `<div class="cls-field"><label>${esc(labelText)}</label><input class="cls-input" type="text" value="${esc(val)}" onblur="window.clsSaveField('${key}',this.value)"></div>`;
+    }
+    function clsCheck(labelText, key) {
+      const checked = (clsCurrentData.closeoutSheet||{})[key] ? "checked" : "";
+      return `<label style="display:flex;align-items:center;gap:6px;font-size:12px;"><input type="checkbox" ${checked} onchange="window.clsSaveField('${key}',this.checked)"> ${esc(labelText)}</label>`;
+    }
+    function clsStatic(labelText, val) {
+      return `<div class="cls-field"><label>${esc(labelText)}</label><div class="cls-static">${val ? esc(val) : "&nbsp;"}</div></div>`;
+    }
+
+    function clsStaticBig(labelText, val) {
+      return `<div class="cls-field"><label>${esc(labelText)}</label><div class="cls-static-big">${val ? esc(val) : "&nbsp;"}</div></div>`;
+    }
+
+    function clsRender() {
+      const d = clsCurrentData;
+      const m1 = d.meeting1 || {}, m2 = d.meeting2 || {}, m3 = d.meeting3 || {};
+      const names = m1.coupleNames || d.displayName || "Couple";
+      const rawDate = m1.weddingDate;
+      const wDate = rawDate ? new Date(rawDate+"T12:00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"}) : "";
+      const addOns = [m1.addOns, m2.addOns].filter(Boolean).join(" · ");
+      const lc = d.leadCoordinator || {};
+      document.getElementById("cls-title").textContent = "Closeout — " + names;
+
+      const vendorCats = [
+        {label:"Caterer", prefix:"cat", confirm:m3.catererName},
+        {label:"Florist", prefix:"flor", confirm:m3.floristConfirm},
+        {label:"DJ / Band", prefix:"dj", confirm:m3.djBandConfirm},
+        {label:"Photographer/Videographer", prefix:"photo", confirm:m3.photoConfirm},
+        {label:"Cake / Dessert", prefix:"cake", confirm:m3.dessertsCake},
+        {label:"Transportation", prefix:"trans", confirm:""}
+      ];
+      const vendorRows = vendorCats.map(v => {
+        const name = dofVendorFor(m1, v.prefix, v.confirm);
+        return `<tr><td style="font-weight:600;">${esc(v.label)}</td><td>${name ? esc(name) : "—"}</td><td></td><td></td></tr>`;
+      }).join("");
+
+      document.getElementById("closeout-sheet").innerHTML = `
+        <div class="cls-h1">The Seventy Five &mdash; Event Closeout Sheet</div>
+        <div class="cls-sub">Rockbridge, Ohio &middot; Hocking Hills</div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Event Overview</div>
+          <div class="cls-row">
+            ${clsStatic("Wedding Couple", names)}
+            ${clsStatic("Wedding Day &amp; Date", wDate)}
+          </div>
+          <div class="cls-row3">
+            ${clsStatic("Guest Count", m1.guestCount)}
+            ${clsStatic("Guest Arrival Time", m1.guestArrival || m3.guestArrival)}
+            ${clsStatic("Ceremony Start", m1.ceremonyTime)}
+          </div>
+          <div class="cls-row">
+            ${clsStatic("Reception Start", m3.receptionStart || m1.receptionTime)}
+          </div>
+          ${clsStaticBig("Add-Ons (outside contracted price)", addOns)}
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Team</div>
+          <div class="cls-row">
+            ${clsStatic("Lead Coordinator", lc.name)}
+            ${clsField("Assistant Coordinator &amp; Team", "assistantCoordinator", false)}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Deposits</div>
+          <div class="cls-row">
+            ${clsCheck("Security Deposit Collected", "securityDepositCollected")}
+            ${clsCheck("Caterer Deposit Collected (w/ itemized invoice)", "catererDepositCollected")}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Vendors</div>
+          <table class="cls-vendor-table">
+            <thead><tr><th>Category</th><th>Vendor</th><th>Review / Notes</th><th>Social Tags</th></tr></thead>
+            <tbody>${vendorRows}</tbody>
+          </table>
+        </div>
+
+        <div class="cls-section">
+          ${clsField("Vendor Notes (special callouts or issues)", "vendorNotes", true)}
+        </div>
+        <div class="cls-section">
+          <div class="cls-row">
+            ${clsField("Damaged Items", "damagedItems", true)}
+            ${clsField("Client Left Behind / Missing Something", "clientMissingItems", true)}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Shift Handoff</div>
+          <div class="cls-sig-row">
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Opening Lead Signature</div></div>
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Time Departed</div></div>
+          </div>
+          <div class="cls-sig-row" style="margin-top:14px;">
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Closing Lead Signature (arrival)</div></div>
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Time Arrived</div></div>
+          </div>
+        </div>
+
+        <div class="cls-section">
+          ${clsField("Staff Late or Issues", "staffIssues", true)}
+        </div>
+        <div class="cls-section">
+          <div class="cls-row">
+            ${clsField("Special Comments from Guests", "guestComments", true)}
+            ${clsField("Client Feedback / Complaints", "clientFeedback", true)}
+          </div>
+        </div>
+        <div class="cls-section">
+          ${clsField("Maintenance Issues", "maintenanceIssues", true)}
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Exit &amp; Closeout Checklist</div>
+          <div class="cls-row">
+            ${clsField("Guest Exit Time", "guestExitTime", false)}
+            ${clsField("Staff Exit Time", "staffExitTime", false)}
+          </div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+            ${clsCheck("Venue fully reset & cleaned", "venueReset")}
+            ${clsCheck("All doors locked and lights off", "doorsLocked")}
+            ${clsCheck("All staff SOP has been checked and approved", "staffSOPChecked")}
+            ${clsCheck("Building key returned back to lock box on external container", "keyReturned")}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-sig-row">
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Closing Lead Signature</div></div>
+            <div></div>
+          </div>
+        </div>
+
+        <div class="cls-section">
+          ${clsField("Special Notes for Closing Shift", "specialNotesClosing", true)}
+        </div>
+      `;
+    }
 
     function buildCSV(couples) {
       const keySet = new Set();
@@ -4861,6 +5038,45 @@
     .dof-task input{width:16px;height:16px;accent-color:var(--gold);}
     .dof-task.checked{color:rgba(253,250,246,0.4);text-decoration:line-through;}
     @media (max-width:900px){.dof-rail{width:230px;}.dof-grid{grid-template-columns:1fr;}}
+
+    /* ===== Event Closeout Sheet ===== */
+    #closeout-modal{display:none;position:fixed;inset:0;z-index:600;background:#525659;flex-direction:column;}
+    .cls-topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#232323;flex-shrink:0;}
+    .cls-topbar h2{font-family:var(--font-heading);font-size:20px;color:var(--warm-white);font-weight:400;}
+    .cls-topbar-btns{display:flex;gap:10px;}
+    .cls-btn{background:var(--gold-dark);border:none;color:var(--warm-white);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;padding:10px 18px;cursor:pointer;border-radius:2px;}
+    .cls-btn.secondary{background:transparent;border:1px solid rgba(253,250,246,0.3);}
+    .cls-scroll{flex:1;overflow-y:auto;padding:30px;display:flex;justify-content:center;}
+    #closeout-sheet{background:#fff;color:#1a1a1a;width:8.5in;min-height:11in;padding:0.5in;font-family:var(--font-body);box-shadow:0 4px 20px rgba(0,0,0,0.4);}
+    .cls-h1{font-family:var(--font-heading);font-size:22px;text-align:center;margin-bottom:2px;}
+    .cls-sub{text-align:center;font-size:12px;color:#666;margin-bottom:18px;}
+    .cls-section{margin-bottom:16px;page-break-inside:avoid;}
+    .cls-section-title{font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#8a6d3b;border-bottom:1px solid #ccc;padding-bottom:4px;margin-bottom:8px;}
+    .cls-row{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;margin-bottom:6px;}
+    .cls-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 20px;margin-bottom:6px;}
+    .cls-field{font-size:12px;}
+    .cls-field label{display:block;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-bottom:2px;}
+    .cls-static{padding:3px 0;border-bottom:1px dotted #ccc;min-height:16px;}
+    .cls-static-big{padding:6px 4px;border:1px solid #ccc;min-height:60px;margin-top:2px;}
+    .cls-input{width:100%;border:none;border-bottom:1px solid #999;font-family:var(--font-body);font-size:12px;padding:3px 0;outline:none;background:transparent;}
+    .cls-textarea{width:100%;border:1px solid #ccc;font-family:var(--font-body);font-size:12px;padding:5px;outline:none;background:transparent;resize:vertical;min-height:90px;box-sizing:border-box;}
+    .cls-check{display:flex;align-items:center;gap:14px;font-size:12px;margin-bottom:4px;}
+    .cls-check label{display:flex;align-items:center;gap:5px;}
+    .cls-vendor-table{width:100%;border-collapse:collapse;font-size:11px;}
+    .cls-vendor-table th{text-align:left;font-size:9px;text-transform:uppercase;color:#888;border-bottom:1px solid #999;padding:4px 6px;}
+    .cls-vendor-table td{border-bottom:1px dotted #ccc;padding:6px;vertical-align:top;}
+    .cls-sig-row{display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-top:10px;}
+    .cls-sig-line{border-bottom:1px solid #333;min-height:22px;}
+    .cls-sig-label{font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-top:3px;}
+    @media print {
+      body *{visibility:hidden;}
+      #closeout-modal, #closeout-modal *{visibility:visible;}
+      #closeout-modal{position:absolute;inset:0;background:#fff;}
+      .cls-topbar, .no-print{display:none !important;}
+      .cls-scroll{padding:0;overflow:visible;display:block;}
+      #closeout-sheet{box-shadow:none;width:100%;min-height:0;padding:0.4in;}
+      .cls-input, .cls-textarea{border-color:#999 !important;}
+    }
 
   </style>
 </head>
@@ -7479,6 +7695,20 @@
         </div>
       </div>
       <div class="dof-main" id="dof-main"></div>
+    </div>
+  </div>
+
+  <!-- Event Closeout Sheet -->
+  <div id="closeout-modal">
+    <div class="cls-topbar">
+      <h2 id="cls-title">Event Closeout Sheet</h2>
+      <div class="cls-topbar-btns">
+        <button class="cls-btn secondary" onclick="window.closeCloseoutSheet()">Close</button>
+        <button class="cls-btn" onclick="window.print()">&#128424;&#65039; Print / Save as PDF</button>
+      </div>
+    </div>
+    <div class="cls-scroll">
+      <div id="closeout-sheet"></div>
     </div>
   </div>
 
