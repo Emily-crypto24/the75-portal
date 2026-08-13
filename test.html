@@ -1,6 +1,8 @@
 
 
 
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,8 +17,9 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBmqd_uayeu-aCAteNoC5N5TIigbJhiKt8",
@@ -29,6 +32,15 @@
     };
 
     const app = initializeApp(firebaseConfig);
+
+    // App Check: verifies requests are coming from this actual website (not a
+    // direct script/API call like the one used to bulk-read publicCouples).
+    // reCAPTCHA v3 runs silently in the background — no puzzle, no visible UI.
+    initializeAppCheck(app, {
+      provider: new ReCaptchaV3Provider("6LdsO4EtAAAAAKVEBS0NqETVfApZoa3xZO_rqqyk"),
+      isTokenAutoRefreshEnabled: true
+    });
+
     const auth = getAuth(app);
     const db = getFirestore(app);
     const provider = new GoogleAuthProvider();
@@ -44,6 +56,7 @@
     let pendingCoupleNames = "";
     let pendingWeddingDate = "";
     let pendingSlugBase = "";
+    let pendingSignupCode = "";
 
     function firstNameSlug(fullName) {
       const first = (fullName || "").trim().split(/\s+/)[0] || "";
@@ -589,11 +602,29 @@
       }
     };
 
+    // Tracks whether we've already sent a verification email this page session,
+    // so we don't re-send every time onAuthStateChanged fires.
+    let verificationEmailSent = false;
+
     // ── AUTH STATE ──────────────────────────────────────────────
     onAuthStateChanged(auth, async (user) => {
       if (isGuestViewMode) return;
       if (user) {
         currentUser = user;
+
+        // Admin accounts must have a verified email (required by our Firestore rules).
+        // Google sign-in verifies automatically; email/password accounts need to
+        // click a one-time confirmation link. This only ever happens once per account.
+        if (isAdmin(user.email) && !user.emailVerified) {
+          if (!verificationEmailSent) {
+            verificationEmailSent = true;
+            try { await sendEmailVerification(user); } catch (e) {}
+          }
+          showLoginError(`Almost there — we've sent a verification link to ${user.email}. Check your inbox (and spam folder), click the link, then log in again.`, true);
+          await signOut(auth);
+          return;
+        }
+
         document.getElementById("login-screen").style.display = "none";
         if (isAdmin(user.email)) {
           document.getElementById("portal-root").style.display = "none";
@@ -608,7 +639,19 @@
           const snap = await getDoc(userRef);
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
-            await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [], registryLinks: [], notesTool: [] });
+            try {
+              await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, signupCode: pendingSignupCode || "", blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [], registryLinks: [], notesTool: [] });
+            } catch (e) {
+              // Signup code was missing/incorrect (rejected by Firestore rules), or some
+              // other write failure. Roll back the just-created auth account so the person
+              // can cleanly retry with the correct code instead of being stuck in limbo.
+              document.getElementById("admin-root").style.display = "none";
+              document.getElementById("portal-root").style.display = "none";
+              document.getElementById("login-screen").style.display = "flex";
+              showSignupError("That signup code doesn't look right. Please double check the code from your coordinator's email and try again.");
+              try { await user.delete(); } catch (delErr) { await signOut(auth); }
+              return;
+            }
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
@@ -2829,6 +2872,113 @@
       URL.revokeObjectURL(url);
     };
 
+    // ── ADMIN: CLIENT TIMELINE MODAL ───────────────────────────────
+    let currentTimelineCoupleId = null;
+    let adminTimelineCache = [];
+    let editingAdminTimelineId = null;
+
+    window.openClientTimeline = async function(uid, coupleName) {
+      currentTimelineCoupleId = uid;
+      document.getElementById("admin-timeline-modal-title").textContent = `${coupleName} — Client Timeline`;
+      document.getElementById("admin-timeline-modal").style.display = "flex";
+      window.adminResetTimelineForm();
+      try {
+        const snap = await getDoc(doc(db, "couples", uid));
+        const data = snap.exists() ? snap.data() : {};
+        adminTimelineCache = Array.isArray(data.timelineItems) ? data.timelineItems : [];
+      } catch(e) { adminTimelineCache = []; }
+      renderAdminTimelineList();
+    };
+
+    window.closeClientTimeline = function() {
+      document.getElementById("admin-timeline-modal").style.display = "none";
+      currentTimelineCoupleId = null;
+    };
+
+    function renderAdminTimelineList() {
+      const wrap = document.getElementById("admin-timeline-list");
+      if (!wrap) return;
+      if (!adminTimelineCache.length) {
+        wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No timeline items added yet.</p>';
+        return;
+      }
+      const sorted = adminTimelineCache.slice().sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+      wrap.innerHTML = sorted.map(t => `
+        <div class="note-item" style="padding:14px 0;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px;">
+            <div style="flex:1;min-width:200px;display:flex;gap:16px;">
+              <div style="font-family:var(--font-heading);font-size:15px;color:var(--gold-dark);min-width:70px;">${t.time ? formatMeetingTime(t.time) : "—"}</div>
+              <div>
+                <div style="font-size:14px;color:var(--charcoal);">${esc(t.activity||"Untitled")}</div>
+                ${t.location ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(t.location)}</div>` : ""}
+                ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:4px;font-style:italic;">${esc(t.notes)}</div>` : ""}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0;">
+              <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.adminEditTimelineItem('${t.id}')">Edit</button>
+              <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.adminDeleteTimelineItem('${t.id}')">Delete</button>
+            </div>
+          </div>
+        </div>`).join("");
+    }
+
+    window.adminResetTimelineForm = function() {
+      editingAdminTimelineId = null;
+      ["admin-tl-time","admin-tl-activity","admin-tl-location","admin-tl-notes"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+      const saveBtn = document.getElementById("admin-tl-save-btn");
+      if (saveBtn) saveBtn.textContent = "Add Timeline Item";
+      const cancelBtn = document.getElementById("admin-tl-cancel-btn");
+      if (cancelBtn) cancelBtn.style.display = "none";
+    };
+
+    window.adminEditTimelineItem = function(id) {
+      const t = adminTimelineCache.find(x => x.id === id);
+      if (!t) return;
+      editingAdminTimelineId = id;
+      document.getElementById("admin-tl-time").value = t.time || "";
+      document.getElementById("admin-tl-activity").value = t.activity || "";
+      document.getElementById("admin-tl-location").value = t.location || "";
+      document.getElementById("admin-tl-notes").value = t.notes || "";
+      document.getElementById("admin-tl-save-btn").textContent = "Save Changes";
+      document.getElementById("admin-tl-cancel-btn").style.display = "inline-block";
+    };
+
+    window.adminSaveTimelineItem = async function() {
+      if (!currentTimelineCoupleId) return;
+      const activity = document.getElementById("admin-tl-activity").value.trim();
+      if (!activity) { alert("Please enter an event or activity."); return; }
+      const entry = {
+        id: editingAdminTimelineId || Date.now().toString(),
+        time: document.getElementById("admin-tl-time").value,
+        activity,
+        location: document.getElementById("admin-tl-location").value.trim(),
+        notes: document.getElementById("admin-tl-notes").value.trim()
+      };
+      if (editingAdminTimelineId) {
+        const idx = adminTimelineCache.findIndex(x => x.id === editingAdminTimelineId);
+        if (idx > -1) adminTimelineCache[idx] = entry; else adminTimelineCache.push(entry);
+      } else {
+        adminTimelineCache.push(entry);
+      }
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
+        window.adminResetTimelineForm();
+        renderAdminTimelineList();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.adminDeleteTimelineItem = async function(id) {
+      if (!currentTimelineCoupleId) return;
+      if (!confirm("Remove this timeline item?")) return;
+      adminTimelineCache = adminTimelineCache.filter(x => x.id !== id);
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
+        renderAdminTimelineList();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
+    };
+
     // ── IDEAS & INSPIRATION BOARD (PLANNING TOOL) ─────────────────
     let ideaItemsCache = [];
     let editingIdeaId = null;
@@ -3116,6 +3266,16 @@
 
     const PUBLIC_PROFILE_FIELDS = ["coupleNames", "weddingDate", "ceremonyTime", "receptionTime", "ceremonyLocation", "ceremonyAddress"];
 
+    // Canonical list of every question field that exists in each planning meeting form,
+    // in the same order they appear on the couple's side. Used by the admin dashboard so
+    // View/Edit and progress % reflect the FULL form — not just whatever fields happen to
+    // already have data saved in Firestore for a given couple.
+    const MEETING_FIELD_DEFS = {
+  meeting1: [["coupleNames","text"],["bridePhone","text"],["groomPhone","text"],["weddingDate","date"],["weddingPlanner","text"],["ceremonyTime","text"],["receptionTime","text"],["ceremonyLocation","text"],["ceremonyAddress","text"],["guestArrival","text"],["guestCount","text"],["familyDynamic","textarea"],["children","radio"],["accessibility","textarea"],["styleTheme","textarea"],["weddingFeel","textarea"],["colorPalette","textarea"],["specificTheme","text"],["addOns","textarea"],["traditionsCeremony","textarea"],["traditionsPost","textarea"],["dayflow_timeline","checkbox"],["dayflow_flexible","checkbox"],["dayflow_dinner","checkbox"],["dayflow_illusion","checkbox"],["decor75_yes","checkbox"],["decor75_no","checkbox"],["decor75_unsure","checkbox"],["guestExperience","textarea"],["cat_cameron","checkbox"],["cat_la","checkbox"],["cat_berwick","checkbox"],["cat_together","checkbox"],["cat_sweet","checkbox"],["cat_emilios","checkbox"],["cake_birdies","checkbox"],["cake_crystal","checkbox"],["cake_kitties","checkbox"],["cake_spencer","checkbox"],["cake_other","checkbox"],["photo_asteria","checkbox"],["photo_feelstory","checkbox"],["photo_kismet","checkbox"],["photo_other","checkbox"],["dj_brad","checkbox"],["dj_fasttracks","checkbox"],["dj_josh","checkbox"],["dj_turnup","checkbox"],["dj_soundlight","checkbox"],["dj_other","checkbox"],["flor_bearroots","checkbox"],["flor_blooms","checkbox"],["flor_dashing","checkbox"],["flor_evergreen","checkbox"],["flor_madison","checkbox"],["flor_other","checkbox"],["trans_cardinal","checkbox"],["trans_funbus","checkbox"],["trans_other","checkbox"],["rent_borrow","checkbox"],["rent_lostandfound","checkbox"],["rent_pr","checkbox"],["rent_partyplus","checkbox"],["rent_personal","checkbox"],["rent_other","checkbox"],["food_johnson","checkbox"],["food_pizza","checkbox"],["food_roosters","checkbox"],["food_other","checkbox"],["reh_rhonemus","checkbox"],["reh_hocking","checkbox"],["reh_cedar","checkbox"],["reh_millstone","checkbox"],["reh_58west","checkbox"],["reh_other","checkbox"],["lodge_boxhop","checkbox"],["lodge_cliffs","checkbox"],["lodge_dunlap","checkbox"],["lodge_hampton","checkbox"],["lodge_holiday","checkbox"],["lodge_sleep","checkbox"],["lodge_other","checkbox"],["cer_outdoor_pad","checkbox"],["cer_outdoor_other","checkbox"],["cer_indoor_main","checkbox"],["cer_indoor_other","checkbox"],["cer_notsure","checkbox"],["ceremonyBackdrop","textarea"],["mustHaveTraditions","textarea"],["priv_vows","checkbox"],["priv_gifts","checkbox"],["priv_letters","checkbox"],["priv_other","checkbox"],["ceremonyVibe","text"],["guestSeating","text"],["venue_notAtAll","checkbox"],["venue_cocktailOnly","checkbox"],["venue_wholeVenue","checkbox"],["walk_grandparents","checkbox"],["walk_parents","checkbox"],["walk_groomsmen","checkbox"],["walk_bridesmaids","checkbox"],["walk_ringbearer","checkbox"],["walk_flowergirl","checkbox"],["boxHopsInterest","textarea"],["alternativeLodging","textarea"],["lodging_booked","checkbox"],["lodging_needalt","checkbox"],["lodging_taken","checkbox"],["lodging_6month","checkbox"],["extraNotes","textarea"]],
+  meeting2: [["placeSettings","textarea"],["decor75Items","textarea"],["decorPerTable","textarea"],["decorBroughtIn","textarea"],["addOns","textarea"],["staff_tier1","checkbox"],["staff_tier2","checkbox"],["staff_tier3","checkbox"],["staff_no","checkbox"],["staff_unsure","checkbox"],["candles_yes","checkbox"],["candles_no","checkbox"],["candles_deciding","checkbox"],["candles_75provide","checkbox"],["decorDropoff","textarea"],["napkinColor","text"],["napkinFold","text"],["napkinQty","text"],["cocktailLinen","text"],["guestTableLinen","textarea"],["headTableLinen","textarea"],["styleChanges","textarea"],["vendorsBooked","textarea"],["vendorNames","textarea"],["vendorArrival","textarea"],["vendorPickup","textarea"],["catering_plated","checkbox"],["catering_buffet_cat","checkbox"],["catering_buffet_75","checkbox"],["catering_family","checkbox"],["cake_toptierhome","checkbox"],["cake_fullserve","checkbox"],["cake_sheetcakes","checkbox"],["vendorsPending","textarea"],["vendorRecs","textarea"],["appetizers","textarea"],["postCeremonySnacks","textarea"],["lateNightSnacks","textarea"],["financePerson","textarea"],["matronOfHonor","text"],["bestMan","text"],["foodHome","textarea"],["cakeHome","textarea"],["alcoholHome","textarea"],["decorHome","textarea"],["numBridesmaids","text"],["numGroomsmen","text"],["accessibilityGuests","textarea"],["shuttleService","textarea"],["shuttleTimes","textarea"],["specialSendOff","textarea"],["peopleToNote","textarea"],["evt_grandentrance","checkbox"],["evt_speeches","checkbox"],["evt_cakecutting","checkbox"],["evt_firstdance","checkbox"],["evt_fatherdaughter","checkbox"],["evt_motherson","checkbox"],["evt_anniversary","checkbox"],["evt_bouquet","checkbox"],["evt_garter","checkbox"],["evt_latenight","checkbox"],["evt_newlywed","checkbox"],["evt_specialdances","checkbox"],["evt_sendoff","checkbox"],["evt_sunset","checkbox"],["evt_privatelastdance","checkbox"],["evt_welcome","checkbox"],["evt_other","checkbox"],["eventsNotes","textarea"],["orderOfEvents","textarea"],["ge_coupleonly","checkbox"],["ge_bridalparty","checkbox"],["ge_curtains","checkbox"],["ge_fireplace","checkbox"],["rain_halfflip","checkbox"],["rain_california","checkbox"],["rain_alltables","checkbox"],["bh_og","checkbox"],["bh_hygge","checkbox"],["bh_roca","checkbox"],["bh_ellwood","checkbox"],["bh_boho","checkbox"],["bh_overlook","checkbox"],["bh_none","checkbox"],["bh_6month","checkbox"],["extraNotes","textarea"]],
+  meeting3: [["finalGuestCount","text"],["rehearsalTime","text"],["brideArrival","text"],["groomArrival","text"],["catererArrival","text"],["floristArrival","text"],["photoArrival","text"],["cakeArrival","text"],["decorArrival","text"],["djArrival","text"],["guestArrival","text"],["ceremonyStart","text"],["ceremonyLength","text"],["cocktailStart","text"],["receptionStart","text"],["dinnerStart","text"],["shuttleTimes","textarea"],["otherVendorTimes","textarea"],["groomWalkWith","text"],["brideWalkWith","text"],["bm_individually","checkbox"],["bm_withgroomsmen","checkbox"],["bm_other","checkbox"],["gm_individually","checkbox"],["gm_withbridesmaids","checkbox"],["gm_other","checkbox"],["bridesmaidsOrder","textarea"],["groomsmenOrder","textarea"],["gp_topstairs","checkbox"],["gp_ramp","checkbox"],["gp_seated","checkbox"],["following_flowergirl","checkbox"],["following_ringbearer","checkbox"],["following_pet","checkbox"],["following_other","checkbox"],["seating_brideleft","checkbox"],["seating_brideright","checkbox"],["seating_mixed","checkbox"],["seating_freeforall","checkbox"],["officiant","textarea"],["decorMovement","textarea"],["rainPlanDecor","textarea"],["golfCartGuests","textarea"],["rainPlanFinal","textarea"],["guests_cocktailarea","checkbox"],["guests_cocktailreception","checkbox"],["guests_bathrooms","checkbox"],["guests_straightto","checkbox"],["curtain_closed","checkbox"],["curtain_open","checkbox"],["barClosed","radio"],["privateMoment_yes","checkbox"],["privateMoment_no","checkbox"],["privateMomentInterrupt","text"],["champagneWhen","text"],["champ_walkfill","checkbox"],["champ_kitchen","checkbox"],["postCeremonySnacks","textarea"],["preEntranceDrinks","textarea"],["couplePlate","radio"],["foodPreferences","textarea"],["tableBreakdown","textarea"],["prismmFinalized","radio"],["sparklers","radio"],["catererName","textarea"],["cat_breakfast","checkbox"],["cat_charcuterie","checkbox"],["cat_appetizers","checkbox"],["cat_dinner","checkbox"],["cat_dessert","checkbox"],["dessertsCake","textarea"],["djBandConfirm","textarea"],["floristConfirm","textarea"],["foodTruck","textarea"],["photoConfirm","textarea"],["transportConfirm","textarea"],["otherVendors","textarea"],["specialDeliveries","textarea"],["endNightPickup","textarea"],["extraNotes","textarea"]],
+};
+
     async function syncPublicProfile(uid) {
       try {
         const snap = await getDoc(doc(db, "couples", uid));
@@ -3259,13 +3419,16 @@
       const partner2 = document.getElementById("signup-partner2").value.trim();
       const email = document.getElementById("signup-email").value.trim();
       const password = document.getElementById("signup-password").value;
+      const code = document.getElementById("signup-code").value.trim();
       const btn = document.getElementById("btn-signup");
       const isStaffEmail = isAdmin(email);
       if (!isStaffEmail && (!partner1 || !partner2)) { showSignupError("Please enter both partners' names."); return; }
       if (!email || !password) { showSignupError("Please enter an email and password."); return; }
+      if (!isStaffEmail && !/^\d{4}$/.test(code)) { showSignupError("Please enter the 4-digit signup code from your coordinator's email."); return; }
       pendingCoupleNames = `${partner1} & ${partner2}`;
       pendingWeddingDate = document.getElementById("signup-weddingDate").value;
       pendingSlugBase = firstNameSlug(partner1) + "and" + firstNameSlug(partner2);
+      pendingSignupCode = code;
       btn.textContent = "Creating Account…"; btn.disabled = true;
       try { await createUserWithEmailAndPassword(auth, email, password); }
       catch(e) {
@@ -3580,9 +3743,9 @@
         const names = (c.meeting1||{}).coupleNames || c.displayName || c.email || "Unknown Couple";
         const rawDate = (c.meeting1||{}).weddingDate;
         const wDate = rawDate ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "Date not set";
-        const m1 = calcPct(c.meeting1||{});
-        const m2 = calcPct(c.meeting2||{});
-        const m3 = calcPct(c.meeting3||{});
+        const m1 = calcPct(c.meeting1||{}, "meeting1");
+        const m2 = calcPct(c.meeting2||{}, "meeting2");
+        const m3 = calcPct(c.meeting3||{}, "meeting3");
         const isCompleted = c.status === "completed";
         const lc = c.leadCoordinator || {};
         const coordinatorLine = lc.name
@@ -3608,6 +3771,8 @@
             <button class="acc-btn-view" onclick="window.openCouple('${c.id}')">View / Edit</button>
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openDayOfDisplay('${c.id}')">&#128250; Day-Of TV Display</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
         </div>`;
@@ -3633,12 +3798,16 @@
       } catch(e) { alert("Couldn't update status: " + e.message); }
     };
 
-    function calcPct(data) {
-      // Only count text/textarea fields (strings), not checkboxes (booleans)
-      const textVals = Object.values(data).filter(v => typeof v === "string");
-      if (!textVals.length) return 0;
-      const filled = textVals.filter(v => v.trim() !== "").length;
-      return Math.round((filled / textVals.length) * 100);
+    function calcPct(data, meetingKey) {
+      const defs = MEETING_FIELD_DEFS[meetingKey];
+      if (!defs) return 0; // unknown meeting key — shouldn't happen
+      let filled = 0;
+      const total = defs.length;
+      defs.forEach(([k, t]) => {
+        if (t === "checkbox") { if (data[k] === true) filled++; }
+        else { if (typeof data[k] === "string" && data[k].trim() !== "") filled++; }
+      });
+      return total > 0 ? Math.round((filled / total) * 100) : 0;
     }
 
     function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
@@ -3680,11 +3849,14 @@
       const notesHTML = `<div class="amd-section">
         <div class="amd-stitle">Internal Notes <span style="font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;">(only visible to Emily, Jess &amp; coordinators)</span></div>
         <div class="notes-list" id="notes-list-${uid}">
-          ${notes.length ? notes.slice().reverse().map(n => `
+          ${notes.length ? notes.map((n, i) => i).reverse().map(origIdx => { const n = notes[origIdx]; return `
             <div class="note-item">
-              <div class="note-meta"><span class="note-author">${esc(n.author||"Unknown")}</span> &middot; <span class="note-date">${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span></div>
+              <div class="note-meta" style="display:flex;justify-content:space-between;align-items:center;">
+                <span><span class="note-author">${esc(n.author||"Unknown")}</span> &middot; <span class="note-date">${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span></span>
+                <button onclick="window.deleteCoupleNote('${uid}',${origIdx})" style="background:none;border:none;color:var(--mid-gray);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Delete</button>
+              </div>
               <div class="note-text">${esc(n.text||"")}</div>
-            </div>`).join("") : `<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:8px 0;">No internal notes yet.</p>`}
+            </div>`; }).join("") : `<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:8px 0;">No internal notes yet.</p>`}
         </div>
         <div class="note-add-row">
           <textarea class="amd-input amd-textarea" id="note-input-${uid}" placeholder="Add an internal note about this couple..." rows="2"></textarea>
@@ -3699,26 +3871,28 @@
       ];
       const sections = meetings.map(m => {
         const mData = data[m.key] || {};
-        const textEntries = Object.entries(mData).filter(([k,v]) => typeof v === "string");
-        const boolEntries = Object.entries(mData).filter(([k,v]) => typeof v === "boolean" && v === true);
-        if (!textEntries.length && !boolEntries.length) {
-          return `<div class="amd-section"><div class="amd-stitle">${m.label}</div><p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">No answers recorded yet.</p></div>`;
-        }
-        const textRows = textEntries.map(([k,v]) => `
+        const defs = MEETING_FIELD_DEFS[m.key] || [];
+        const textDefs = defs.filter(([k,t]) => t === "text" || t === "date" || t === "textarea" || t === "radio");
+        const checkDefs = defs.filter(([k,t]) => t === "checkbox");
+        const textRows = textDefs.map(([k,t]) => {
+          const v = typeof mData[k] === "string" ? mData[k] : "";
+          const useTextarea = t === "textarea" || v.length > 80;
+          return `
           <div class="amd-row amd-row-edit">
             <div class="amd-key">${fmtKey(k)}</div>
             <div class="amd-val">
-              ${v.length > 80 ?
-                `<textarea class="amd-input amd-textarea" data-meeting="${m.key}" data-field="${k}">${esc(v)}</textarea>` :
-                `<input class="amd-input" type="text" data-meeting="${m.key}" data-field="${k}" value="${esc(v)}">`
+              ${useTextarea ?
+                `<textarea class="amd-input amd-textarea" data-meeting="${m.key}" data-field="${k}" data-type="${t}">${esc(v)}</textarea>` :
+                `<input class="amd-input" type="text" data-meeting="${m.key}" data-field="${k}" data-type="${t}" value="${esc(v)}">`
               }
             </div>
-          </div>`).join("");
-        const checkRows = boolEntries.length ? `
+          </div>`;
+        }).join("");
+        const checkRows = checkDefs.length ? `
           <div class="amd-row">
-            <div class="amd-key" style="color:var(--mid-gray);">Selections</div>
-            <div class="amd-val" style="display:flex;flex-wrap:wrap;gap:6px;">
-              ${boolEntries.map(([k]) => `<span class="amd-chip">&#10003; ${fmtKey(k)}</span>`).join("")}
+            <div class="amd-key" style="color:var(--mid-gray);">Selections <span style="font-size:10px;font-weight:400;text-transform:none;">(check/uncheck to edit)</span></div>
+            <div class="amd-val" style="display:flex;flex-wrap:wrap;gap:10px;">
+              ${checkDefs.map(([k]) => `<label class="amd-chip" style="cursor:pointer;display:inline-flex;align-items:center;gap:5px;"><input type="checkbox" data-meeting="${m.key}" data-field="${k}" data-type="checkbox" ${mData[k] === true ? "checked" : ""} style="margin:0;">${fmtKey(k)}</label>`).join("")}
             </div>
           </div>` : "";
         return `<div class="amd-section">
@@ -3747,6 +3921,18 @@
       } catch(e) { alert("Couldn't save note: " + e.message); }
     };
 
+    window.deleteCoupleNote = async function(uid, index) {
+      if (!confirm("Delete this internal note?")) return;
+      const { doc: dc, getDoc: gd, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      try {
+        const snap = await gd(dc(db,"couples",uid));
+        const notes = Array.isArray(snap.data().notes) ? snap.data().notes : [];
+        notes.splice(index, 1);
+        await ud(dc(db,"couples",uid), { notes });
+        await window.openCouple(uid); // refresh modal
+      } catch(e) { alert("Couldn't delete note: " + e.message); }
+    };
+
     window.saveLeadCoordinator = async function(uid) {
       const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
       const leadCoordinator = {
@@ -3769,7 +3955,9 @@
       const inputs = document.querySelectorAll(`[data-meeting="${meetingKey}"]`);
       const updates = {};
       inputs.forEach(el => {
-        updates[`${meetingKey}.${el.getAttribute("data-field")}`] = el.value;
+        const field = el.getAttribute("data-field");
+        const type = el.getAttribute("data-type");
+        updates[`${meetingKey}.${field}`] = (type === "checkbox") ? el.checked : el.value;
       });
       try {
         await ud(dc(db,"couples",uid), updates);
@@ -3811,6 +3999,245 @@
       if (btn) { btn.textContent = "&#8595; Export All Couples to CSV"; btn.disabled = false; }
     };
 
+    // ===== Day-Of TV Display =====
+    const VENDOR_LABELS = {
+      cat_cameron:"Cameron Mitchell Premier Events", cat_la:"L.A. Catering", cat_berwick:"The Berwick",
+      cat_together:"Together & Co.", cat_sweet:"Sweet Carrot", cat_emilios:"Emilio's",
+      cake_birdies:"Birdies Cupcakes", cake_crystal:"Cakes Creatively by Crystal", cake_kitties:"Kittie's Cakes",
+      cake_spencer:"Spencer's Sugar Shop",
+      photo_asteria:"Asteria Photography", photo_feelstory:"Feelstory Photography", photo_kismet:"Kismet Visuals & Co",
+      dj_brad:"Brad McPherson", dj_fasttracks:"Fast Tracks DJ", dj_josh:"Josh Staley Productions",
+      dj_turnup:"Turn Up Columbus", dj_soundlight:"Sound and Light Creative",
+      flor_bearroots:"Bear Roots Floral", flor_blooms:"Blooms By Amanda", flor_dashing:"Dashing Designs",
+      flor_evergreen:"Evergreen Flower Co", flor_madison:"Madison House Designs"
+    };
+    function dofVendorFor(m1, prefix, confirmText) {
+      const picked = Object.keys(VENDOR_LABELS).filter(k => k.startsWith(prefix+"_") && m1[k] === true).map(k => VENDOR_LABELS[k]);
+      if (m1[prefix+"_other"] === true) picked.push("Other (see notes)");
+      const base = picked.join(", ");
+      if (confirmText && confirmText.trim()) return base ? `${base} — ${confirmText.trim()}` : confirmText.trim();
+      return base || "";
+    }
+    const DOF_SECTIONS = [
+      {key:"morning", label:"Morning Arrival", tasks:[]},
+      {key:"preceremony", label:"Pre-Ceremony", tasks:["Introduce Lead Closer to Bride & Groom & their Parents, say goodbyes","VENDOR HUDDLE","Final walk of ceremony pad, staircase, & patio; finishing touches","Leaf blow where needed","Check bathrooms are cleaned and stocked","Check all place settings are complete","Make sure personal belongings are moved from GS to BS"]},
+      {key:"ceremony", label:"Ceremony", tasks:["Block driveway","Final preparation of cocktail room and paver patio","Move couples decor & vendor equipment into groom suite","Wipe down ADA toilet, restock TP & paper towels — open to public, lock from groom suite","Lock exterior and interior doors of bridal suite and groom suite","Prepare a tray of waters to take to B&G and family for pictures","Light candles in cocktail area","Set out corn hole, jenga, ring toss","Unblock driveway"]},
+      {key:"cocktail", label:"Cocktail Hour", tasks:["Take tray of water to B&G and family at family picture site","Trash sweep of ceremony pad","Prepare Bride and Groom drinks and apps and have ready in bridal suite","Light candle at tables","Bathroom check","Change garbage in bridal suite","Clean & re-stock bridal bathroom after private moment","Set a stack of plates, silverware and extra cloth napkins for vendors on end of bar behind the curtain","Give linen bag to caterers for napkin collection","Spot sweep around cocktail food"]},
+      {key:"reception", label:"Reception", tasks:["Trash sweep of indoor and outdoor cocktail areas","Window smudge check in cocktail room","Fold napkins for flip","Check bathrooms","Cocktail trash check","REMIND CATERERS: no scraping plates outside of kitchen","Periodic spot sweep around buffet tables and tables in main hall","Outdoor lighting on at dusk","Buff all silverware — only buffed into black sorters (cover with Saran Wrap)","Buff glassware (caterer should help accomplish this)"]},
+      {key:"closing", label:"Closing", tasks:["Complete SOPS & Cleaning/Closeout Checklist"]}
+    ];
+
+    let dofCurrentUid = null, dofCurrentData = null, dofTimelineCache = [], dofSectionIdx = 0;
+
+    window.openDayOfDisplay = async function(uid) {
+      document.getElementById("dayof-modal").style.display = "flex";
+      dofCurrentUid = uid;
+      dofSectionIdx = 0;
+      await dofLoad(uid);
+    };
+
+    window.refreshDayOfDisplay = async function() {
+      if (dofCurrentUid) await dofLoad(dofCurrentUid);
+    };
+
+    window.closeDayOfDisplay = function() {
+      document.getElementById("dayof-modal").style.display = "none";
+      dofCurrentUid = null; dofCurrentData = null;
+    };
+
+    async function dofLoad(uid) {
+      const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const snap = await gd(dc(db,"couples",uid));
+      if (!snap.exists()) { alert("Couldn't load couple data."); return; }
+      dofCurrentData = snap.data();
+      dofTimelineCache = Array.isArray(dofCurrentData.timelineItems) ? dofCurrentData.timelineItems : [];
+      const names = (dofCurrentData.meeting1||{}).coupleNames || dofCurrentData.displayName || "Couple";
+      const rawDate = (dofCurrentData.meeting1||{}).weddingDate;
+      const wDate = rawDate ? new Date(rawDate+"T12:00:00").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "";
+      document.getElementById("dof-couple-name").textContent = names;
+      document.getElementById("dof-meta").textContent = [wDate, (dofCurrentData.meeting1||{}).ceremonyTime ? `Ceremony ${(dofCurrentData.meeting1||{}).ceremonyTime}` : ""].filter(Boolean).join("  ·  ");
+      dofSyncStamp();
+      dofRenderTabs();
+      dofRenderTimeline();
+      dofRenderNotes();
+      dofRenderSection();
+    }
+
+    function dofSyncStamp() {
+      const el = document.getElementById("dof-sync");
+      if (el) el.textContent = "Last synced " + new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+    }
+
+    function dofRenderTabs() {
+      const wrap = document.getElementById("dof-tabs");
+      wrap.innerHTML = DOF_SECTIONS.map((s,i) => `<button class="dof-tab ${i===dofSectionIdx?"active":""}" onclick="window.dofSetSection(${i})">${s.label}</button>`).join("");
+    }
+
+    window.dofSetSection = function(idx) {
+      dofSectionIdx = idx;
+      dofRenderTabs();
+      dofRenderSection();
+    };
+
+    function dofRenderTimeline() {
+      const wrap = document.getElementById("dof-timeline-list");
+      if (!dofTimelineCache.length) { wrap.innerHTML = '<p style="color:rgba(253,250,246,0.35);font-size:12px;font-style:italic;">No timeline items added yet.</p>'; return; }
+      const sorted = dofTimelineCache.slice().sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+      wrap.innerHTML = sorted.map(t => `<div class="dof-tl-item"><div class="dof-tl-time">${t.time ? esc(formatMeetingTime(t.time)) : ""}</div><div class="dof-tl-label">${esc(t.activity||"")}</div></div>`).join("");
+    }
+
+    function dofRenderNotes() {
+      const wrap = document.getElementById("dof-notes-list");
+      const notes = (dofCurrentData.dayOf && Array.isArray(dofCurrentData.dayOf.uniqueNotes)) ? dofCurrentData.dayOf.uniqueNotes : [];
+      if (!notes.length) { wrap.innerHTML = '<p style="color:rgba(253,250,246,0.35);font-size:12px;font-style:italic;">No notes yet.</p>'; return; }
+      const sorted = notes.slice().reverse();
+      wrap.innerHTML = sorted.map(n => `<div class="dof-note">
+        <div class="dof-note-meta"><span>${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span><button class="dof-note-del" onclick="window.dofDeleteNote('${n.id}')">Delete</button></div>
+        <div class="dof-note-text">${esc(n.text)}</div>
+      </div>`).join("");
+    }
+
+    window.dofAddNote = async function() {
+      const input = document.getElementById("dof-note-input");
+      const text = input.value.trim();
+      if (!text) return;
+      const note = { id: Date.now().toString(), text, timestamp: new Date().toISOString() };
+      if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+      if (!Array.isArray(dofCurrentData.dayOf.uniqueNotes)) dofCurrentData.dayOf.uniqueNotes = [];
+      dofCurrentData.dayOf.uniqueNotes.push(note);
+      input.value = "";
+      dofRenderNotes();
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",dofCurrentUid), { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
+        dofSyncStamp();
+      } catch(e) { alert("Couldn't save note: " + e.message); }
+    };
+
+    window.dofDeleteNote = async function(id) {
+      if (!dofCurrentData.dayOf || !Array.isArray(dofCurrentData.dayOf.uniqueNotes)) return;
+      dofCurrentData.dayOf.uniqueNotes = dofCurrentData.dayOf.uniqueNotes.filter(n => n.id !== id);
+      dofRenderNotes();
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",dofCurrentUid), { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
+        dofSyncStamp();
+      } catch(e) { alert("Couldn't delete note: " + e.message); }
+    };
+
+    function dofFieldHTML(labelText, key, multiline) {
+      const val = (dofCurrentData.dayOf||{})[key] || "";
+      return `<div class="dof-field">
+        <div class="dof-field-label">${esc(labelText)}</div>
+        <div class="dof-field-val dof-editable ${val?"":"empty"}" id="dof-fv-${key}" onclick="window.dofStartEdit('${key}',${multiline?"true":"false"})">${val ? esc(val) : "Tap to add"}</div>
+      </div>`;
+    }
+
+    function dofStaticFieldHTML(labelText, val) {
+      return `<div class="dof-field">
+        <div class="dof-field-label">${esc(labelText)}</div>
+        <div class="dof-field-val ${val?"":"empty"}">${val ? esc(val) : "Not entered yet"}</div>
+      </div>`;
+    }
+
+    window.dofStartEdit = function(key, multiline) {
+      const wrap = document.getElementById(`dof-fv-${key}`);
+      if (!wrap) return;
+      const val = (dofCurrentData.dayOf||{})[key] || "";
+      wrap.innerHTML = multiline
+        ? `<textarea class="dof-edit-input" id="dof-editinput-${key}" rows="3">${esc(val)}</textarea>`
+        : `<input class="dof-edit-input" id="dof-editinput-${key}" type="text" value="${esc(val)}">`;
+      const inputEl = document.getElementById(`dof-editinput-${key}`);
+      inputEl.focus();
+      inputEl.addEventListener("blur", () => window.dofSaveEdit(key));
+      if (!multiline) inputEl.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); inputEl.blur(); } });
+    };
+
+    window.dofSaveEdit = async function(key) {
+      const inputEl = document.getElementById(`dof-editinput-${key}`);
+      if (!inputEl) return;
+      const val = inputEl.value;
+      if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+      dofCurrentData.dayOf[key] = val;
+      const wrap = document.getElementById(`dof-fv-${key}`);
+      if (wrap) { wrap.textContent = val || "Tap to add"; wrap.className = "dof-field-val dof-editable" + (val ? "" : " empty"); }
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",dofCurrentUid), { [`dayOf.${key}`]: val });
+        dofSyncStamp();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    function dofRenderSection() {
+      const s = DOF_SECTIONS[dofSectionIdx];
+      const m1 = dofCurrentData.meeting1 || {}, m2 = dofCurrentData.meeting2 || {}, m3 = dofCurrentData.meeting3 || {};
+      let fieldsHTML = "";
+      if (s.key === "morning") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Bride Arrival", m3.brideArrival)}
+          ${dofStaticFieldHTML("Groom Arrival", m3.groomArrival)}
+          ${dofStaticFieldHTML("Florist", dofVendorFor(m1,"flor",m3.floristConfirm))}
+          ${dofStaticFieldHTML("Caterer", dofVendorFor(m1,"cat",m3.catererName))}
+          ${dofStaticFieldHTML("DJ / Band", dofVendorFor(m1,"dj",m3.djBandConfirm))}
+          ${dofStaticFieldHTML("Photographer", dofVendorFor(m1,"photo",m3.photoConfirm))}
+          ${dofStaticFieldHTML("Dessert", dofVendorFor(m1,"cake",m3.dessertsCake))}
+          ${dofStaticFieldHTML("Guest Count", m1.guestCount)}
+          ${dofFieldHTML("Bride's Parents", "brideParents", false)}
+          ${dofFieldHTML("Groom's Parents", "groomParents", false)}
+          ${dofFieldHTML("75 Decor Quantity Used", "decorQtyUsed", true)}
+          ${dofStaticFieldHTML("Couples Large Decor", m2.decorBroughtIn)}
+          ${dofStaticFieldHTML("Linen Napkin Fold", m2.napkinFold)}
+          ${dofStaticFieldHTML("Rain Plan", m3.rainPlanFinal)}
+        </div>`;
+      } else if (s.key === "preceremony") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Guest Arrival Time", m1.guestArrival || m3.guestArrival)}
+          ${dofStaticFieldHTML("Shuttle / Transportation Times", m3.shuttleTimes || m2.shuttleTimes)}
+          ${dofStaticFieldHTML("Ceremony Length", m3.ceremonyLength)}
+          ${dofStaticFieldHTML("Cocktail Hour Start", m3.cocktailStart)}
+          ${dofStaticFieldHTML("Reception Start", m3.receptionStart)}
+          ${dofStaticFieldHTML("Dinner", m3.dinnerStart)}
+        </div>`;
+      } else if (s.key === "ceremony") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Ceremony Time", m1.ceremonyTime)}
+          ${dofStaticFieldHTML("Officiant", m3.officiant)}
+          ${dofFieldHTML("Transportation Notes", "transportNotes", true)}
+        </div>`;
+      } else if (s.key === "cocktail") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Cocktail Hour Start", m3.cocktailStart)}
+          ${dofStaticFieldHTML("Dinner Time", m3.dinnerStart)}
+          ${dofStaticFieldHTML("Champagne", m3.champagneWhen)}
+          ${dofStaticFieldHTML("Post-Ceremony Snacks", m3.postCeremonySnacks)}
+        </div>`;
+      } else if (s.key === "reception") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Dinner Time", m3.dinnerStart)}
+          ${dofStaticFieldHTML("Late Night Snacks", m2.lateNightSnacks)}
+          ${dofStaticFieldHTML("Table Breakdown", m3.tableBreakdown)}
+          ${dofStaticFieldHTML("Special Send-Off", m2.specialSendOff)}
+        </div>`;
+      } else if (s.key === "closing") {
+        fieldsHTML = `<div class="dof-grid">
+          ${dofStaticFieldHTML("Food Delegation", m2.foodHome)}
+          ${dofStaticFieldHTML("Cake Delegation", m2.cakeHome)}
+          ${dofStaticFieldHTML("Alcohol Delegation", m2.alcoholHome)}
+          ${dofStaticFieldHTML("Decor Delegation", m2.decorHome)}
+          ${dofFieldHTML("Gifts Delegation", "giftsDelegation", false)}
+          ${dofFieldHTML("Florals Delegation", "floralsDelegation", false)}
+          ${dofFieldHTML("75 Decor Quantity Used", "decorQtyUsed", true)}
+        </div>`;
+      }
+      const tasksHTML = s.tasks.length ? `<div class="dof-tasks-title">Shift Tasks</div>${s.tasks.map((t,i) => `<label class="dof-task" id="dof-task-${dofSectionIdx}-${i}"><input type="checkbox" onchange="window.dofToggleTask(${dofSectionIdx},${i})"><span>${esc(t)}</span></label>`).join("")}` : "";
+      document.getElementById("dof-main").innerHTML = `<div class="dof-section-title">${s.label}</div>${fieldsHTML}${tasksHTML}`;
+    }
+
+    window.dofToggleTask = function(sIdx, tIdx) {
+      const el = document.getElementById(`dof-task-${sIdx}-${tIdx}`);
+      if (el) el.classList.toggle("checked");
+    };
+
     function buildCSV(couples) {
       const keySet = new Set();
       couples.forEach(c => ["meeting1","meeting2","meeting3"].forEach(m => Object.keys(c[m]||{}).forEach(k => keySet.add(m+"__"+k))));
@@ -3846,12 +4273,134 @@
 
     window.adminSignOut = async function() { await signOut(auth); };
 
+    // ── SIGNUP CODE (VIEWABLE BY ALL ADMINS, EDITABLE ONLY WITH OWNER PIN) ─
+    window.openSignupCodeModal = async function() {
+      // Close any Manage Resources modals first so nothing stacks visually.
+      const resourcePin = document.getElementById("resource-pin-modal");
+      const resourceMgr = document.getElementById("resource-manager-modal");
+      if (resourcePin) resourcePin.style.display = "none";
+      if (resourceMgr) resourceMgr.style.display = "none";
+
+      const modal = document.getElementById("signup-code-modal");
+      const input = document.getElementById("signup-code-input");
+      const status = document.getElementById("signup-code-status");
+      const copyBtn = document.getElementById("signup-code-copy-btn");
+      const changeBtn = document.getElementById("signup-code-change-btn");
+      const saveBtn = document.getElementById("signup-code-save-btn");
+      if (status) status.style.display = "none";
+      if (input) { input.value = "Loading…"; input.disabled = true; }
+      if (copyBtn) copyBtn.style.display = "inline-block";
+      if (changeBtn) changeBtn.style.display = "inline-block";
+      if (saveBtn) saveBtn.style.display = "none";
+      if (modal) modal.style.display = "flex";
+      try {
+        const snap = await getDoc(doc(db, "settings", "signupCode"));
+        if (input) input.value = snap.exists() ? (snap.data().code || "") : "Not set yet";
+      } catch (e) {
+        if (input) input.value = "Couldn't load";
+      }
+    };
+
+    window.closeSignupCodeModal = function() {
+      const modal = document.getElementById("signup-code-modal");
+      if (modal) modal.style.display = "none";
+    };
+
+    window.copySignupCode = async function() {
+      const input = document.getElementById("signup-code-input");
+      const status = document.getElementById("signup-code-status");
+      const code = input ? input.value : "";
+      if (!/^\d{4}$/.test(code)) {
+        if (status) { status.textContent = "No valid code to copy yet."; status.style.color = "#c0392b"; status.style.display = "block"; }
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(code);
+        if (status) { status.textContent = "Copied to clipboard!"; status.style.color = "#2e7d32"; status.style.display = "block"; }
+      } catch (e) {
+        if (status) { status.textContent = "Couldn't copy automatically — please select and copy manually."; status.style.color = "#c0392b"; status.style.display = "block"; }
+      }
+    };
+
+    // Owners click this to unlock editing. Fully independent from the
+    // Manage Resources PIN gate — separate modal, separate function, nothing shared.
+    window.requestSignupCodeChange = function() {
+      const scModal = document.getElementById("signup-code-modal");
+      if (scModal) scModal.style.display = "none";
+      const pinModal = document.getElementById("signup-pin-modal");
+      const input = document.getElementById("signup-pin-input");
+      const err = document.getElementById("signup-pin-error");
+      if (input) input.value = "";
+      if (err) err.style.display = "none";
+      if (pinModal) pinModal.style.display = "flex";
+      if (input) setTimeout(() => input.focus(), 100);
+    };
+
+    window.cancelSignupPin = function() {
+      const pinModal = document.getElementById("signup-pin-modal");
+      if (pinModal) pinModal.style.display = "none";
+      const scModal = document.getElementById("signup-code-modal");
+      if (scModal) scModal.style.display = "flex";
+    };
+
+    window.submitSignupPin = function() {
+      const input = document.getElementById("signup-pin-input");
+      const err = document.getElementById("signup-pin-error");
+      const entered = input ? input.value.trim() : "";
+      if (entered !== RESOURCE_EDIT_PIN) {
+        if (err) { err.textContent = "Incorrect PIN. Please try again."; err.style.display = "block"; }
+        if (input) { input.value = ""; input.focus(); }
+        return;
+      }
+      const pinModal = document.getElementById("signup-pin-modal");
+      if (pinModal) pinModal.style.display = "none";
+      const scModal = document.getElementById("signup-code-modal");
+      const codeInput = document.getElementById("signup-code-input");
+      const copyBtn = document.getElementById("signup-code-copy-btn");
+      const changeBtn = document.getElementById("signup-code-change-btn");
+      const saveBtn = document.getElementById("signup-code-save-btn");
+      if (scModal) scModal.style.display = "flex";
+      if (codeInput) { codeInput.disabled = false; codeInput.value = /^\d{4}$/.test(codeInput.value) ? codeInput.value : ""; codeInput.focus(); }
+      if (copyBtn) copyBtn.style.display = "none";
+      if (changeBtn) changeBtn.style.display = "none";
+      if (saveBtn) saveBtn.style.display = "inline-block";
+    };
+
+    window.saveSignupCode = async function() {
+      const input = document.getElementById("signup-code-input");
+      const status = document.getElementById("signup-code-status");
+      const copyBtn = document.getElementById("signup-code-copy-btn");
+      const changeBtn = document.getElementById("signup-code-change-btn");
+      const saveBtn = document.getElementById("signup-code-save-btn");
+      const code = input ? input.value.trim() : "";
+      if (!/^\d{4}$/.test(code)) {
+        if (status) { status.textContent = "Please enter exactly 4 digits."; status.style.color = "#c0392b"; status.style.display = "block"; }
+        return;
+      }
+      try {
+        await setDoc(doc(db, "settings", "signupCode"), { code, updatedAt: new Date().toISOString() });
+        if (status) { status.textContent = "Saved! Update the HoneyBook email template with this code."; status.style.color = "#2e7d32"; status.style.display = "block"; }
+        if (input) input.disabled = true;
+        if (copyBtn) copyBtn.style.display = "inline-block";
+        if (changeBtn) changeBtn.style.display = "inline-block";
+        if (saveBtn) saveBtn.style.display = "none";
+      } catch (e) {
+        if (status) { status.textContent = "Something went wrong saving the code. Please try again."; status.style.color = "#c0392b"; status.style.display = "block"; }
+      }
+    };
+
     // ── RESOURCE MANAGER (OWNER-ONLY, PIN GATED) ─────────────────
     const RESOURCE_EDIT_PIN = "2023"; // Change this value and re-deploy to update the PIN.
     let resourceEditCache = [];
     let resourceRowSeq = 0;
 
     window.openResourcePinGate = function() {
+      // Close any Signup Code modals first so nothing stacks visually.
+      const scModal = document.getElementById("signup-code-modal");
+      const signupPin = document.getElementById("signup-pin-modal");
+      if (scModal) scModal.style.display = "none";
+      if (signupPin) signupPin.style.display = "none";
+
       const modal = document.getElementById("resource-pin-modal");
       const input = document.getElementById("resource-pin-input");
       const err = document.getElementById("resource-pin-error");
@@ -4246,6 +4795,7 @@
     .acc-btn-export:hover{background:var(--gold);color:var(--warm-white);border-color:var(--gold);}
     /* Admin Modal */
     #admin-modal{display:none;position:fixed;inset:0;z-index:500;background:rgba(44,44,44,0.7);align-items:center;justify-content:center;padding:24px;}
+    #admin-timeline-modal{display:none;position:fixed;inset:0;z-index:500;background:rgba(44,44,44,0.7);align-items:center;justify-content:center;padding:24px;}
     .admin-modal-box{background:var(--warm-white);width:100%;max-width:780px;max-height:85vh;display:flex;flex-direction:column;border-radius:2px;overflow:hidden;}
     .admin-modal-header{padding:28px 32px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
     .admin-modal-header h2{font-family:var(--font-heading);font-size:26px;font-weight:300;color:var(--charcoal);}
@@ -4268,6 +4818,49 @@
     .amd-input:focus{border-color:var(--gold);}
     .amd-textarea{min-height:70px;resize:vertical;line-height:1.5;}
     .amd-chip{display:inline-flex;align-items:center;padding:4px 10px;background:rgba(184,150,90,0.1);border:1px solid rgba(184,150,90,0.3);font-size:11px;color:var(--gold-dark);border-radius:2px;}
+
+    /* ===== Day-Of TV Display ===== */
+    #dayof-modal{display:none;position:fixed;inset:0;z-index:600;background:var(--charcoal);flex-direction:column;}
+    .dof-topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#232323;border-bottom:1px solid rgba(255,255,255,0.08);flex-shrink:0;}
+    .dof-couple-name{font-family:var(--font-heading);font-size:24px;color:var(--warm-white);}
+    .dof-meta{font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-light);margin-top:2px;}
+    .dof-sync{font-size:10px;color:rgba(253,250,246,0.4);margin-top:2px;}
+    .dof-close{background:transparent;border:1px solid rgba(253,250,246,0.3);color:var(--warm-white);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;padding:10px 18px;cursor:pointer;border-radius:2px;}
+    .dof-close:hover{background:rgba(253,250,246,0.1);}
+    .dof-tabs{display:flex;gap:0;background:#1c1c1c;flex-shrink:0;overflow-x:auto;}
+    .dof-tab{flex:1;min-width:130px;padding:14px 10px;text-align:center;background:transparent;border:none;border-bottom:3px solid transparent;color:rgba(253,250,246,0.5);font-family:var(--font-body);font-size:12px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;transition:all 0.2s;}
+    .dof-tab.active{color:var(--gold-light);border-bottom-color:var(--gold);background:rgba(184,150,90,0.08);}
+    .dof-tab:hover{color:var(--warm-white);}
+    .dof-body{flex:1;display:flex;overflow:hidden;}
+    .dof-rail{width:320px;flex-shrink:0;background:#232323;border-right:1px solid rgba(255,255,255,0.08);padding:20px;overflow-y:auto;}
+    .dof-main{flex:1;padding:28px 36px;overflow-y:auto;color:var(--warm-white);}
+    .dof-rail-title{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--gold-light);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.1);}
+    .dof-tl-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06);}
+    .dof-tl-time{font-size:11px;color:var(--gold-light);flex-shrink:0;width:64px;}
+    .dof-tl-label{font-size:12px;color:rgba(253,250,246,0.85);line-height:1.4;}
+    .dof-notes-wrap{margin-top:28px;}
+    .dof-note{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:3px;padding:10px 12px;margin-bottom:8px;}
+    .dof-note-meta{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:rgba(253,250,246,0.4);margin-bottom:4px;}
+    .dof-note-del{background:none;border:none;color:rgba(253,250,246,0.4);font-size:10px;text-decoration:underline;cursor:pointer;padding:0;}
+    .dof-note-del:hover{color:#d98;}
+    .dof-note-text{font-size:13px;color:rgba(253,250,246,0.9);line-height:1.5;white-space:pre-wrap;}
+    .dof-note-add{margin-top:10px;}
+    .dof-note-input{width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:var(--warm-white);font-family:var(--font-body);font-size:12px;padding:8px;border-radius:2px;resize:vertical;min-height:50px;outline:none;}
+    .dof-note-add-btn{margin-top:6px;width:100%;padding:8px;background:var(--gold-dark);color:var(--warm-white);border:none;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;border-radius:2px;}
+    .dof-section-title{font-family:var(--font-heading);font-size:28px;font-weight:300;color:var(--warm-white);margin-bottom:20px;}
+    .dof-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px 32px;margin-bottom:28px;}
+    .dof-field{border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:10px;}
+    .dof-field-label{font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-light);margin-bottom:4px;}
+    .dof-field-val{font-size:15px;color:var(--warm-white);line-height:1.5;white-space:pre-wrap;}
+    .dof-field-val.empty{color:rgba(253,250,246,0.35);font-style:italic;}
+    .dof-editable{cursor:pointer;padding:4px 6px;margin:-4px -6px;border-radius:3px;transition:background 0.15s;}
+    .dof-editable:hover{background:rgba(184,150,90,0.12);}
+    .dof-edit-input{width:100%;background:rgba(255,255,255,0.08);border:1px solid var(--gold);color:var(--warm-white);font-family:var(--font-body);font-size:14px;padding:6px 8px;border-radius:2px;outline:none;}
+    .dof-tasks-title{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--gold-light);margin:24px 0 12px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);}
+    .dof-task{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:14px;color:rgba(253,250,246,0.9);}
+    .dof-task input{width:16px;height:16px;accent-color:var(--gold);}
+    .dof-task.checked{color:rgba(253,250,246,0.4);text-decoration:line-through;}
+    @media (max-width:900px){.dof-rail{width:230px;}.dof-grid{grid-template-columns:1fr;}}
 
   </style>
 </head>
@@ -4417,6 +5010,7 @@
       <input class="login-input" type="date" id="signup-weddingDate" style="color-scheme:dark;"/>
       <input class="login-input" type="email" id="signup-email" placeholder="Email address" autocomplete="email"/>
       <input class="login-input" type="password" id="signup-password" placeholder="Create a password" autocomplete="new-password"/>
+      <input class="login-input" type="text" inputmode="numeric" maxlength="4" id="signup-code" placeholder="4-digit code (from your coordinator's email)" autocomplete="off"/>
       <button class="btn-email" id="btn-signup" onclick="window.createAccount()">Create Account</button>
       <div id="signup-error"></div>
       <p class="login-footer-note">One shared account links both of you to the same planning portal.</p>
@@ -6722,6 +7316,7 @@
       </div>
       <div class="admin-header-right">
         <div class="admin-count-badge"><span id="admin-couple-count">—</span> Couples</div>
+        <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.openSignupCodeModal()">&#128273; Signup Code</button>
         <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.showLinenOrders()">&#129525; Linen Orders</button>
         <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.openResourcePinGate()">&#128274; Manage Resources</button>
         <button class="btn-export-all" id="export-all-btn" onclick="window.exportAllCouples()">&#8595; Export All Couples to CSV</button>
@@ -6855,6 +7450,75 @@
       <div class="admin-modal-body" id="admin-modal-body"></div>
     </div>
   </div>
+
+  <!-- Day-Of TV Display -->
+  <div id="dayof-modal">
+    <div class="dof-topbar">
+      <div>
+        <div class="dof-couple-name" id="dof-couple-name">Couple</div>
+        <div class="dof-meta" id="dof-meta"></div>
+        <div class="dof-sync" id="dof-sync"></div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button class="dof-close" onclick="window.refreshDayOfDisplay()">&#8635; Refresh</button>
+        <button class="dof-close" onclick="window.closeDayOfDisplay()">&#10005; Close</button>
+      </div>
+    </div>
+    <div class="dof-tabs" id="dof-tabs"></div>
+    <div class="dof-body">
+      <div class="dof-rail">
+        <div class="dof-rail-title">Full Day-Of Timeline</div>
+        <div id="dof-timeline-list"></div>
+        <div class="dof-notes-wrap">
+          <div class="dof-rail-title">Unique Notes</div>
+          <div id="dof-notes-list"></div>
+          <div class="dof-note-add">
+            <textarea class="dof-note-input" id="dof-note-input" placeholder="Add a note for the team..."></textarea>
+            <button class="dof-note-add-btn" onclick="window.dofAddNote()">Add Note</button>
+          </div>
+        </div>
+      </div>
+      <div class="dof-main" id="dof-main"></div>
+    </div>
+  </div>
+
+  <!-- Client Timeline Modal -->
+  <div id="admin-timeline-modal">
+    <div class="admin-modal-box">
+      <div class="admin-modal-header">
+        <h2 id="admin-timeline-modal-title">Client Timeline</h2>
+        <button class="admin-modal-close" onclick="window.closeClientTimeline()">&#10005;</button>
+      </div>
+      <div class="admin-modal-body">
+        <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:20px;">This is the same Wedding Day Timeline the couple sees and edits on their own side — changes made here or by the couple show up for both of you automatically.</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Time</label>
+            <input type="time" class="amd-input" id="admin-tl-time">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Event / Activity</label>
+            <input type="text" class="amd-input" id="admin-tl-activity" placeholder="e.g. Hair &amp; Makeup Begins">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Location</label>
+            <input type="text" class="amd-input" id="admin-tl-location" placeholder="e.g. Bridal Suite">
+          </div>
+          <div class="form-group full">
+            <label class="form-label">Notes</label>
+            <textarea class="amd-input amd-textarea" id="admin-tl-notes"></textarea>
+          </div>
+        </div>
+        <div style="margin-top:16px;display:flex;gap:10px;">
+          <button class="acc-btn-view" style="padding:10px 24px;font-size:11px;" id="admin-tl-save-btn" onclick="window.adminSaveTimelineItem()">Add Timeline Item</button>
+          <button class="acc-btn-export" style="padding:10px 24px;font-size:11px;display:none;" id="admin-tl-cancel-btn" onclick="window.adminResetTimelineForm()">Cancel Edit</button>
+        </div>
+        <div style="margin-top:28px;border-top:1px solid var(--border);padding-top:20px;">
+          <div id="admin-timeline-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
   <!-- ══════════════════ RESOURCE PIN GATE MODAL ══════════════════ -->
@@ -6862,12 +7526,27 @@
     <div style="background:var(--warm-white);width:100%;max-width:360px;padding:36px 32px;border-radius:2px;text-align:center;">
       <div style="font-size:28px;margin-bottom:8px;">&#128274;</div>
       <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:400;color:var(--charcoal);margin-bottom:8px;">Owner Access Only</h2>
-      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:24px;line-height:1.6;">Enter the 4-digit PIN to manage resource cards. This area is restricted to venue ownership and upper management.</p>
+      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:24px;line-height:1.6;">Enter the 4-digit owner PIN to continue. This area is restricted to venue ownership and upper management.</p>
       <input type="password" inputmode="numeric" maxlength="4" id="resource-pin-input" class="login-input" style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
       <p id="resource-pin-error" style="display:none;color:#c0392b;font-size:12px;margin-top:10px;"></p>
       <div style="display:flex;gap:10px;margin-top:20px;">
         <button class="btn-back" style="flex:1;" onclick="window.closeResourcePinGate()">Cancel</button>
         <button class="btn-save" style="flex:1;" onclick="window.submitResourcePin()">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════ SIGNUP CODE PIN MODAL (fully independent from Manage Resources) ══════════════════ -->
+  <div id="signup-pin-modal" style="display:none;position:fixed;inset:0;z-index:650;background:rgba(44,44,44,0.75);align-items:center;justify-content:center;padding:24px;">
+    <div style="background:var(--warm-white);width:100%;max-width:360px;padding:36px 32px;border-radius:2px;text-align:center;">
+      <div style="font-size:28px;margin-bottom:8px;">&#128274;</div>
+      <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:400;color:var(--charcoal);margin-bottom:8px;">Owner Access Only</h2>
+      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:24px;line-height:1.6;">Enter the 4-digit owner PIN to change the signup code.</p>
+      <input type="password" inputmode="numeric" maxlength="4" id="signup-pin-input" class="login-input" style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
+      <p id="signup-pin-error" style="display:none;color:#c0392b;font-size:12px;margin-top:10px;"></p>
+      <div style="display:flex;gap:10px;margin-top:20px;">
+        <button class="btn-back" style="flex:1;" onclick="window.cancelSignupPin()">Cancel</button>
+        <button class="btn-save" style="flex:1;" onclick="window.submitSignupPin()">Unlock</button>
       </div>
     </div>
   </div>
@@ -6883,6 +7562,23 @@
       <div style="padding:20px 32px;border-top:1px solid var(--border);display:flex;gap:12px;flex-shrink:0;">
         <button class="acc-btn-export" style="flex:1;" onclick="window.addResourceRow()">+ Add New Resource</button>
         <button class="acc-btn-view" style="flex:1;" id="save-resources-btn" onclick="window.saveResources()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+  <!-- ══════════════════ SIGNUP CODE MODAL ══════════════════ -->
+  <div id="signup-code-modal" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(44,44,44,0.75);align-items:center;justify-content:center;padding:24px;">
+    <div style="background:var(--warm-white);width:100%;max-width:400px;padding:36px 32px;border-radius:2px;position:relative;">
+      <span onclick="window.closeSignupCodeModal()" style="position:absolute;top:16px;right:20px;font-size:22px;color:var(--mid-gray);cursor:pointer;line-height:1;">&times;</span>
+      <div style="font-size:28px;margin-bottom:8px;text-align:center;">&#128273;</div>
+      <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:400;color:var(--charcoal);margin-bottom:8px;text-align:center;">Couple Signup Code</h2>
+      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:20px;line-height:1.6;text-align:center;">The 4-digit code couples need to create an account. Copy it into your HoneyBook welcome email template. Only venue ownership can change it.</p>
+      <label style="display:block;font-size:11px;letter-spacing:0.06em;color:var(--mid-gray);margin-bottom:6px;">Current Code</label>
+      <input type="text" inputmode="numeric" maxlength="4" id="signup-code-input" class="login-input" disabled style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
+      <p id="signup-code-status" style="display:none;font-size:12px;margin-top:10px;text-align:center;"></p>
+      <div style="display:flex;gap:10px;margin-top:20px;">
+        <button class="btn-back" id="signup-code-copy-btn" style="flex:1;" onclick="window.copySignupCode()">Copy Code</button>
+        <button class="btn-save" id="signup-code-change-btn" style="flex:1;" onclick="window.requestSignupCodeChange()">Change Code</button>
+        <button class="btn-save" id="signup-code-save-btn" style="flex:1;display:none;" onclick="window.saveSignupCode()">Save</button>
       </div>
     </div>
   </div>
