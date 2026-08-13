@@ -3742,7 +3742,7 @@
       grid.innerHTML = real.map(c => {
         const names = (c.meeting1||{}).coupleNames || c.displayName || c.email || "Unknown Couple";
         const rawDate = (c.meeting1||{}).weddingDate;
-        const wDate = rawDate ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "Date not set";
+        const wDate = rawDate ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"}) : "Date not set";
         const m1 = calcPct(c.meeting1||{}, "meeting1");
         const m2 = calcPct(c.meeting2||{}, "meeting2");
         const m3 = calcPct(c.meeting3||{}, "meeting3");
