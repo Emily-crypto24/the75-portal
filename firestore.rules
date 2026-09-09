@@ -84,7 +84,9 @@ service cloud.firestore {
            'status', 'lastEditedBy', 'lastEditedAt'
          ]));
 
-      allow delete: if isAdmin();
+      // Couple deleting their own vendor (e.g. one they decided not to book)
+      // or admin. A verified vendor can never delete their own slot.
+      allow delete: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
     }
 
     // PIN + brute-force lockout state. Couple/admin only (to show/regenerate
@@ -95,7 +97,10 @@ service cloud.firestore {
       // Same null-resource guard as vendorSlots above.
       allow read, update: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
       allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
-      allow delete: if isAdmin();
+      // Deleted alongside vendorSlots when the couple removes a vendor --
+      // without this the PIN doc would survive deletion, still functional
+      // against a dangling slotId a vendor might retry.
+      allow delete: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
     }
 
     // Holds ONLY a tagged `notes` array: [{text, author, timestamp}, ...].

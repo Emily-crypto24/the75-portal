@@ -19,7 +19,7 @@
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
     import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, GoogleAuthProvider, onAuthStateChanged, signOut, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+    import { getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
     import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
     import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
@@ -751,6 +751,7 @@
       const snap = await getDoc(doc(db, "couples", uid));
       if (!snap.exists()) return;
       const data = snap.data();
+      vendorDefaultSlotsInitialized = !!data.vendorSlotsInitialized;
       ["meeting1","meeting2","meeting3"].forEach(meeting => {
         const saved = data[meeting] || {};
         Object.entries(saved).forEach(([key, val]) => {
@@ -4934,6 +4935,13 @@
     // ── COUPLE-SIDE: VENDOR ACCESS HUB ────────────────────────────
     let vendorHubSlots = [];
     let vendorHubTimelineItems = [];
+    // Set from couples/{uid}.vendorSlotsInitialized in loadAllForms. Default
+    // slots (one per fixed category, e.g. Caterer/Bar) are only ever
+    // auto-created ONE time, the very first visit to Vendor Access. Without
+    // this, deleting a fixed category's only slot would just get silently
+    // recreated (blank, with a fresh PIN) on the couple's next visit, since
+    // the missing-default check would keep seeing it as "not yet created."
+    let vendorDefaultSlotsInitialized = false;
 
     async function loadVendorHubTimeline(coupleUid) {
       const notesById = await fetchTimelineNotesById(coupleUid);
@@ -4960,14 +4968,20 @@
       await loadVendorHubTimeline(coupleUid);
       try {
         // Fetch what already exists via a LIST query first (safe -- see the
-        // comment on createVendorSlotDoc), THEN create only what's missing,
-        // THEN re-fetch if anything was actually created.
+        // comment on createVendorSlotDoc). Default slots only ever get
+        // auto-created on the very first visit (see vendorDefaultSlotsInitialized
+        // above) -- after that, a missing default means the couple deleted it,
+        // not that it's never existed, so it must NOT come back.
         let existing = await fetchVendorSlotsForCouple(coupleUid);
-        const existingIds = new Set(existing.map(e => e.slotId));
-        const missingAny = VENDOR_CATEGORIES.some(cat => cat.slots.some(s => !existingIds.has(vendorSlotId(coupleSlug, cat.key, s.key))));
-        if (missingAny) {
-          await ensureDefaultVendorSlots(coupleUid, coupleSlug, existingIds);
-          existing = await fetchVendorSlotsForCouple(coupleUid);
+        if (!vendorDefaultSlotsInitialized) {
+          const existingIds = new Set(existing.map(e => e.slotId));
+          const missingAny = VENDOR_CATEGORIES.some(cat => cat.slots.some(s => !existingIds.has(vendorSlotId(coupleSlug, cat.key, s.key))));
+          if (missingAny) {
+            await ensureDefaultVendorSlots(coupleUid, coupleSlug, existingIds);
+            existing = await fetchVendorSlotsForCouple(coupleUid);
+          }
+          try { await updateDoc(doc(db, "couples", coupleUid), { vendorSlotsInitialized: true }); } catch(e) {}
+          vendorDefaultSlotsInitialized = true;
         }
         vendorHubSlots = existing;
         renderVendorHub();
@@ -5022,9 +5036,12 @@
             <span style="font-size:12px;color:var(--gold-dark);word-break:break-all;">${esc(link)}</span>
             <button style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:6px 12px;cursor:pointer;border-radius:1px;" onclick="navigator.clipboard.writeText('${esc(link)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy';},1500);">Copy</button>
           </div>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
             <span style="font-size:12px;color:var(--charcoal);">PIN to include when you share this: <strong style="letter-spacing:0.1em;">${esc(secrets.accessPin || "----")}</strong></span>
             <button style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:6px 12px;cursor:pointer;border-radius:1px;" onclick="window.regenerateVendorPin('${slotId}')">Regenerate PIN</button>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:12px;text-align:right;">
+            <button style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:6px 12px;cursor:pointer;border-radius:1px;" onclick="window.deleteVendorHubSlot('${slotId}')">Delete Vendor</button>
           </div>
         </div>`;
     }
@@ -5087,6 +5104,27 @@
         if (entry) entry.secrets.accessPin = newPin;
         renderVendorHub();
       } catch(e) { alert("Couldn't regenerate PIN: " + e.message); }
+    };
+
+    // Deletes both docs for this slot -- the vendorSlots doc AND its
+    // vendorSlotSecrets doc. Removing just one isn't enough: verifyVendorPin
+    // checks both exist before it'll even look at the PIN, so deleting either
+    // one alone already revokes access, but deleting both cleanly removes all
+    // trace of the vendor rather than leaving an orphaned secrets doc behind.
+    // Deliberately does NOT touch couples/{uid}/sharedTimeline -- any notes
+    // this vendor left stay on the shared timeline (they're just tagged with
+    // the vendor's category label as free text, not a live reference to this
+    // slot, so nothing breaks) since they may still matter for the day-of plan.
+    window.deleteVendorHubSlot = async function(slotId) {
+      const entry = vendorHubSlots.find(e => e.slotId === slotId);
+      const label = entry ? (entry.slot.vendorName || vendorCategoryLabelForSlot(entry.slot)) : "this vendor";
+      if (!confirm(`Delete ${label}? This can't be undone. Their access link and PIN will stop working immediately. (Any notes they've already left on the shared timeline will stay, since they may still be relevant to the day-of plan.)`)) return;
+      try {
+        await deleteDoc(doc(db, "vendorSlots", slotId));
+        await deleteDoc(doc(db, "vendorSlotSecrets", slotId));
+        vendorHubSlots = vendorHubSlots.filter(e => e.slotId !== slotId);
+        renderVendorHub();
+      } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
     window.addVendorHubSlot = async function(categoryKey) {
