@@ -58,6 +58,19 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.vendorSlotId == slotId;
     }
 
+    // True for a verified vendor identity whose OWN slot belongs to the same
+    // couple/event as coupleUid -- i.e. any vendor on this event, not just
+    // this exact slot. Backs the spec'd vendor-to-vendor read-only
+    // cross-references (Caterer reading DJ/Band's cake-cutting answer, the
+    // Vendor Meals rollup reading every vendor's own meal request, Shuttle's
+    // last-pickup time feeding DJ/Band, Florist's detail-shot flag feeding
+    // Photographer, etc.) -- never write access, and never another event's
+    // vendors.
+    function isVerifiedVendorForCouple(coupleUid) {
+      return request.auth != null && request.auth.token.vendorSlotId != null &&
+        get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == coupleUid;
+    }
+
     // Public-safe vendor tab data (company info, logistics, meal request,
     // notes, status). Never contains the PIN or lockout state -- see
     // vendorSlotSecrets below.
@@ -67,8 +80,10 @@ service cloud.firestore {
       // resource.data there throws and denies the whole request, even via the
       // other `||` branches, unless those are checked first and this one is
       // explicitly guarded. isAdmin()/isVerifiedVendorFor never touch
-      // `resource`, so they're safe in any order; isOwningCouple here is not.
-      allow read: if isAdmin() || isVerifiedVendorFor(slotId) || (resource != null && isOwningCouple(resource.data.coupleUid));
+      // `resource`, so they're safe in any order; isOwningCouple/
+      // isVerifiedVendorForCouple here are not.
+      allow read: if isAdmin() || isVerifiedVendorFor(slotId) ||
+        (resource != null && (isOwningCouple(resource.data.coupleUid) || isVerifiedVendorForCouple(resource.data.coupleUid)));
 
       // Only the couple (for their own event) or admin can create a slot.
       allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
@@ -127,6 +142,27 @@ service cloud.firestore {
       allow update: if isOwningCouple(uid) || isAdmin() ||
         (vendorBelongsToThisCouple() &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['notes']));
+    }
+
+    // Named, cross-tab data under couples/{uid}/vendorSharedData/{docId}, read
+    // by any verified vendor of this couple's event. Two shapes live here,
+    // with different write rules:
+    //   - dietary: MIRRORED from Planning Tools (Guest List's per-guest
+    //     allergy notes). Couple/admin write only -- a vendor never writes
+    //     anything back into Planning Tools data, even indirectly through a
+    //     mirror. Deliberately NOT under publicCouples, which is
+    //     world-readable with no auth (by design, for the guest RSVP page) --
+    //     allergy/health-adjacent data shouldn't be.
+    //   - socialHandles: NATIVE to Vendor Access -- there's no Planning Tools
+    //     field this is pulled from (there never was one), so per the
+    //     one-way rule's own carve-out for fresh Vendor-Access-only entries,
+    //     either the couple or any vendor of this event may write it.
+    match /couples/{uid}/vendorSharedData/{docId} {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+    match /couples/{uid}/vendorSharedData/socialHandles {
+      allow write: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
     }
 
     // settings/venueInfo (directions/parking/groom-suite policy/venue manager

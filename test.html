@@ -3370,7 +3370,6 @@
           // vendor's PIN-scoped session can read venue/POC info without needing broader
           // read access to the couple's private couples/{uid} document.
           leadCoordinator: data.leadCoordinator || { name: "", email: "", phone: "" },
-          coupleSocialHandles: data.coupleSocialHandles || "",
           venueRentalEndTime: data.venueRentalEndTime || "",
           vendorArrivalWindow: data.vendorArrivalWindow || "",
           // Mirrors the real Wedding Day Timeline (timelineItems[], edited only via the
@@ -4963,9 +4962,15 @@
       return addTimelineNote(currentUser.uid, vendorHubTimelineItems, itemId, inputId, "Couple", renderVendorHubTimelineList);
     };
 
+    // Cached once per hub load (not once per card) -- every caterer card on
+    // the hub page shares the same cross-referenced data.
+    let vendorHubCatererCrossRefs = {};
+
     window.loadVendorHub = async function(coupleUid, coupleSlug) {
       if (!coupleUid || !coupleSlug) return;
       await loadVendorHubTimeline(coupleUid);
+      await syncVendorDietaryData(coupleUid);
+      await renderVendorHubSocialHandles(coupleUid);
       try {
         // Fetch what already exists via a LIST query first (safe -- see the
         // comment on createVendorSlotDoc). Default slots only ever get
@@ -4984,6 +4989,9 @@
           vendorDefaultSlotsInitialized = true;
         }
         vendorHubSlots = existing;
+        if (vendorHubSlots.some(e => e.slot.category === "caterer")) {
+          vendorHubCatererCrossRefs = await fetchCatererCrossRefs(coupleUid, coupleSlug);
+        }
         renderVendorHub();
       } catch(e) { console.error("Loading vendor hub failed:", e); }
     };
@@ -5030,6 +5038,8 @@
             <textarea class="form-textarea" id="vh-notes-${slotId}" onblur="window.saveVendorHubNotes('${slotId}')">${esc(n.text||"")}</textarea>
             <p id="vh-notes-stamp-${slotId}" style="font-size:11px;color:var(--mid-gray);margin-top:4px;">${stampText}</p>
           </div>
+
+          ${renderCategoryDetailsHTML(slotId, slot, `hub-${slotId}`, vendorHubCatererCrossRefs)}
 
           <p style="font-size:12px;color:var(--mid-gray);margin-bottom:8px;">Share this link with your vendor for them to have access to this page:</p>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
@@ -5233,14 +5243,24 @@
 
       document.getElementById("vendor-poc-info").innerHTML = `
         <div class="amd-row"><div class="amd-key">Lead Coordinator</div><div class="amd-val">${esc(lc.name || "TBD")}${lc.phone ? " · " + esc(lc.phone) : ""}${lc.email ? " · " + esc(lc.email) : ""}</div></div>
-        <div class="amd-row"><div class="amd-key">Venue Manager</div><div class="amd-val">${esc(venueInfo.venueManagerName || "TBD")}${venueInfo.venueManagerTitle ? " — " + esc(venueInfo.venueManagerTitle) : ""}</div></div>
-        <div class="amd-row"><div class="amd-key">Couple's Social Handles</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.coupleSocialHandles) || "Not provided")}</div></div>`;
+        <div class="amd-row"><div class="amd-key">Venue Manager</div><div class="amd-val">${esc(venueInfo.venueManagerName || "TBD")}${venueInfo.venueManagerTitle ? " — " + esc(venueInfo.venueManagerTitle) : ""}</div></div>`;
+
+      await renderVendorSocialHandles();
 
       renderVendorLogisticsForm();
       renderVendorMealRequest();
       renderVendorStatusAndStamp();
       renderVendorNotes();
       await loadVendorTimeline();
+      await renderVendorCategoryDetails();
+    }
+
+    async function renderVendorCategoryDetails() {
+      const wrap = document.getElementById("vendor-category-details");
+      if (!wrap) return;
+      if (vendorSlotData.category !== "caterer") { wrap.innerHTML = ""; return; }
+      const crossRefs = await fetchCatererCrossRefs(vendorCoupleUid_, vendorCoupleSlug_);
+      wrap.innerHTML = renderCategoryDetailsHTML(vendorSlotId_, vendorSlotData, vendorSlotId_, crossRefs);
     }
 
     async function saveVendorSlotUpdate(update, whoLabel) {
@@ -5465,6 +5485,393 @@
         alert("Save failed: " + e.message);
       }
     };
+
+    // ═══════════════════════════════════════════════════════════════
+    // CATEGORY-SPECIFIC FIELDS
+    //
+    // One-way data flow rule (applies to every category, going forward):
+    // a field may be LIVE-PULLED (read-only) into Vendor Access only if the
+    // spec names it as sourced from a specific Planning Tools/Meetings field.
+    // Nothing entered or edited within Vendor Access -- by a vendor, or by
+    // the couple while on a Vendor Access page -- ever writes back into
+    // Planning Tools/Meetings data. Vendor-to-vendor cross-references (e.g.
+    // DJ/Band's cake-cutting answer feeding Caterer/Bar) are a separate,
+    // already-approved mechanism -- read-only across vendors of the same
+    // event, never touching Planning Tools.
+    // ═══════════════════════════════════════════════════════════════
+
+    // Filtered guest dietary data, written ONLY by the couple/admin (never a
+    // vendor) into a vendor-readable-but-not-public doc -- see the comment on
+    // couples/{uid}/vendorSharedData/{docId} in firestore.rules for why this
+    // isn't just added to the already-public publicCouples doc. Re-synced
+    // every time the couple visits Vendor Access, so it's not stale for long,
+    // but it is NOT a live listener -- a guest-list edit won't appear in an
+    // already-open vendor tab until that vendor reloads.
+    async function syncVendorDietaryData(coupleUid) {
+      try {
+        const rows = guestListCache
+          .filter(g => (g.allergies || "").trim())
+          .map(g => ({ id: g.id, name: g.guestName || "", tableNumber: g.tableNumber || "", allergies: g.allergies || "" }));
+        await setDoc(doc(db, "couples", coupleUid, "vendorSharedData", "dietary"), { rows, updatedAt: new Date().toISOString() });
+      } catch(e) { console.error("Syncing vendor dietary data failed:", e); }
+    }
+
+    // Fetches everything Caterer/Bar reads that it doesn't own: the dietary
+    // mirror above, DJ/Band's cake-cutting answer (vendor-to-vendor,
+    // read-only -- DJ/Band isn't built yet, so this is null until it is),
+    // every vendor's own Meal Request (vendor-to-vendor rollup), and the
+    // Guest List/RSVP tab's dinner style (already mirrored into
+    // publicCouples long before the vendor portal existed).
+    async function fetchCatererCrossRefs(coupleUid, coupleSlug) {
+      const out = { dietary: [], cakeCutting: null, mealsRollup: [], dinnerStyle: "" };
+      try {
+        const dietSnap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "dietary"));
+        out.dietary = (dietSnap.exists() && Array.isArray(dietSnap.data().rows)) ? dietSnap.data().rows : [];
+      } catch(e) { console.error("Fetching dietary data failed:", e); }
+      try {
+        const djSnap = await getDoc(doc(db, "vendorSlots", vendorSlotId(coupleSlug, "dj", "")));
+        out.cakeCutting = djSnap.exists() ? ((djSnap.data().responses || {}).cakeCutting || null) : null;
+      } catch(e) {}
+      try {
+        const allSlots = await fetchVendorSlotsForCouple(coupleUid);
+        out.mealsRollup = allSlots.map(e => ({
+          label: vendorCategoryLabelForSlot(e.slot) + (e.slot.vendorName ? " — " + e.slot.vendorName : ""),
+          requested: !!(e.slot.mealRequest && e.slot.mealRequest.requested),
+          dietary: (e.slot.mealRequest || {}).dietary || ""
+        }));
+      } catch(e) {}
+      try {
+        const pub = await getDoc(doc(db, "publicCouples", coupleSlug));
+        out.dinnerStyle = pub.exists() ? (pub.data().dinnerStyle || "") : "";
+      } catch(e) {}
+      return out;
+    }
+
+    // Dispatches to the right category's fields. Only "caterer" is built so
+    // far -- every other category returns "" (nothing rendered) until built.
+    function renderCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      if (slot.category === "caterer") return catererCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs || {});
+      return "";
+    }
+
+    // ── CATEGORY: CATERER/BAR ───────────────────────────────────────
+    function defaultCatererResponses() {
+      return {
+        serviceFormatManual: "",
+        appetizerService: "", appetizerQty: "",
+        tableReleaseOrder: "",
+        menuAppetizer: "", menuEntree: "", menuStarch: "", menuVegetable: "",
+        platedIndicators: "",
+        dessertType: "", dessertFlavors: "", dessertServedBy: "",
+        catererCuttingResponsibility: "",
+        barProviding: false, barLocations: "",
+        alcoholTypes: "", alcoholProvider: "",
+        signatureCocktails: "", barSetups: "",
+        barHours: [],
+        champagneToast: false, champagnePourStyle: "",
+        linenFlipNote: "", linenBreakdownNote: "",
+        coupleBuffetSelections: "", coupleSpecialRequests: "",
+        toGoBoxContents: "", bulkLeftoverContact: "",
+        privateMomentHold: false, privateMomentDetails: "",
+        preDinnerTableHold: false, preDinnerTableDetails: "",
+        dietaryOverrides: {}
+      };
+    }
+
+    // idPrefix -> in-progress bar-hours rows (add/remove before the section
+    // is saved). Keyed per-slot so multiple caterer cards on the couple's hub
+    // page don't collide with each other or with the vendor's own page.
+    let catererBarHoursDraft = {};
+
+    function catererBarHoursRowsHTML(idPrefix, rows) {
+      if (!rows.length) return `<p style="font-size:12px;color:var(--mid-gray);font-style:italic;margin-bottom:10px;">No bar hours windows added yet.</p>`;
+      return rows.map((row, idx) => `
+        <div class="form-grid" data-bar-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Opens</label><input class="form-input" type="text" placeholder="e.g. 5:00 PM" data-bar-field="open" value="${esc(row.open||"")}"></div>
+          <div class="form-group"><label class="form-label">Closes</label><input class="form-input" type="text" placeholder="e.g. 5:30 PM" data-bar-field="close" value="${esc(row.close||"")}"></div>
+          <div class="form-group"><label class="form-label">Note (optional)</label><input class="form-input" type="text" placeholder="e.g. Closed for Grand Entrance" data-bar-field="note" value="${esc(row.note||"")}"></div>
+          <button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeCatererBarHourRow('${idPrefix}',${idx})">Remove</button>
+        </div>`).join("");
+    }
+
+    window.addCatererBarHourRow = function(idPrefix) {
+      catererBarHoursDraft[idPrefix] = catererBarHoursDraft[idPrefix] || [];
+      catererBarHoursDraft[idPrefix].push({ open: "", close: "", note: "" });
+      const wrap = document.getElementById(`cf-barhours-${idPrefix}`);
+      if (wrap) wrap.innerHTML = catererBarHoursRowsHTML(idPrefix, catererBarHoursDraft[idPrefix]);
+    };
+
+    window.removeCatererBarHourRow = function(idPrefix, idx) {
+      if (!catererBarHoursDraft[idPrefix]) return;
+      catererBarHoursDraft[idPrefix].splice(idx, 1);
+      const wrap = document.getElementById(`cf-barhours-${idPrefix}`);
+      if (wrap) wrap.innerHTML = catererBarHoursRowsHTML(idPrefix, catererBarHoursDraft[idPrefix]);
+    };
+
+    function catererCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      const r = Object.assign(defaultCatererResponses(), slot.responses || {});
+      if (!catererBarHoursDraft[idPrefix]) catererBarHoursDraft[idPrefix] = (r.barHours || []).slice();
+      const dietRows = crossRefs.dietary || [];
+      const cakeCutting = crossRefs.cakeCutting;
+      const mealsRollup = crossRefs.mealsRollup || [];
+      const dinnerStyle = crossRefs.dinnerStyle || "";
+      const overrides = r.dietaryOverrides || {};
+
+      return `
+      <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+        <span class="section-label">Caterer/Bar Details</span>
+        <h2 class="form-section-title">Service <em>details</em></h2>
+
+        <div class="amd-row"><div class="amd-key">Food Service Format</div><div class="amd-val">${dinnerStyle ? esc(dinnerStyle) + ` <span style="color:var(--mid-gray);font-size:11px;">(pulled from Guest List/RSVP — read-only)</span>` : `Not yet set on Guest List/RSVP — enter manually below`}</div></div>
+        <div class="form-grid" style="margin-top:12px;">
+          ${dinnerStyle ? "" : `<div class="form-group full"><label class="form-label">Service Format (manual)</label><input class="form-input" data-cf="serviceFormatManual" value="${esc(r.serviceFormatManual)}" placeholder="Sit-down / Buffet / Family-style / Stations / Four-course"></div>`}
+          <div class="form-group"><label class="form-label">Appetizer Service</label><input class="form-input" data-cf="appetizerService" value="${esc(r.appetizerService)}" placeholder="Passed / Stationary / Both"></div>
+          <div class="form-group"><label class="form-label">Appetizer Quantities</label><input class="form-input" data-cf="appetizerQty" value="${esc(r.appetizerQty)}"></div>
+          <div class="form-group full"><label class="form-label">Table Release Order</label><textarea class="form-textarea" data-cf="tableReleaseOrder">${esc(r.tableReleaseOrder)}</textarea></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Menu</h2>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Appetizer Selection</label><input class="form-input" data-cf="menuAppetizer" value="${esc(r.menuAppetizer)}"></div>
+          <div class="form-group"><label class="form-label">Entrée Selection</label><input class="form-input" data-cf="menuEntree" value="${esc(r.menuEntree)}"></div>
+          <div class="form-group"><label class="form-label">Starch Selection</label><input class="form-input" data-cf="menuStarch" value="${esc(r.menuStarch)}"></div>
+          <div class="form-group"><label class="form-label">Vegetable Selection</label><input class="form-input" data-cf="menuVegetable" value="${esc(r.menuVegetable)}"></div>
+          <div class="form-group full"><label class="form-label">Plated Meal Indicators (colors/stickers)</label><input class="form-input" data-cf="platedIndicators" value="${esc(r.platedIndicators)}" placeholder="If plated — how each entrée is marked"></div>
+          <div class="form-group"><label class="form-label">Dessert Type</label><input class="form-input" data-cf="dessertType" value="${esc(r.dessertType)}"></div>
+          <div class="form-group"><label class="form-label">Dessert Flavors</label><input class="form-input" data-cf="dessertFlavors" value="${esc(r.dessertFlavors)}"></div>
+          <div class="form-group"><label class="form-label">Who Cuts/Serves Dessert</label><input class="form-input" data-cf="dessertServedBy" value="${esc(r.dessertServedBy)}"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Cake Cutting</h2>
+        <div class="amd-row"><div class="amd-key">Private or Announced</div><div class="amd-val">${cakeCutting && cakeCutting.value ? esc(cakeCutting.value) + ` <span style="color:var(--mid-gray);font-size:11px;">(set on the DJ/Band tab — read-only here)</span>` : `Not yet set — DJ/Band hasn't answered this yet`}</div></div>
+        <div class="form-grid" style="margin-top:12px;">
+          <div class="form-group full"><label class="form-label">Caterer Responsibility</label><input class="form-input" data-cf="catererCuttingResponsibility" value="${esc(r.catererCuttingResponsibility)}" placeholder="Cutting/plating the cake vs. just displaying/placing it"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Bar</h2>
+        <div class="check-group inline" style="margin-bottom:14px;">
+          <label class="check-item"><input type="radio" name="cf-bar-providing-${idPrefix}" value="yes" data-cf="barProviding" ${r.barProviding ? "checked" : ""}><span>Providing bar service</span></label>
+          <label class="check-item"><input type="radio" name="cf-bar-providing-${idPrefix}" value="no" data-cf="barProviding" ${!r.barProviding ? "checked" : ""}><span>Not providing bar service</span></label>
+        </div>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label"># Locations + Placement</label><input class="form-input" data-cf="barLocations" value="${esc(r.barLocations)}"></div>
+          <div class="form-group"><label class="form-label">Alcohol Types</label><input class="form-input" data-cf="alcoholTypes" value="${esc(r.alcoholTypes)}"></div>
+          <div class="form-group"><label class="form-label">Who Provides Alcohol</label><input class="form-input" data-cf="alcoholProvider" value="${esc(r.alcoholProvider)}"></div>
+          <div class="form-group full"><label class="form-label">Signature Cocktails / Recipes</label><textarea class="form-textarea" data-cf="signatureCocktails">${esc(r.signatureCocktails)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Bar Setups (cups, mixers, garnishes) — who provides</label><textarea class="form-textarea" data-cf="barSetups">${esc(r.barSetups)}</textarea></div>
+        </div>
+
+        <label class="form-label" style="display:block;margin:16px 0 8px;">Bar Hours <span style="font-weight:300;text-transform:none;color:var(--mid-gray);">(multiple windows supported)</span></label>
+        <div id="cf-barhours-${idPrefix}">${catererBarHoursRowsHTML(idPrefix, catererBarHoursDraft[idPrefix])}</div>
+        <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;margin-bottom:16px;" onclick="window.addCatererBarHourRow('${idPrefix}')">+ Add Bar Hours Window</button>
+
+        <div class="check-group inline" style="margin-bottom:8px;">
+          <label class="check-item"><input type="radio" name="cf-champagne-${idPrefix}" value="yes" data-cf="champagneToast" ${r.champagneToast ? "checked" : ""}><span>Champagne toast: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-champagne-${idPrefix}" value="no" data-cf="champagneToast" ${!r.champagneToast ? "checked" : ""}><span>Champagne toast: No</span></label>
+        </div>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Pre-Poured vs. Poured-Per-Person</label><input class="form-input" data-cf="champagnePourStyle" value="${esc(r.champagnePourStyle)}" placeholder="Labor/timeline impact"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Vendor Meals</h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Read-only — auto-pulled from every vendor's own Meal Request. The venue doesn't require vendor meals, but they're commonly given one, especially buffet-style; each vendor self-requests via their own tab.</p>
+        ${mealsRollup.length ? mealsRollup.map(m => `<div class="amd-row"><div class="amd-key">${esc(m.label)}</div><div class="amd-val">${m.requested ? "Requesting a meal" + (m.dietary ? " — " + esc(m.dietary) : "") : "No meal requested"}</div></div>`).join("") : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">No vendors have set a meal request yet.</p>`}
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Dietary Restrictions</h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Guest name, table #, and restriction are pulled live from Guest List/RSVP (only guests with something noted are shown here) — read-only. Mark each as an allergy or a preference; Group tags will appear here automatically once Guest List Groups are built.</p>
+        ${dietRows.length ? `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--border);">
+            <th style="text-align:left;padding:6px 10px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);">Guest</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);">Table</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);">Restriction</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);">Allergy or Preference</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);">Group</th>
+          </tr></thead>
+          <tbody>${dietRows.map(g => `<tr style="border-bottom:1px solid rgba(232,224,213,0.5);">
+            <td style="padding:6px 10px;">${esc(g.name||"")}</td>
+            <td style="padding:6px 10px;">${esc(g.tableNumber||"")}</td>
+            <td style="padding:6px 10px;">${esc(g.allergies||"")}</td>
+            <td style="padding:6px 10px;"><select class="form-input" style="padding:6px 8px;font-size:12px;" data-diet-override="${esc(g.id)}">
+              <option value="">—</option>
+              <option value="allergy" ${(overrides[g.id]||{}).classification==="allergy"?"selected":""}>Allergy</option>
+              <option value="preference" ${(overrides[g.id]||{}).classification==="preference"?"selected":""}>Preference</option>
+            </select></td>
+            <td style="padding:6px 10px;color:var(--mid-gray);font-style:italic;">—</td>
+          </tr>`).join("")}</tbody>
+        </table></div>` : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">No dietary restrictions noted on the Guest List yet.</p>`}
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Table Linens</h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">The venue always provides linens — these are just logistics notes.</p>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Appetizer Table Flipping to Dessert Table Mid-Event?</label><textarea class="form-textarea" data-cf="linenFlipNote" placeholder="Does it need fresh linen before flipping?">${esc(r.linenFlipNote)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Tables Being Broken Down/Cleared During Reception</label><textarea class="form-textarea" data-cf="linenBreakdownNote">${esc(r.linenBreakdownNote)}</textarea></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Couple's Own Service</h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Couple's Meal Selections (if buffet — couple is always served directly)</label><textarea class="form-textarea" data-cf="coupleBuffetSelections">${esc(r.coupleBuffetSelections)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Special Requests</label><textarea class="form-textarea" data-cf="coupleSpecialRequests" placeholder="e.g. &quot;don't let food touch&quot;">${esc(r.coupleSpecialRequests)}</textarea></div>
+          <div class="form-group full"><label class="form-label">To-Go Box Contents (including dessert, if any)</label><textarea class="form-textarea" data-cf="toGoBoxContents">${esc(r.toGoBoxContents)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Who's Taking Home Bulk Leftover Food/Alcohol — Name + Contact</label><input class="form-input" data-cf="bulkLeftoverContact" value="${esc(r.bulkLeftoverContact)}"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Private Moment / Pre-Dinner Holds</h2>
+        <div class="check-group inline" style="margin-bottom:8px;">
+          <label class="check-item"><input type="radio" name="cf-privatemoment-${idPrefix}" value="yes" data-cf="privateMomentHold" ${r.privateMomentHold ? "checked" : ""}><span>Bridal suite hold: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-privatemoment-${idPrefix}" value="no" data-cf="privateMomentHold" ${!r.privateMomentHold ? "checked" : ""}><span>Bridal suite hold: No</span></label>
+        </div>
+        <div class="form-group full" style="margin-bottom:16px;"><label class="form-label">Appetizers/Drinks Waiting in Bridal Suite Post-Ceremony — Details</label><textarea class="form-textarea" data-cf="privateMomentDetails">${esc(r.privateMomentDetails)}</textarea></div>
+        <div class="check-group inline" style="margin-bottom:8px;">
+          <label class="check-item"><input type="radio" name="cf-predinner-${idPrefix}" value="yes" data-cf="preDinnerTableHold" ${r.preDinnerTableHold ? "checked" : ""}><span>Couple's table hold: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-predinner-${idPrefix}" value="no" data-cf="preDinnerTableHold" ${!r.preDinnerTableHold ? "checked" : ""}><span>Couple's table hold: No</span></label>
+        </div>
+        <div class="form-group full"><label class="form-label">Anything Waiting at Couple's Table Before Dinner Served — Details</label><textarea class="form-textarea" data-cf="preDinnerTableDetails">${esc(r.preDinnerTableDetails)}</textarea></div>
+
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveCatererDetails('${slotId}','${idPrefix}')">Save Caterer/Bar Details</button><span class="autosave-indicator" id="cf-save-indicator-${idPrefix}">Saved</span></div>
+      </div>`;
+    }
+
+    window.saveCatererDetails = async function(slotId, idPrefix) {
+      const container = document.getElementById(`cf-section-${idPrefix}`);
+      if (!container) return;
+      const responses = {};
+      container.querySelectorAll("[data-cf]").forEach(el => {
+        const key = el.getAttribute("data-cf");
+        if (el.type === "radio") { if (el.checked) responses[key] = el.value === "yes"; }
+        else { responses[key] = el.value.trim(); }
+      });
+      const barHours = [];
+      container.querySelectorAll("[data-bar-row]").forEach(rowEl => {
+        const row = {};
+        rowEl.querySelectorAll("[data-bar-field]").forEach(f => { row[f.getAttribute("data-bar-field")] = f.value.trim(); });
+        if (row.open || row.close || row.note) barHours.push(row);
+      });
+      responses.barHours = barHours;
+      const dietaryOverrides = {};
+      container.querySelectorAll("[data-diet-override]").forEach(el => {
+        const guestId = el.getAttribute("data-diet-override");
+        if (el.value) dietaryOverrides[guestId] = { classification: el.value };
+      });
+      responses.dietaryOverrides = dietaryOverrides;
+
+      const whoLabel = isVendorViewMode ? (vendorSlotLabel_ || "Vendor") : "Couple";
+      try {
+        await updateDoc(doc(db, "vendorSlots", slotId), { responses, lastEditedBy: whoLabel, lastEditedAt: new Date().toISOString() });
+        if (isVendorViewMode && vendorSlotData) { vendorSlotData.responses = responses; renderVendorStatusAndStamp(); }
+        const hubEntry = vendorHubSlots.find(e => e.slotId === slotId);
+        if (hubEntry) hubEntry.slot.responses = responses;
+        const ind = document.getElementById(`cf-save-indicator-${idPrefix}`);
+        if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // COUPLE'S SOCIAL HANDLES (event-level, Vendor-Access-native)
+    //
+    // There's no Planning Tools field this could be pulled from -- it never
+    // had one -- so per the one-way rule's own carve-out ("if a couple
+    // enters something on Vendor Access because it wasn't already logged
+    // elsewhere, that stays local to Vendor Access only"), this lives
+    // entirely in Vendor Access. It's shared across the whole event (not
+    // per-vendor-slot), so either the couple (from any category page) or
+    // any vendor (from their own page) can add to the SAME list -- same
+    // doc either way: couples/{uid}/vendorSharedData/socialHandles.
+    // ═══════════════════════════════════════════════════════════════
+    let socialHandlesDraft = {};
+
+    async function fetchSocialHandlesDoc(coupleUid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "socialHandles"));
+        return snap.exists() ? snap.data() : { handles: [] };
+      } catch(e) { console.error("Fetching social handles failed:", e); return { handles: [] }; }
+    }
+
+    function socialHandlesRowsHTML(idPrefix, rows) {
+      const list = rows.length ? rows : [{ platform: "", handle: "" }];
+      return list.map((row, idx) => `
+        <div class="form-grid" data-sh-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Platform</label><input class="form-input" type="text" placeholder="e.g. Instagram, TikTok, YouTube" data-sh-field="platform" value="${esc(row.platform||"")}"></div>
+          <div class="form-group"><label class="form-label">Handle</label><input class="form-input" type="text" placeholder="@handle" data-sh-field="handle" value="${esc(row.handle||"")}"></div>
+          ${list.length > 1 ? `<button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeSocialHandleRow('${idPrefix}',${idx})">Remove</button>` : `<span></span>`}
+        </div>`).join("");
+    }
+
+    function renderSocialHandlesSection(idPrefix, data) {
+      if (!socialHandlesDraft[idPrefix]) {
+        const handles = (data && Array.isArray(data.handles)) ? data.handles : [];
+        socialHandlesDraft[idPrefix] = handles.length ? handles.slice() : [{ platform: "", handle: "" }];
+      }
+      const stampText = data && data.lastEditedBy ? `Last edited by ${esc(data.lastEditedBy)}${data.lastEditedAt ? " at " + new Date(data.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}` : "";
+      return `
+        <div id="sh-rows-${idPrefix}">${socialHandlesRowsHTML(idPrefix, socialHandlesDraft[idPrefix])}</div>
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;" onclick="window.addSocialHandleRow('${idPrefix}')">+ Add Another Social Tag</button>
+          <button class="btn-save" style="padding:8px 24px;font-size:10px;" onclick="window.saveSocialHandles('${idPrefix}')">Save</button>
+          <span class="autosave-indicator" id="sh-save-indicator-${idPrefix}">Saved</span>
+        </div>
+        <p id="sh-stamp-${idPrefix}" style="font-size:11px;color:var(--mid-gray);margin-top:8px;">${stampText}</p>`;
+    }
+
+    window.addSocialHandleRow = function(idPrefix) {
+      socialHandlesDraft[idPrefix] = socialHandlesDraft[idPrefix] || [];
+      socialHandlesDraft[idPrefix].push({ platform: "", handle: "" });
+      const wrap = document.getElementById(`sh-rows-${idPrefix}`);
+      if (wrap) wrap.innerHTML = socialHandlesRowsHTML(idPrefix, socialHandlesDraft[idPrefix]);
+    };
+
+    window.removeSocialHandleRow = function(idPrefix, idx) {
+      if (!socialHandlesDraft[idPrefix]) return;
+      socialHandlesDraft[idPrefix].splice(idx, 1);
+      if (!socialHandlesDraft[idPrefix].length) socialHandlesDraft[idPrefix] = [{ platform: "", handle: "" }];
+      const wrap = document.getElementById(`sh-rows-${idPrefix}`);
+      if (wrap) wrap.innerHTML = socialHandlesRowsHTML(idPrefix, socialHandlesDraft[idPrefix]);
+    };
+
+    window.saveSocialHandles = async function(idPrefix) {
+      const wrap = document.getElementById(`sh-rows-${idPrefix}`);
+      if (!wrap) return;
+      const handles = [];
+      wrap.querySelectorAll("[data-sh-row]").forEach(rowEl => {
+        const row = {};
+        rowEl.querySelectorAll("[data-sh-field]").forEach(f => { row[f.getAttribute("data-sh-field")] = f.value.trim(); });
+        if (row.platform || row.handle) handles.push(row);
+      });
+      const coupleUid = isVendorViewMode ? vendorCoupleUid_ : currentUser.uid;
+      const whoLabel = isVendorViewMode ? (vendorSlotLabel_ || "Vendor") : "Couple";
+      try {
+        await setDoc(doc(db, "couples", coupleUid, "vendorSharedData", "socialHandles"), { handles, lastEditedBy: whoLabel, lastEditedAt: new Date().toISOString() });
+        const stampEl = document.getElementById(`sh-stamp-${idPrefix}`);
+        if (stampEl) stampEl.textContent = `Last edited by ${whoLabel} at ${new Date().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}`;
+        const ind = document.getElementById(`sh-save-indicator-${idPrefix}`);
+        if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    // Vendor's own page -- one mount point.
+    async function renderVendorSocialHandles() {
+      const wrap = document.getElementById("vendor-social-handles");
+      if (!wrap || !vendorCoupleUid_) return;
+      const data = await fetchSocialHandlesDoc(vendorCoupleUid_);
+      wrap.innerHTML = renderSocialHandlesSection(vendorSlotId_, data);
+    }
+
+    // Couple hub -- rendered into all 7 category pages (same pattern as the
+    // Shared Timeline), since it's one event-level value, not per-vendor.
+    async function renderVendorHubSocialHandles(coupleUid) {
+      const data = await fetchSocialHandlesDoc(coupleUid);
+      VENDOR_CATEGORIES.forEach(cat => {
+        const wrap = document.getElementById(`vendorcat-social-${cat.key}`);
+        if (wrap) wrap.innerHTML = renderSocialHandlesSection(`hubsh-${cat.key}`, data);
+      });
+    }
 
     window.addEventListener("DOMContentLoaded", () => {
       const pw = document.getElementById("login-password");
@@ -6023,6 +6430,15 @@
         <div class="form-divider"></div>
 
         <div class="form-section-block">
+          <span class="section-label">Couple's Social Handles</span>
+          <h2 class="form-section-title">Tag them <em>right</em></h2>
+          <p style="font-size:12px;color:var(--mid-gray);margin-bottom:16px;">Shared with every vendor on this event, so no one has to ask separately. Either you or the couple can add to this.</p>
+          <div id="vendor-social-handles"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block">
           <span class="section-label">Vendor Logistics</span>
           <h2 class="form-section-title">Your <em>details</em></h2>
           <div id="vendor-logistics-form"></div>
@@ -6035,6 +6451,10 @@
           <h2 class="form-section-title">Will you be <em>eating</em>?</h2>
           <div id="vendor-meal-form"></div>
         </div>
+
+        <div class="form-divider"></div>
+
+        <div id="vendor-category-details"></div>
 
         <div class="form-divider"></div>
 
@@ -8010,6 +8430,11 @@
     <div id="vendorcat-cards-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('caterer')">+ Add Another Caterer/Bar Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <div id="vendorcat-social-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
       <div id="vendorcat-timeline-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -8031,6 +8456,11 @@
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
     <div id="vendorcat-cards-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('dj')">+ Add Another DJ/Band Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <div id="vendorcat-social-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
@@ -8054,6 +8484,11 @@
     <div id="vendorcat-cards-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('photo')">+ Add Another Photographer/Videographer Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <div id="vendorcat-social-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
       <div id="vendorcat-timeline-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -8075,6 +8510,11 @@
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
     <div id="vendorcat-cards-florist"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('florist')">+ Add Another Florist/Design Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <div id="vendorcat-social-florist"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
@@ -8098,6 +8538,11 @@
     <div id="vendorcat-cards-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('hairmakeup')">+ Add Another Hair/Makeup Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <div id="vendorcat-social-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
       <div id="vendorcat-timeline-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -8120,6 +8565,11 @@
     <div id="vendorcat-cards-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('shuttle')">+ Add Another Shuttle Service Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <div id="vendorcat-social-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
       <div id="vendorcat-timeline-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -8141,6 +8591,11 @@
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share each link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. No vendor can see any other vendor's information.</p>
     <div id="vendorcat-cards-other"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('other')">+ Add Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <div id="vendorcat-social-other"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
