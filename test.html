@@ -5006,8 +5006,6 @@
       const { slotId, slot, secrets } = entry;
       const link = `${window.location.origin}/vendor/${slotId}`;
       const mr = slot.mealRequest || {};
-      const n = slot.notes || {};
-      const stampText = n.lastEditedBy ? `Last edited by ${esc(n.lastEditedBy)}${n.lastEditedAt ? " at " + new Date(n.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}` : "";
       return `
         <div style="border:1px solid var(--border);padding:22px 24px;border-radius:2px;background:var(--warm-white);">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
@@ -5019,9 +5017,14 @@
             <div class="form-group"><label class="form-label">Phone</label><input class="form-input" value="${esc(slot.phone||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="phone"></div>
             <div class="form-group"><label class="form-label">Email</label><input class="form-input" value="${esc(slot.email||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="email"></div>
             <div class="form-group"><label class="form-label">Website</label><input class="form-input" value="${esc(slot.website||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="website"></div>
-            <div class="form-group full"><label class="form-label">Social Handle(s)</label><input class="form-input" value="${esc(slot.socialHandles||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="socialHandles"></div>
             <div class="form-group"><label class="form-label">Arrival Time</label><input class="form-input" value="${esc(slot.arrivalTime||"")}" placeholder="e.g. 2:00 PM" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="arrivalTime"></div>
             <div class="form-group"><label class="form-label">Exit Time</label><input class="form-input" value="${esc(slot.exitTime||"")}" placeholder="e.g. 10:30 PM" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="exitTime"></div>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label class="form-label" style="display:block;margin-bottom:8px;">Social Handle(s)</label>
+            ${vendorSocialHandlesFieldHTML(`hub-${slotId}`, slot.socialHandles)}
+            <div class="form-save-row" style="padding:12px 0;"><button class="btn-save" style="padding:8px 20px;font-size:10px;" onclick="window.saveVendorHubSocialHandles('${slotId}')">Save Social Handles</button></div>
           </div>
 
           <div style="margin-bottom:16px;">
@@ -5035,8 +5038,7 @@
 
           <div style="margin-bottom:16px;">
             <label class="form-label" style="display:block;margin-bottom:8px;">Notes</label>
-            <textarea class="form-textarea" id="vh-notes-${slotId}" onblur="window.saveVendorHubNotes('${slotId}')">${esc(n.text||"")}</textarea>
-            <p id="vh-notes-stamp-${slotId}" style="font-size:11px;color:var(--mid-gray);margin-top:4px;">${stampText}</p>
+            ${slotNotesSectionHTML(`hub-${slotId}`)}
           </div>
 
           ${renderCategoryDetailsHTML(slotId, slot, `hub-${slotId}`, vendorHubCatererCrossRefs)}
@@ -5066,6 +5068,16 @@
         wrap.innerHTML = catSlots.length
           ? `<div style="display:flex;flex-direction:column;gap:20px;">` + catSlots.map(renderVendorSlotCard).join("") + `</div>`
           : `<p style="font-size:13px;color:var(--mid-gray);">No vendor added yet — use the button below to add one.</p>`;
+        // Notes list needs its own render pass after the card markup lands in
+        // the DOM (registerSlotNotesContext/renderSlotNotes act on live DOM
+        // nodes, which don't exist until the innerHTML assignment above runs).
+        catSlots.forEach(entry => {
+          const idPrefix = `hub-${entry.slotId}`;
+          registerSlotNotesContext(idPrefix, entry.slotId, "couple", "Couple",
+            () => { const e = vendorHubSlots.find(x => x.slotId === entry.slotId); return normalizeSlotNotes(e && e.slot.notes); },
+            (newArr) => { const e = vendorHubSlots.find(x => x.slotId === entry.slotId); if (e) e.slot.notes = newArr; });
+          renderSlotNotes(idPrefix);
+        });
       });
     }
 
@@ -5076,6 +5088,15 @@
         await updateDoc(doc(db, "vendorSlots", slotId), { [field]: value, lastEditedBy: "Couple", lastEditedAt: new Date().toISOString() });
         const entry = vendorHubSlots.find(e => e.slotId === slotId);
         if (entry) entry.slot[field] = value;
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.saveVendorHubSocialHandles = async function(slotId) {
+      const socialHandles = readVendorSocialHandlesFromDOM(`hub-${slotId}`);
+      try {
+        await updateDoc(doc(db, "vendorSlots", slotId), { socialHandles, lastEditedBy: "Couple", lastEditedAt: new Date().toISOString() });
+        const entry = vendorHubSlots.find(e => e.slotId === slotId);
+        if (entry) entry.slot.socialHandles = socialHandles;
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
@@ -5092,18 +5113,6 @@
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
-    window.saveVendorHubNotes = async function(slotId) {
-      const textEl = document.getElementById(`vh-notes-${slotId}`);
-      const text = textEl ? textEl.value.trim() : "";
-      const notes = { text, lastEditedBy: "Couple", lastEditedAt: new Date().toISOString() };
-      try {
-        await updateDoc(doc(db, "vendorSlots", slotId), { notes });
-        const entry = vendorHubSlots.find(e => e.slotId === slotId);
-        if (entry) entry.slot.notes = notes;
-        const stampEl = document.getElementById(`vh-notes-stamp-${slotId}`);
-        if (stampEl) stampEl.textContent = `Last edited by Couple at ${new Date(notes.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}`;
-      } catch(e) { alert("Couldn't save notes: " + e.message); }
-    };
 
     window.regenerateVendorPin = async function(slotId) {
       if (!confirm("Regenerate this vendor's PIN? Their old PIN will stop working immediately, and you'll need to share the new one with them.")) return;
@@ -5280,17 +5289,19 @@
           <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="vf-phone" value="${esc(s.phone||"")}"></div>
           <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="vf-email" value="${esc(s.email||"")}"></div>
           <div class="form-group"><label class="form-label">Website</label><input class="form-input" id="vf-website" value="${esc(s.website||"")}"></div>
-          <div class="form-group"><label class="form-label">Social Handle(s)</label><input class="form-input" id="vf-socialHandles" value="${esc(s.socialHandles||"")}"></div>
           <div class="form-group"><label class="form-label">Arrival Time</label><input class="form-input" id="vf-arrivalTime" value="${esc(s.arrivalTime||"")}" placeholder="e.g. 2:00 PM"></div>
           <div class="form-group"><label class="form-label">Exit Time</label><input class="form-input" id="vf-exitTime" value="${esc(s.exitTime||"")}" placeholder="e.g. 10:30 PM"></div>
         </div>
-        <div class="form-save-row"><button class="btn-save" onclick="window.saveVendorLogistics()">Save</button><span class="autosave-indicator" id="vf-save-indicator">Saved</span></div>`;
+        <label class="form-label" style="display:block;margin:16px 0 8px;">Social Handle(s)</label>
+        ${vendorSocialHandlesFieldHTML(vendorSlotId_, s.socialHandles)}
+        <div class="form-save-row" style="margin-top:16px;"><button class="btn-save" onclick="window.saveVendorLogistics()">Save</button><span class="autosave-indicator" id="vf-save-indicator">Saved</span></div>`;
     }
 
     window.saveVendorLogistics = async function() {
-      const fields = ["vendorName","contactName","phone","email","website","socialHandles","arrivalTime","exitTime"];
+      const fields = ["vendorName","contactName","phone","email","website","arrivalTime","exitTime"];
       const update = {};
       fields.forEach(f => { update[f] = document.getElementById("vf-"+f).value.trim(); });
+      update.socialHandles = readVendorSocialHandlesFromDOM(vendorSlotId_);
       try {
         await saveVendorSlotUpdate(update, vendorSlotLabel_ || "Vendor");
         const ind = document.getElementById("vf-save-indicator");
@@ -5342,23 +5353,13 @@
     };
 
     function renderVendorNotes() {
-      const n = vendorSlotData.notes || {};
-      document.getElementById("vendor-notes-form").innerHTML = `
-        <textarea class="form-textarea tall" id="vf-notes-text" placeholder="Anything else we should know...">${esc(n.text||"")}</textarea>
-        ${n.lastEditedBy ? `<p style="font-size:11px;color:var(--mid-gray);margin-top:6px;">Last edited by ${esc(n.lastEditedBy)}${n.lastEditedAt ? " at " + new Date(n.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</p>` : ""}
-        <div class="form-save-row"><button class="btn-save" onclick="window.saveVendorNotes()">Save Notes</button></div>`;
+      const idPrefix = vendorSlotId_;
+      registerSlotNotesContext(idPrefix, vendorSlotId_, `vendor:${vendorSlotId_}`, vendorSlotLabel_ || "Vendor",
+        () => normalizeSlotNotes(vendorSlotData.notes),
+        (newArr) => { vendorSlotData.notes = newArr; });
+      document.getElementById("vendor-notes-form").innerHTML = slotNotesSectionHTML(idPrefix);
+      renderSlotNotes(idPrefix);
     }
-
-    window.saveVendorNotes = async function() {
-      const text = document.getElementById("vf-notes-text").value.trim();
-      const whoLabel = vendorSlotLabel_ || "Vendor";
-      const notes = { text, lastEditedBy: whoLabel, lastEditedAt: new Date().toISOString() };
-      try {
-        await updateDoc(doc(db, "vendorSlots", vendorSlotId_), { notes });
-        vendorSlotData.notes = notes;
-        renderVendorNotes();
-      } catch(e) { alert("Couldn't save notes: " + e.message); }
-    };
 
     // ── VENDOR-SIDE: SHARED TIMELINE (reads live from vendorPublicData, see above) ──
     async function loadVendorTimeline() {
@@ -5394,11 +5395,11 @@
         ["Phone", s.phone || ""],
         ["Email", s.email || ""],
         ["Website", s.website || ""],
-        ["Social Handles", s.socialHandles || ""],
+        ["Social Handles", normalizeVendorSocialHandles(s.socialHandles).map(h => h.platform ? `${h.platform}: ${h.handle}` : h.handle).filter(Boolean).join(" | ")],
         ["Meal Requested", mr.requested ? "Yes" : "No"],
         ["Dietary Restrictions", mr.dietary || ""],
         ["Status", (s.status||"").replace("_"," ")],
-        ["Notes", (s.notes && s.notes.text) || ""]
+        ["Notes", normalizeSlotNotes(s.notes).map(n => `[${n.author||""}] ${n.text||""}`).join(" | ")]
       ];
       return rows.filter(([,v]) => String(v).trim() !== "");
     }
@@ -5782,75 +5783,85 @@
     // elsewhere, that stays local to Vendor Access only"), this lives
     // entirely in Vendor Access. It's shared across the whole event (not
     // per-vendor-slot), so either the couple (from any category page) or
-    // any vendor (from their own page) can add to the SAME list -- same
-    // doc either way: couples/{uid}/vendorSharedData/socialHandles.
+    // any vendor (from their own page) can add to the SAME doc:
+    // couples/{uid}/vendorSharedData/socialHandles = { partner1, partner2,
+    // extras: [{label, handle}] }. Two named handles by default (one per
+    // partner), with optional extra tagged entries (e.g. a joint account) --
+    // NOT a generic multi-platform list; that pattern belongs to each
+    // vendor's OWN social handles instead (see VENDOR SOCIAL HANDLE(S) below).
     // ═══════════════════════════════════════════════════════════════
-    let socialHandlesDraft = {};
+    let coupleSocialExtrasDraft = {};
 
-    async function fetchSocialHandlesDoc(coupleUid) {
+    async function fetchCoupleSocialHandlesDoc(coupleUid) {
       try {
         const snap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "socialHandles"));
-        return snap.exists() ? snap.data() : { handles: [] };
-      } catch(e) { console.error("Fetching social handles failed:", e); return { handles: [] }; }
+        return snap.exists() ? snap.data() : { partner1: "", partner2: "", extras: [] };
+      } catch(e) { console.error("Fetching social handles failed:", e); return { partner1: "", partner2: "", extras: [] }; }
     }
 
-    function socialHandlesRowsHTML(idPrefix, rows) {
-      const list = rows.length ? rows : [{ platform: "", handle: "" }];
-      return list.map((row, idx) => `
-        <div class="form-grid" data-sh-row="${idx}" style="margin-bottom:10px;align-items:end;">
-          <div class="form-group"><label class="form-label">Platform</label><input class="form-input" type="text" placeholder="e.g. Instagram, TikTok, YouTube" data-sh-field="platform" value="${esc(row.platform||"")}"></div>
-          <div class="form-group"><label class="form-label">Handle</label><input class="form-input" type="text" placeholder="@handle" data-sh-field="handle" value="${esc(row.handle||"")}"></div>
-          ${list.length > 1 ? `<button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeSocialHandleRow('${idPrefix}',${idx})">Remove</button>` : `<span></span>`}
+    function coupleSocialExtraRowsHTML(idPrefix, rows) {
+      if (!rows.length) return "";
+      return rows.map((row, idx) => `
+        <div class="form-grid" data-cse-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Label</label><input class="form-input" type="text" placeholder="e.g. Joint Account, Wedding Hashtag" data-cse-field="label" value="${esc(row.label||"")}"></div>
+          <div class="form-group"><label class="form-label">Handle</label><input class="form-input" type="text" placeholder="@handle" data-cse-field="handle" value="${esc(row.handle||"")}"></div>
+          <button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeCoupleSocialExtraRow('${idPrefix}',${idx})">Remove</button>
         </div>`).join("");
     }
 
-    function renderSocialHandlesSection(idPrefix, data) {
-      if (!socialHandlesDraft[idPrefix]) {
-        const handles = (data && Array.isArray(data.handles)) ? data.handles : [];
-        socialHandlesDraft[idPrefix] = handles.length ? handles.slice() : [{ platform: "", handle: "" }];
-      }
+    function coupleSocialHandlesSectionHTML(idPrefix, data) {
+      if (!coupleSocialExtrasDraft[idPrefix]) coupleSocialExtrasDraft[idPrefix] = (data && Array.isArray(data.extras)) ? data.extras.slice() : [];
       const stampText = data && data.lastEditedBy ? `Last edited by ${esc(data.lastEditedBy)}${data.lastEditedAt ? " at " + new Date(data.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}` : "";
       return `
-        <div id="sh-rows-${idPrefix}">${socialHandlesRowsHTML(idPrefix, socialHandlesDraft[idPrefix])}</div>
-        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-          <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;" onclick="window.addSocialHandleRow('${idPrefix}')">+ Add Another Social Tag</button>
-          <button class="btn-save" style="padding:8px 24px;font-size:10px;" onclick="window.saveSocialHandles('${idPrefix}')">Save</button>
-          <span class="autosave-indicator" id="sh-save-indicator-${idPrefix}">Saved</span>
+        <div class="form-grid" style="margin-bottom:10px;">
+          <div class="form-group"><label class="form-label">Partner 1 Handle</label><input class="form-input" type="text" placeholder="@handle" id="csh-partner1-${idPrefix}" value="${esc((data && data.partner1)||"")}"></div>
+          <div class="form-group"><label class="form-label">Partner 2 Handle</label><input class="form-input" type="text" placeholder="@handle" id="csh-partner2-${idPrefix}" value="${esc((data && data.partner2)||"")}"></div>
         </div>
-        <p id="sh-stamp-${idPrefix}" style="font-size:11px;color:var(--mid-gray);margin-top:8px;">${stampText}</p>`;
+        <div id="csh-extras-${idPrefix}">${coupleSocialExtraRowsHTML(idPrefix, coupleSocialExtrasDraft[idPrefix])}</div>
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;" onclick="window.addCoupleSocialExtraRow('${idPrefix}')">+ Add Another Social Tag</button>
+          <button class="btn-save" style="padding:8px 24px;font-size:10px;" onclick="window.saveCoupleSocialHandles('${idPrefix}')">Save</button>
+          <span class="autosave-indicator" id="csh-save-indicator-${idPrefix}">Saved</span>
+        </div>
+        <p id="csh-stamp-${idPrefix}" style="font-size:11px;color:var(--mid-gray);margin-top:8px;">${stampText}</p>`;
     }
 
-    window.addSocialHandleRow = function(idPrefix) {
-      socialHandlesDraft[idPrefix] = socialHandlesDraft[idPrefix] || [];
-      socialHandlesDraft[idPrefix].push({ platform: "", handle: "" });
-      const wrap = document.getElementById(`sh-rows-${idPrefix}`);
-      if (wrap) wrap.innerHTML = socialHandlesRowsHTML(idPrefix, socialHandlesDraft[idPrefix]);
+    window.addCoupleSocialExtraRow = function(idPrefix) {
+      coupleSocialExtrasDraft[idPrefix] = coupleSocialExtrasDraft[idPrefix] || [];
+      coupleSocialExtrasDraft[idPrefix].push({ label: "", handle: "" });
+      const wrap = document.getElementById(`csh-extras-${idPrefix}`);
+      if (wrap) wrap.innerHTML = coupleSocialExtraRowsHTML(idPrefix, coupleSocialExtrasDraft[idPrefix]);
     };
 
-    window.removeSocialHandleRow = function(idPrefix, idx) {
-      if (!socialHandlesDraft[idPrefix]) return;
-      socialHandlesDraft[idPrefix].splice(idx, 1);
-      if (!socialHandlesDraft[idPrefix].length) socialHandlesDraft[idPrefix] = [{ platform: "", handle: "" }];
-      const wrap = document.getElementById(`sh-rows-${idPrefix}`);
-      if (wrap) wrap.innerHTML = socialHandlesRowsHTML(idPrefix, socialHandlesDraft[idPrefix]);
+    window.removeCoupleSocialExtraRow = function(idPrefix, idx) {
+      if (!coupleSocialExtrasDraft[idPrefix]) return;
+      coupleSocialExtrasDraft[idPrefix].splice(idx, 1);
+      const wrap = document.getElementById(`csh-extras-${idPrefix}`);
+      if (wrap) wrap.innerHTML = coupleSocialExtraRowsHTML(idPrefix, coupleSocialExtrasDraft[idPrefix]);
     };
 
-    window.saveSocialHandles = async function(idPrefix) {
-      const wrap = document.getElementById(`sh-rows-${idPrefix}`);
-      if (!wrap) return;
-      const handles = [];
-      wrap.querySelectorAll("[data-sh-row]").forEach(rowEl => {
-        const row = {};
-        rowEl.querySelectorAll("[data-sh-field]").forEach(f => { row[f.getAttribute("data-sh-field")] = f.value.trim(); });
-        if (row.platform || row.handle) handles.push(row);
-      });
+    window.saveCoupleSocialHandles = async function(idPrefix) {
+      const p1El = document.getElementById(`csh-partner1-${idPrefix}`);
+      const p2El = document.getElementById(`csh-partner2-${idPrefix}`);
+      if (!p1El || !p2El) return;
+      const partner1 = p1El.value.trim();
+      const partner2 = p2El.value.trim();
+      const extras = [];
+      const extrasWrap = document.getElementById(`csh-extras-${idPrefix}`);
+      if (extrasWrap) {
+        extrasWrap.querySelectorAll("[data-cse-row]").forEach(rowEl => {
+          const row = {};
+          rowEl.querySelectorAll("[data-cse-field]").forEach(f => { row[f.getAttribute("data-cse-field")] = f.value.trim(); });
+          if (row.label || row.handle) extras.push(row);
+        });
+      }
       const coupleUid = isVendorViewMode ? vendorCoupleUid_ : currentUser.uid;
       const whoLabel = isVendorViewMode ? (vendorSlotLabel_ || "Vendor") : "Couple";
       try {
-        await setDoc(doc(db, "couples", coupleUid, "vendorSharedData", "socialHandles"), { handles, lastEditedBy: whoLabel, lastEditedAt: new Date().toISOString() });
-        const stampEl = document.getElementById(`sh-stamp-${idPrefix}`);
+        await setDoc(doc(db, "couples", coupleUid, "vendorSharedData", "socialHandles"), { partner1, partner2, extras, lastEditedBy: whoLabel, lastEditedAt: new Date().toISOString() });
+        const stampEl = document.getElementById(`csh-stamp-${idPrefix}`);
         if (stampEl) stampEl.textContent = `Last edited by ${whoLabel} at ${new Date().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}`;
-        const ind = document.getElementById(`sh-save-indicator-${idPrefix}`);
+        const ind = document.getElementById(`csh-save-indicator-${idPrefix}`);
         if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
@@ -5859,19 +5870,217 @@
     async function renderVendorSocialHandles() {
       const wrap = document.getElementById("vendor-social-handles");
       if (!wrap || !vendorCoupleUid_) return;
-      const data = await fetchSocialHandlesDoc(vendorCoupleUid_);
-      wrap.innerHTML = renderSocialHandlesSection(vendorSlotId_, data);
+      const data = await fetchCoupleSocialHandlesDoc(vendorCoupleUid_);
+      wrap.innerHTML = coupleSocialHandlesSectionHTML(vendorSlotId_, data);
     }
 
     // Couple hub -- rendered into all 7 category pages (same pattern as the
     // Shared Timeline), since it's one event-level value, not per-vendor.
     async function renderVendorHubSocialHandles(coupleUid) {
-      const data = await fetchSocialHandlesDoc(coupleUid);
+      const data = await fetchCoupleSocialHandlesDoc(coupleUid);
       VENDOR_CATEGORIES.forEach(cat => {
         const wrap = document.getElementById(`vendorcat-social-${cat.key}`);
-        if (wrap) wrap.innerHTML = renderSocialHandlesSection(`hubsh-${cat.key}`, data);
+        if (wrap) wrap.innerHTML = coupleSocialHandlesSectionHTML(`hubsh-${cat.key}`, data);
       });
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // VENDOR SOCIAL HANDLE(S) (per-vendor-slot, multi-platform)
+    //
+    // vendorSlots/{slotId}.socialHandles -- a vendor's OWN handles, which can
+    // span several platforms (Instagram, TikTok, YouTube, Facebook, ...), so
+    // unlike the couple's two named fields above, this stays the generic
+    // repeatable platform+handle list. Already inside VENDOR_WRITABLE_FIELDS
+    // in firestore.rules (no rules change needed -- the field just now holds
+    // an array instead of a plain string).
+    // ═══════════════════════════════════════════════════════════════
+    let vendorSocialHandlesDraft = {};
+
+    function vendorSocialHandlesRowsHTML(idPrefix, rows) {
+      const list = rows.length ? rows : [{ platform: "", handle: "" }];
+      return list.map((row, idx) => `
+        <div class="form-grid" data-vsh-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Platform</label><input class="form-input" type="text" placeholder="e.g. Instagram, TikTok, YouTube" data-vsh-field="platform" value="${esc(row.platform||"")}"></div>
+          <div class="form-group"><label class="form-label">Handle</label><input class="form-input" type="text" placeholder="@handle" data-vsh-field="handle" value="${esc(row.handle||"")}"></div>
+          ${list.length > 1 ? `<button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeVendorSocialHandleRow('${idPrefix}',${idx})">Remove</button>` : `<span></span>`}
+        </div>`).join("");
+    }
+
+    function normalizeVendorSocialHandles(raw) {
+      if (Array.isArray(raw)) return raw;
+      if (typeof raw === "string" && raw.trim()) return [{ platform: "", handle: raw.trim() }];
+      return [];
+    }
+
+    function vendorSocialHandlesFieldHTML(idPrefix, rawHandles) {
+      if (!vendorSocialHandlesDraft[idPrefix]) vendorSocialHandlesDraft[idPrefix] = normalizeVendorSocialHandles(rawHandles);
+      return `<div id="vsh-rows-${idPrefix}">${vendorSocialHandlesRowsHTML(idPrefix, vendorSocialHandlesDraft[idPrefix])}</div>
+        <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;margin-top:4px;" onclick="window.addVendorSocialHandleRow('${idPrefix}')">+ Add Another</button>`;
+    }
+
+    window.addVendorSocialHandleRow = function(idPrefix) {
+      vendorSocialHandlesDraft[idPrefix] = vendorSocialHandlesDraft[idPrefix] || [];
+      vendorSocialHandlesDraft[idPrefix].push({ platform: "", handle: "" });
+      const wrap = document.getElementById(`vsh-rows-${idPrefix}`);
+      if (wrap) wrap.innerHTML = vendorSocialHandlesRowsHTML(idPrefix, vendorSocialHandlesDraft[idPrefix]);
+    };
+
+    window.removeVendorSocialHandleRow = function(idPrefix, idx) {
+      if (!vendorSocialHandlesDraft[idPrefix]) return;
+      vendorSocialHandlesDraft[idPrefix].splice(idx, 1);
+      if (!vendorSocialHandlesDraft[idPrefix].length) vendorSocialHandlesDraft[idPrefix] = [{ platform: "", handle: "" }];
+      const wrap = document.getElementById(`vsh-rows-${idPrefix}`);
+      if (wrap) wrap.innerHTML = vendorSocialHandlesRowsHTML(idPrefix, vendorSocialHandlesDraft[idPrefix]);
+    };
+
+    // Reads the current rows straight out of the DOM for the given idPrefix
+    // -- used by both the vendor's own Logistics save and the couple hub
+    // card's save, so the multi-row list is captured correctly either way.
+    function readVendorSocialHandlesFromDOM(idPrefix) {
+      const wrap = document.getElementById(`vsh-rows-${idPrefix}`);
+      if (!wrap) return [];
+      const rows = [];
+      wrap.querySelectorAll("[data-vsh-row]").forEach(rowEl => {
+        const row = {};
+        rowEl.querySelectorAll("[data-vsh-field]").forEach(f => { row[f.getAttribute("data-vsh-field")] = f.value.trim(); });
+        if (row.platform || row.handle) rows.push(row);
+      });
+      return rows;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PER-VENDOR-SLOT NOTES LIST (replaces the old single freeform field)
+    //
+    // Shape: vendorSlots/{slotId}.notes = [{id, text, authorKey, author,
+    // lastEditedAt}, ...]. authorKey identifies WHO wrote a given note (e.g.
+    // "vendor:{slotId}" or "couple") so only that same party sees Edit/Delete
+    // on it. This is enforced client-side only -- vendor/couple/admin already
+    // share full write access to a slot's `notes` field as a whole (same as
+    // every other jointly-editable field in this app), and Firestore rules
+    // have no practical way to validate "only element N of this array
+    // changed, and only if the requester matches that element's stored
+    // author" -- so this matches the trust level everything else here
+    // already runs on, not a weaker one. Admin isn't currently wired as a
+    // note-writer (no admin UI touches this field yet), but "admin" as an
+    // authorKey/label is what a future admin note-adding UI would use.
+    // ═══════════════════════════════════════════════════════════════
+    let slotNotesContext = {}; // idPrefix -> { slotId, viewerKey, viewerLabel, getArr, onSaved }
+
+    function makeNoteId() { return "n" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+    // Old shape was a single {text, lastEditedBy, lastEditedAt} object.
+    // Converts it into a one-item list (authorKey "legacy" -- nobody can
+    // claim edit/delete rights over a note we don't actually know the true
+    // author of) so nothing already saved gets silently dropped.
+    function normalizeSlotNotes(raw) {
+      if (Array.isArray(raw)) return raw;
+      if (raw && typeof raw === "object" && raw.text) {
+        return [{ id: makeNoteId(), text: raw.text, authorKey: "legacy", author: raw.lastEditedBy || "Unknown", lastEditedAt: raw.lastEditedAt || new Date().toISOString() }];
+      }
+      return [];
+    }
+
+    function registerSlotNotesContext(idPrefix, slotId, viewerKey, viewerLabel, getArr, onSaved) {
+      slotNotesContext[idPrefix] = { slotId, viewerKey, viewerLabel, getArr, onSaved };
+    }
+
+    function slotNotesListHTML(notesArr, idPrefix, viewerKey) {
+      const list = Array.isArray(notesArr) ? notesArr : [];
+      if (!list.length) return `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">No notes yet.</p>`;
+      return list.map(n => {
+        const stampText = n.lastEditedAt ? `${esc(n.author||"")} &middot; ${new Date(n.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}` : esc(n.author||"");
+        const canEdit = n.authorKey === viewerKey;
+        return `
+          <div style="border-bottom:1px solid var(--border);padding:14px 0;" id="note-block-${idPrefix}-${n.id}">
+            <div style="font-size:13px;color:var(--charcoal);white-space:pre-wrap;line-height:1.6;">${esc(n.text||"")}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;flex-wrap:wrap;gap:8px;">
+              <span style="font-size:11px;color:var(--mid-gray);">Last edited by ${stampText}</span>
+              ${canEdit ? `<span style="display:flex;gap:12px;">
+                <button type="button" style="background:none;border:none;color:var(--gold-dark);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;padding:0;" onclick="window.editSlotNote('${idPrefix}','${n.id}')">Edit</button>
+                <button type="button" style="background:none;border:none;color:#c0392b;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;padding:0;" onclick="window.deleteSlotNote('${idPrefix}','${n.id}')">Delete</button>
+              </span>` : ""}
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    function slotNotesSectionHTML(idPrefix) {
+      return `
+        <div id="notes-list-${idPrefix}"></div>
+        <textarea class="form-textarea" id="notes-new-${idPrefix}" placeholder="Add a note..." style="min-height:60px;margin-top:8px;"></textarea>
+        <div class="form-save-row" style="padding:12px 0;">
+          <button class="btn-save" onclick="window.addSlotNote('${idPrefix}')">Add Note</button>
+        </div>`;
+    }
+
+    function renderSlotNotes(idPrefix) {
+      const ctx = slotNotesContext[idPrefix];
+      const wrap = document.getElementById(`notes-list-${idPrefix}`);
+      if (!ctx || !wrap) return;
+      wrap.innerHTML = slotNotesListHTML(ctx.getArr(), idPrefix, ctx.viewerKey);
+    }
+    window.renderSlotNotesPublic = function(idPrefix) { renderSlotNotes(idPrefix); };
+
+    async function persistSlotNotes(idPrefix, newArr) {
+      const ctx = slotNotesContext[idPrefix];
+      if (!ctx) return;
+      const lastEditedAt = new Date().toISOString();
+      await updateDoc(doc(db, "vendorSlots", ctx.slotId), { notes: newArr, lastEditedBy: ctx.viewerLabel, lastEditedAt });
+      ctx.onSaved(newArr);
+      renderSlotNotes(idPrefix);
+      // Keep the vendor's own tab-level "last edited by/at" stamp in sync when
+      // a note-list change happens on their own page (this write already
+      // bumps that stamp in Firestore -- the couple-hub card doesn't display
+      // it, so only the vendor-view local cache needs refreshing here).
+      if (isVendorViewMode && ctx.slotId === vendorSlotId_ && vendorSlotData) {
+        vendorSlotData.lastEditedBy = ctx.viewerLabel;
+        vendorSlotData.lastEditedAt = lastEditedAt;
+        renderVendorStatusAndStamp();
+      }
+    }
+
+    window.addSlotNote = async function(idPrefix) {
+      const ctx = slotNotesContext[idPrefix];
+      if (!ctx) return;
+      const input = document.getElementById(`notes-new-${idPrefix}`);
+      const text = input.value.trim();
+      if (!text) return;
+      const arr = (ctx.getArr() || []).slice();
+      arr.push({ id: makeNoteId(), text, authorKey: ctx.viewerKey, author: ctx.viewerLabel, lastEditedAt: new Date().toISOString() });
+      try { await persistSlotNotes(idPrefix, arr); input.value = ""; } catch(e) { alert("Couldn't add note: " + e.message); }
+    };
+
+    window.editSlotNote = function(idPrefix, noteId) {
+      const ctx = slotNotesContext[idPrefix];
+      if (!ctx) return;
+      const note = (ctx.getArr() || []).find(n => n.id === noteId);
+      if (!note) return;
+      const block = document.getElementById(`note-block-${idPrefix}-${noteId}`);
+      if (!block) return;
+      block.innerHTML = `
+        <textarea class="form-textarea" id="note-edit-text-${idPrefix}-${noteId}">${esc(note.text||"")}</textarea>
+        <div class="form-save-row" style="padding:10px 0;">
+          <button class="btn-save" style="padding:8px 20px;font-size:10px;" onclick="window.saveSlotNoteEdit('${idPrefix}','${noteId}')">Save</button>
+          <button class="btn-back" style="padding:8px 20px;font-size:10px;" onclick="window.renderSlotNotesPublic('${idPrefix}')">Cancel</button>
+        </div>`;
+    };
+
+    window.saveSlotNoteEdit = async function(idPrefix, noteId) {
+      const ctx = slotNotesContext[idPrefix];
+      if (!ctx) return;
+      const textEl = document.getElementById(`note-edit-text-${idPrefix}-${noteId}`);
+      const text = textEl.value.trim();
+      const arr = (ctx.getArr() || []).map(n => n.id === noteId ? Object.assign({}, n, { text, lastEditedAt: new Date().toISOString() }) : n);
+      try { await persistSlotNotes(idPrefix, arr); } catch(e) { alert("Couldn't save note: " + e.message); }
+    };
+
+    window.deleteSlotNote = async function(idPrefix, noteId) {
+      if (!confirm("Delete this note? This can't be undone.")) return;
+      const ctx = slotNotesContext[idPrefix];
+      if (!ctx) return;
+      const arr = (ctx.getArr() || []).filter(n => n.id !== noteId);
+      try { await persistSlotNotes(idPrefix, arr); } catch(e) { alert("Couldn't delete note: " + e.message); }
+    };
 
     window.addEventListener("DOMContentLoaded", () => {
       const pw = document.getElementById("login-password");
