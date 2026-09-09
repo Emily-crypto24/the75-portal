@@ -4826,12 +4826,16 @@
       return (slot && slot.slotLabel) || (vendorCategoryDef(slot && slot.category) || {}).label || (slot && slot.category) || "Vendor";
     }
 
-    async function ensureVendorSlotExists(coupleUid, coupleSlug, categoryKey, slotKey, slotLabel) {
+    // Creates both docs for a slot unconditionally -- callers must already know
+    // the slot doesn't exist (see ensureDefaultVendorSlots / addVendorHubSlot
+    // below). Deliberately does NOT getDoc-check existence first: a getDoc on a
+    // vendorSlots/{slotId} path that doesn't exist yet trips the read rule's
+    // `resource.data.coupleUid` dereference on a null `resource`, which Firestore
+    // treats as a permission error -- not a bug in this function itself, but a
+    // sharp edge in the rules that this call pattern must avoid entirely.
+    async function createVendorSlotDoc(coupleUid, coupleSlug, categoryKey, slotKey, slotLabel) {
       const slotId = vendorSlotId(coupleSlug, categoryKey, slotKey);
-      const slotRef = doc(db, "vendorSlots", slotId);
-      const existing = await getDoc(slotRef);
-      if (existing.exists()) return slotId;
-      await setDoc(slotRef, {
+      const slotData = {
         coupleUid, coupleSlug, category: categoryKey, slotKey: slotKey || "", slotLabel: slotLabel || "",
         vendorName: "", contactName: "", phone: "", email: "", website: "", socialHandles: "",
         status: "not_started", arrivalTime: "", exitTime: "",
@@ -4839,16 +4843,22 @@
         responses: {},
         notes: { text: "", lastEditedBy: "", lastEditedAt: "" },
         lastEditedBy: "", lastEditedAt: ""
-      });
-      await setDoc(doc(db, "vendorSlotSecrets", slotId), { coupleUid, accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null });
-      return slotId;
+      };
+      const secretsData = { coupleUid, accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null };
+      await setDoc(doc(db, "vendorSlots", slotId), slotData);
+      await setDoc(doc(db, "vendorSlotSecrets", slotId), secretsData);
+      return { slotId, slotData, secretsData };
     }
 
-    async function ensureDefaultVendorSlots(coupleUid, coupleSlug) {
+    // existingSlotIds: a Set already fetched via a LIST query (safe -- a query
+    // never touches a nonexistent document, so it can't trip the same null-
+    // resource issue a per-doc getDoc existence check would).
+    async function ensureDefaultVendorSlots(coupleUid, coupleSlug, existingSlotIds) {
       for (const cat of VENDOR_CATEGORIES) {
-        if (cat.mode !== "fixed") continue;
         for (const s of cat.slots) {
-          try { await ensureVendorSlotExists(coupleUid, coupleSlug, cat.key, s.key, s.label); }
+          const slotId = vendorSlotId(coupleSlug, cat.key, s.key);
+          if (existingSlotIds.has(slotId)) continue;
+          try { await createVendorSlotDoc(coupleUid, coupleSlug, cat.key, s.key, s.label); }
           catch(e) { console.error("Vendor slot creation failed:", cat.key, s.key, e); }
         }
       }
@@ -4877,10 +4887,16 @@
       return notesById;
     }
 
+    // noteInputPrefix must be unique per DOM mount point -- the same items[] can
+    // be rendered into several containers at once (one per vendor category page,
+    // all sharing the one event-wide timeline), so a plain per-item id would
+    // collide across them. The prefix, not just the item id, makes each copy's
+    // input/button target only its own container.
     function renderTimelineNoteListHTML(items, noteInputPrefix, addNoteFnName) {
       if (!items.length) return `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">No timeline items yet — add some from the Wedding Day Timeline planning tool.</p>`;
       return items.map(item => {
         const notes = Array.isArray(item.notes) ? item.notes : [];
+        const inputId = `${noteInputPrefix}-${item.id}`;
         return `
           <div style="border-bottom:1px solid var(--border);padding:14px 0;">
             <div style="display:flex;gap:14px;align-items:baseline;">
@@ -4890,8 +4906,8 @@
             ${notes.length ? `<div style="margin:8px 0 4px 84px;display:flex;flex-direction:column;gap:6px;">` + notes.map(n => `
               <div style="font-size:12px;color:var(--mid-gray);"><strong style="color:var(--gold-dark);">${esc(n.author||"")}</strong> &middot; ${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}<br>${esc(n.text||"")}</div>`).join("") + `</div>` : ""}
             <div style="margin:8px 0 0 84px;display:flex;gap:8px;">
-              <input class="form-input" style="font-size:12px;padding:7px 10px;" placeholder="Add a note..." id="${noteInputPrefix}-${item.id}">
-              <button style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:7px 14px;cursor:pointer;white-space:nowrap;" onclick="window.${addNoteFnName}('${item.id}')">Add Note</button>
+              <input class="form-input" style="font-size:12px;padding:7px 10px;" placeholder="Add a note..." id="${inputId}">
+              <button style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:7px 14px;cursor:pointer;white-space:nowrap;" onclick="window.${addNoteFnName}('${item.id}','${inputId}')">Add Note</button>
             </div>
           </div>`;
       }).join("");
@@ -4925,29 +4941,35 @@
       renderVendorHubTimelineList();
     }
 
+    // Same shared timeline, rendered into all 7 per-category page mounts at
+    // once (each page has its own #vendorcat-timeline-{key} container) --
+    // every category shows the one event-wide timeline, not a per-category one.
     function renderVendorHubTimelineList() {
-      const wrap = document.getElementById("vendorhub-timeline-list");
-      if (wrap) wrap.innerHTML = renderTimelineNoteListHTML(vendorHubTimelineItems, "vhtl-note", "addVendorHubTimelineNote");
+      VENDOR_CATEGORIES.forEach(cat => {
+        const wrap = document.getElementById(`vendorcat-timeline-${cat.key}`);
+        if (wrap) wrap.innerHTML = renderTimelineNoteListHTML(vendorHubTimelineItems, `vhtl-${cat.key}`, "addVendorHubTimelineNote");
+      });
     }
 
-    window.addVendorHubTimelineNote = function(itemId) {
-      return addTimelineNote(currentUser.uid, vendorHubTimelineItems, itemId, `vhtl-note-${itemId}`, "Couple", renderVendorHubTimelineList);
+    window.addVendorHubTimelineNote = function(itemId, inputId) {
+      return addTimelineNote(currentUser.uid, vendorHubTimelineItems, itemId, inputId, "Couple", renderVendorHubTimelineList);
     };
 
     window.loadVendorHub = async function(coupleUid, coupleSlug) {
       if (!coupleUid || !coupleSlug) return;
-      await ensureDefaultVendorSlots(coupleUid, coupleSlug);
       await loadVendorHubTimeline(coupleUid);
       try {
-        const q = query(collection(db, "vendorSlots"), where("coupleUid", "==", coupleUid));
-        const snaps = await getDocs(q);
-        const slots = [];
-        for (const s of snaps.docs) {
-          let secrets = {};
-          try { const secSnap = await getDoc(doc(db, "vendorSlotSecrets", s.id)); secrets = secSnap.exists() ? secSnap.data() : {}; } catch(e) {}
-          slots.push({ slotId: s.id, slot: s.data(), secrets });
+        // Fetch what already exists via a LIST query first (safe -- see the
+        // comment on createVendorSlotDoc), THEN create only what's missing,
+        // THEN re-fetch if anything was actually created.
+        let existing = await fetchVendorSlotsForCouple(coupleUid);
+        const existingIds = new Set(existing.map(e => e.slotId));
+        const missingAny = VENDOR_CATEGORIES.some(cat => cat.slots.some(s => !existingIds.has(vendorSlotId(coupleSlug, cat.key, s.key))));
+        if (missingAny) {
+          await ensureDefaultVendorSlots(coupleUid, coupleSlug, existingIds);
+          existing = await fetchVendorSlotsForCouple(coupleUid);
         }
-        vendorHubSlots = slots;
+        vendorHubSlots = existing;
         renderVendorHub();
       } catch(e) { console.error("Loading vendor hub failed:", e); }
     };
@@ -5007,25 +5029,17 @@
         </div>`;
     }
 
+    // Each category now has its own page (#vendorcat-cards-{key}); the "+ Add"
+    // button lives in that page's static markup, not generated here.
     function renderVendorHub() {
-      const wrap = document.getElementById("vendorhub-list");
-      if (!wrap) return;
-      let html = "";
       VENDOR_CATEGORIES.forEach(cat => {
+        const wrap = document.getElementById(`vendorcat-cards-${cat.key}`);
+        if (!wrap) return;
         const catSlots = vendorHubSlots.filter(e => e.slot.category === cat.key);
-        html += `<div style="margin-bottom:56px;">
-          <h3 style="font-family:var(--font-heading);font-size:26px;font-weight:300;color:var(--charcoal);margin-bottom:16px;">${esc(cat.label)}</h3>`;
-        if (!catSlots.length) {
-          html += `<p style="font-size:13px;color:var(--mid-gray);margin-bottom:16px;">No vendor added yet.</p>`;
-        } else {
-          html += `<div style="display:flex;flex-direction:column;gap:20px;margin-bottom:16px;">` + catSlots.map(renderVendorSlotCard).join("") + `</div>`;
-        }
-        if (cat.mode === "repeatable") {
-          html += `<button class="acc-btn-export" style="padding:10px 22px;font-size:10px;" onclick="window.addVendorHubSlot('${cat.key}')">+ Add ${cat.key === "other" ? "Vendor" : "Another " + esc(cat.label) + " Vendor"}</button>`;
-        }
-        html += `</div>`;
+        wrap.innerHTML = catSlots.length
+          ? `<div style="display:flex;flex-direction:column;gap:20px;">` + catSlots.map(renderVendorSlotCard).join("") + `</div>`
+          : `<p style="font-size:13px;color:var(--mid-gray);">No vendor added yet — use the button below to add one.</p>`;
       });
-      wrap.innerHTML = html;
     }
 
     window.saveVendorHubField = async function(slotId, el) {
@@ -5087,10 +5101,8 @@
       label = label.trim();
       const slotKey = "s" + Date.now().toString(36);
       try {
-        const slotId = await ensureVendorSlotExists(currentUser.uid, currentCoupleSlug, categoryKey, slotKey, label);
-        const slotSnap = await getDoc(doc(db, "vendorSlots", slotId));
-        const secSnap = await getDoc(doc(db, "vendorSlotSecrets", slotId));
-        vendorHubSlots.push({ slotId, slot: slotSnap.data(), secrets: secSnap.exists() ? secSnap.data() : {} });
+        const { slotId, slotData, secretsData } = await createVendorSlotDoc(currentUser.uid, currentCoupleSlug, categoryKey, slotKey, label);
+        vendorHubSlots.push({ slotId, slot: slotData, secrets: secretsData });
         renderVendorHub();
       } catch(e) { alert("Couldn't add vendor: " + e.message); }
     };
@@ -5304,8 +5316,8 @@
       if (wrap) wrap.innerHTML = renderTimelineNoteListHTML(vendorTimelineItems, "vtl-note", "addVendorTimelineNote");
     }
 
-    window.addVendorTimelineNote = function(itemId) {
-      return addTimelineNote(vendorCoupleUid_, vendorTimelineItems, itemId, `vtl-note-${itemId}`, vendorSlotLabel_ || "Vendor", renderVendorTimelineList);
+    window.addVendorTimelineNote = function(itemId, inputId) {
+      return addTimelineNote(vendorCoupleUid_, vendorTimelineItems, itemId, inputId, vendorSlotLabel_ || "Vendor", renderVendorTimelineList);
     };
 
     // ── VENDOR-SIDE: EXPORT ─────────────────────────────────────────
@@ -6096,7 +6108,18 @@
         <a href="#" onclick="window.showPage('timeline');return false;">Wedding Day Timeline</a>
         <a href="#" onclick="window.showPage('ideas');return false;">Ideas &amp; Inspiration Board</a>
         <a href="#" onclick="window.showPage('notes');return false;">Notes</a>
-        <a href="#" onclick="window.showPage('vendorhub');return false;">Vendor Access</a>
+      </div>
+    </li>
+    <li class="nav-dropdown">
+      <a href="#">Vendor Access &#9662;</a>
+      <div class="nav-dropdown-menu">
+        <a href="#" onclick="window.showPage('vendor-caterer');return false;">Caterer/Bar</a>
+        <a href="#" onclick="window.showPage('vendor-dj');return false;">DJ/Band</a>
+        <a href="#" onclick="window.showPage('vendor-photo');return false;">Photographer/Videographer</a>
+        <a href="#" onclick="window.showPage('vendor-florist');return false;">Florist/Design</a>
+        <a href="#" onclick="window.showPage('vendor-hairmakeup');return false;">Hair/Makeup</a>
+        <a href="#" onclick="window.showPage('vendor-shuttle');return false;">Shuttle Service</a>
+        <a href="#" onclick="window.showPage('vendor-other');return false;">Other</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('guestportal');return false;">Guest Portal</a></li>
@@ -7934,32 +7957,160 @@
   </div>
 </div><!-- end page-notes -->
 
-<!-- ══════════════════ VENDOR ACCESS ══════════════════ -->
-<div id="page-vendorhub" class="page">
+<!-- ══════════════════ VENDOR ACCESS (one page per category) ══════════════════ -->
+<div id="page-vendor-caterer" class="page">
   <div class="meeting-hero">
     <div class="meeting-hero-bg meeting2-bg"></div>
     <div class="meeting-hero-content">
-      <span class="section-label">Planning Tools</span>
-      <h1>Vendor <em>Access</em></h1>
-      <p>Give each of your outside vendors their own link + PIN so they can fill in their own details directly.</p>
+      <span class="section-label">Vendor Access</span>
+      <h1>Caterer<em>/Bar</em></h1>
+      <p>Give this vendor their own link + PIN so they can fill in their own details directly.</p>
     </div>
   </div>
-
   <div class="planning-form-wrap">
-    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share each vendor's link and PIN with them directly — they'll be dropped straight into their own tab, with no account needed. Only that vendor can see their own tab; they can't see any other vendor's information.</p>
-    <div id="vendorhub-list"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
-
-    <div class="form-section-block" style="margin-top:24px;">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <div id="vendorcat-cards-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('caterer')">+ Add Another Caterer/Bar Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Shared <em>Timeline</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
-      <div id="vendorhub-timeline-list"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+      <div id="vendorcat-timeline-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
   </div>
+  <div class="form-save-row"><button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button></div>
+</div><!-- end page-vendor-caterer -->
 
-  <div class="form-save-row">
-    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+<div id="page-vendor-dj" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Vendor Access</span>
+      <h1>DJ<em>/Band</em></h1>
+      <p>Give this vendor their own link + PIN so they can fill in their own details directly.</p>
+    </div>
   </div>
-</div><!-- end page-vendorhub -->
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <div id="vendorcat-cards-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('dj')">+ Add Another DJ/Band Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Shared <em>Timeline</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
+      <div id="vendorcat-timeline-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+  </div>
+  <div class="form-save-row"><button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button></div>
+</div><!-- end page-vendor-dj -->
+
+<div id="page-vendor-photo" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Vendor Access</span>
+      <h1>Photographer<em>/Videographer</em></h1>
+      <p>Give this vendor their own link + PIN so they can fill in their own details directly.</p>
+    </div>
+  </div>
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <div id="vendorcat-cards-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('photo')">+ Add Another Photographer/Videographer Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Shared <em>Timeline</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
+      <div id="vendorcat-timeline-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+  </div>
+  <div class="form-save-row"><button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button></div>
+</div><!-- end page-vendor-photo -->
+
+<div id="page-vendor-florist" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Vendor Access</span>
+      <h1>Florist<em>/Design</em></h1>
+      <p>Give this vendor their own link + PIN so they can fill in their own details directly.</p>
+    </div>
+  </div>
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <div id="vendorcat-cards-florist"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('florist')">+ Add Another Florist/Design Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Shared <em>Timeline</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
+      <div id="vendorcat-timeline-florist"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+  </div>
+  <div class="form-save-row"><button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button></div>
+</div><!-- end page-vendor-florist -->
+
+<div id="page-vendor-hairmakeup" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Vendor Access</span>
+      <h1>Hair<em>/Makeup</em></h1>
+      <p>Hair and Makeup each get their own independent link + PIN — even if it's the same vendor doing both.</p>
+    </div>
+  </div>
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share each link and PIN with your vendor(s) directly — they'll be dropped straight into their own tab, with no account needed. Neither can see the other's information.</p>
+    <div id="vendorcat-cards-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('hairmakeup')">+ Add Another Hair/Makeup Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Shared <em>Timeline</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
+      <div id="vendorcat-timeline-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+  </div>
+  <div class="form-save-row"><button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button></div>
+</div><!-- end page-vendor-hairmakeup -->
+
+<div id="page-vendor-shuttle" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Vendor Access</span>
+      <h1>Shuttle <em>Service</em></h1>
+      <p>Give this vendor their own link + PIN so they can fill in their own details directly.</p>
+    </div>
+  </div>
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <div id="vendorcat-cards-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('shuttle')">+ Add Another Shuttle Service Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Shared <em>Timeline</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
+      <div id="vendorcat-timeline-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+  </div>
+  <div class="form-save-row"><button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button></div>
+</div><!-- end page-vendor-shuttle -->
+
+<div id="page-vendor-other" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Vendor Access</span>
+      <h1>Other <em>Vendors</em></h1>
+      <p>Add any additional vendor — officiant, rentals, photo booth, transportation, ceremony musician — each with its own independent link + PIN.</p>
+    </div>
+  </div>
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share each link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. No vendor can see any other vendor's information.</p>
+    <div id="vendorcat-cards-other"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('other')">+ Add Vendor</button>
+    <div class="form-section-block" style="margin-top:40px;">
+      <h2 class="form-section-title">Shared <em>Timeline</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
+      <div id="vendorcat-timeline-other"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+  </div>
+  <div class="form-save-row"><button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button></div>
+</div><!-- end page-vendor-other -->
 
 <!-- ══════════════════ GUEST PORTAL ══════════════════ -->
 <div id="page-guestportal" class="page">

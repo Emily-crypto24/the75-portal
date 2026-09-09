@@ -62,7 +62,13 @@ service cloud.firestore {
     // notes, status). Never contains the PIN or lockout state -- see
     // vendorSlotSecrets below.
     match /vendorSlots/{slotId} {
-      allow read: if isOwningCouple(resource.data.coupleUid) || isAdmin() || isVerifiedVendorFor(slotId);
+      // `resource` is null for a get() on a path that doesn't exist yet (e.g.
+      // an existence check before creating a slot) -- dereferencing
+      // resource.data there throws and denies the whole request, even via the
+      // other `||` branches, unless those are checked first and this one is
+      // explicitly guarded. isAdmin()/isVerifiedVendorFor never touch
+      // `resource`, so they're safe in any order; isOwningCouple here is not.
+      allow read: if isAdmin() || isVerifiedVendorFor(slotId) || (resource != null && isOwningCouple(resource.data.coupleUid));
 
       // Only the couple (for their own event) or admin can create a slot.
       allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
@@ -86,7 +92,8 @@ service cloud.firestore {
     // this via the Admin SDK -- a verified vendor identity has NO access here,
     // by design, so the PIN itself is never sent to any vendor's client.
     match /vendorSlotSecrets/{slotId} {
-      allow read, update: if isOwningCouple(resource.data.coupleUid) || isAdmin();
+      // Same null-resource guard as vendorSlots above.
+      allow read, update: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
       allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
       allow delete: if isAdmin();
     }
