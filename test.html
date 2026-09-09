@@ -15,11 +15,13 @@
 
   <!-- Firebase SDKs -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, GoogleAuthProvider, onAuthStateChanged, signOut, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
     import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBmqd_uayeu-aCAteNoC5N5TIigbJhiKt8",
@@ -43,6 +45,7 @@
 
     const auth = getAuth(app);
     const db = getFirestore(app);
+    const functions = getFunctions(app);
     const provider = new GoogleAuthProvider();
 
     const ADMIN_EMAILS = ["emily@theboxhop.com","jess@theseventyfivevenue.com","events@theseventyfivevenue.com"];
@@ -81,6 +84,7 @@
 
     let autoSaveTimers = {};
     let isGuestViewMode = false;
+    let isVendorViewMode = false;
 
     // ── PUBLIC GUEST VIEW ROUTING ─────────────────────────────────
     // Guest links (e.g. planning.theseventyfivevenue.com/emilyandjames) hit GitHub's 404 page,
@@ -96,6 +100,51 @@
       document.getElementById("login-screen").style.display = "none";
       document.getElementById("guest-view").style.display = "block";
       loadGuestView(slug);
+    })();
+
+    // ── VENDOR CATEGORY CONFIG ───────────────────────────────────
+    // Drives which slots exist per category. "fixed" categories always have exactly
+    // the slots listed. "repeatable" categories start with the listed defaults (can
+    // be none) and the couple can add more from the Vendor Access page.
+    // NOTE: this config + the vendor gate state below must be declared BEFORE
+    // checkForVendorView() (next block), since that IIFE runs immediately and
+    // synchronously touches both — a `let`/`const` referenced before its own
+    // declaration line runs throws a temporal-dead-zone ReferenceError, even
+    // though function declarations further down are already hoisted and safe.
+    const VENDOR_CATEGORIES = [
+      { key: "caterer",    label: "Caterer/Bar",                    mode: "fixed",      slots: [{ key: "",       label: "Caterer/Bar" }] },
+      { key: "dj",         label: "DJ/Band",                        mode: "fixed",      slots: [{ key: "",       label: "DJ/Band" }] },
+      { key: "photo",      label: "Photographer/Videographer",      mode: "fixed",      slots: [{ key: "",       label: "Photographer/Videographer" }] },
+      { key: "florist",    label: "Florist/Design",                 mode: "repeatable", slots: [{ key: "",       label: "Florist/Design" }] },
+      { key: "hairmakeup", label: "Hair/Makeup",                    mode: "fixed",      slots: [{ key: "hair",   label: "Hair" }, { key: "makeup", label: "Makeup" }] },
+      { key: "shuttle",    label: "Shuttle Service",                mode: "fixed",      slots: [{ key: "",       label: "Shuttle Service" }] },
+      { key: "other",      label: "Other",                          mode: "repeatable", slots: [] }
+    ];
+    function vendorCategoryDef(key) { return VENDOR_CATEGORIES.find(c => c.key === key); }
+
+    function randomVendorPin() { return String(Math.floor(1000 + Math.random() * 9000)); }
+
+    function vendorSlotId(coupleSlug, categoryKey, slotKey) {
+      const base = `${coupleSlug || "event"}_${categoryKey}`;
+      return slotKey ? `${base}_${slotKey}` : base;
+    }
+
+    let vendorSlotId_ = null, vendorCoupleSlug_ = null, vendorCategoryDef_ = null, vendorSlotLabel_ = null;
+    let vendorPublicData = null, vendorSlotData = null, vendorCoupleUid_ = null, vendorTimelineItems = [];
+
+    // ── VENDOR VIEW ROUTING ───────────────────────────────────────
+    // Vendor links (planning.theseventyfivevenue.com/vendor/{slotId}) hit the same
+    // 404-redirect trick, arriving here as ?vendor=slotId. No login — link + PIN only.
+    (function checkForVendorView() {
+      const params = new URLSearchParams(window.location.search);
+      const vendorParam = params.get("vendor");
+      if (!vendorParam) return;
+      const slotId = vendorParam.replace(/^\/|\/$/g, "").split("/")[0];
+      isVendorViewMode = true;
+      try { window.history.replaceState(null, "", "/vendor/" + slotId); } catch(e) {}
+      document.getElementById("login-screen").style.display = "none";
+      document.getElementById("vendor-view").style.display = "block";
+      loadVendorGate(slotId);
     })();
 
     let guestGateData = null;
@@ -675,6 +724,7 @@
           await loadTimelineItems(user.uid);
           await loadIdeaBoard(user.uid);
           await loadNotesTool(user.uid);
+          await window.loadVendorHub(user.uid, currentCoupleSlug);
         }
       } else {
         currentUser = null;
@@ -2838,6 +2888,7 @@
       }
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { timelineItems: timelineItemsCache });
+        await syncPublicProfile(currentUser.uid);
         window.resetTimelineForm();
         renderTimelineItems();
       } catch(e) { alert("Couldn't save: " + e.message); }
@@ -2849,6 +2900,7 @@
       timelineItemsCache = timelineItemsCache.filter(x => x.id !== id);
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { timelineItems: timelineItemsCache });
+        await syncPublicProfile(currentUser.uid);
         renderTimelineItems();
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
@@ -2963,6 +3015,7 @@
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
         await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
+        await syncPublicProfile(currentTimelineCoupleId);
         window.adminResetTimelineForm();
         renderAdminTimelineList();
       } catch(e) { alert("Couldn't save: " + e.message); }
@@ -2975,6 +3028,7 @@
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
         await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
+        await syncPublicProfile(currentTimelineCoupleId);
         renderAdminTimelineList();
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
@@ -3310,7 +3364,18 @@
           itineraryItems: Array.isArray(data.itineraryItems) ? data.itineraryItems : [],
           thingsToDo: (Array.isArray(data.thingsToDo) && data.thingsToDo.length) ? data.thingsToDo : DEFAULT_THINGS_TO_DO,
           registryItems: Array.isArray(data.registryItems) ? data.registryItems : [],
-          registryLinks: Array.isArray(data.registryLinks) ? data.registryLinks : []
+          registryLinks: Array.isArray(data.registryLinks) ? data.registryLinks : [],
+          // Vendor-portal fields: mirrored here (a publicly-readable doc) so a verified
+          // vendor's PIN-scoped session can read venue/POC info without needing broader
+          // read access to the couple's private couples/{uid} document.
+          leadCoordinator: data.leadCoordinator || { name: "", email: "", phone: "" },
+          coupleSocialHandles: data.coupleSocialHandles || "",
+          venueRentalEndTime: data.venueRentalEndTime || "",
+          vendorArrivalWindow: data.vendorArrivalWindow || "",
+          // Mirrors the real Wedding Day Timeline (timelineItems[], edited only via the
+          // existing Timeline planning tool / admin editor) so the vendor portal's shared
+          // timeline always reflects the current data instead of a one-time copy.
+          timelineItems: Array.isArray(data.timelineItems) ? data.timelineItems : []
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -3742,7 +3807,7 @@
       grid.innerHTML = real.map(c => {
         const names = (c.meeting1||{}).coupleNames || c.displayName || c.email || "Unknown Couple";
         const rawDate = (c.meeting1||{}).weddingDate;
-        const wDate = rawDate ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "Date not set";
+        const wDate = rawDate ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"}) : "Date not set";
         const m1 = calcPct(c.meeting1||{}, "meeting1");
         const m2 = calcPct(c.meeting2||{}, "meeting2");
         const m3 = calcPct(c.meeting3||{}, "meeting3");
@@ -3772,6 +3837,7 @@
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openDayOfDisplay('${c.id}')">&#128250; Day-Of TV Display</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:#3a3a3a;" onclick="window.openCloseoutSheet('${c.id}')">&#128424;&#65039; Event Closeout Sheet</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
@@ -3817,9 +3883,35 @@
       const snap = await gd(dc(db,"couples",uid));
       if (!snap.exists()) return;
       const data = snap.data();
+      data._vendorSlots = await fetchVendorSlotsForCouple(uid);
       document.getElementById("admin-modal-title").textContent = (data.meeting1||{}).coupleNames || data.displayName || data.email || "Couple";
       document.getElementById("admin-modal-body").innerHTML = buildDetail(data, uid);
       document.getElementById("admin-modal").style.display = "flex";
+    };
+
+    async function fetchVendorSlotsForCouple(uid) {
+      try {
+        const q = query(collection(db, "vendorSlots"), where("coupleUid", "==", uid));
+        const snaps = await getDocs(q);
+        const out = [];
+        for (const s of snaps.docs) {
+          let secrets = {};
+          try {
+            const secSnap = await getDoc(doc(db, "vendorSlotSecrets", s.id));
+            secrets = secSnap.exists() ? secSnap.data() : {};
+          } catch(e) {}
+          out.push({ slotId: s.id, slot: s.data(), secrets });
+        }
+        return out;
+      } catch(e) { console.error("Fetching vendor slots failed:", e); return []; }
+    }
+
+    window.adminRegenerateVendorPin = async function(slotId, uid) {
+      if (!confirm("Regenerate this vendor's PIN? Their old PIN will stop working immediately.")) return;
+      try {
+        await updateDoc(doc(db, "vendorSlotSecrets", slotId), { accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null });
+        window.openCouple(uid);
+      } catch(e) { alert("Couldn't regenerate PIN: " + e.message); }
     };
 
     window.closeAdminModal = function() { document.getElementById("admin-modal").style.display = "none"; };
@@ -3843,6 +3935,40 @@
         <div style="text-align:right;margin-top:12px;">
           <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveLeadCoordinator('${uid}')">Save Coordinator</button>
         </div>
+      </div>`;
+
+      const vendorEventInfoHTML = `<div class="amd-section">
+        <div class="amd-stitle">Vendor Portal — Event Info <span style="font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;">(shown read-only on every vendor's tab)</span></div>
+        <div class="amd-row amd-row-edit">
+          <div class="amd-key">Venue Rental Ends</div>
+          <div class="amd-val"><input class="amd-input" type="text" id="vei-rentalend-${uid}" value="${esc(data.venueRentalEndTime||"")}" placeholder="e.g. 11:00 PM"></div>
+        </div>
+        <div class="amd-row amd-row-edit">
+          <div class="amd-key">Vendor Arrival Window</div>
+          <div class="amd-val"><input class="amd-input" type="text" id="vei-arrival-${uid}" value="${esc(data.vendorArrivalWindow||"")}" placeholder="e.g. 10:00 AM – 12:00 PM"></div>
+        </div>
+        <div class="amd-row amd-row-edit">
+          <div class="amd-key">Lead Closer</div>
+          <div class="amd-val"><input class="amd-input" type="text" id="vei-closer-${uid}" value="${esc(data.leadCloser||"")}" placeholder="Team member who booked this couple"></div>
+        </div>
+        <div style="text-align:right;margin-top:12px;">
+          <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveVendorEventInfo('${uid}')">Save</button>
+        </div>
+      </div>`;
+
+      const vendorSlots = Array.isArray(data._vendorSlots) ? data._vendorSlots : [];
+      const vendorSlotsHTML = `<div class="amd-section">
+        <div class="amd-stitle">Vendor Access <span style="font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;">(link + PIN per category — full editing happens on each vendor's own tab)</span></div>
+        ${vendorSlots.length ? vendorSlots.map(v => `
+          <div class="amd-row">
+            <div class="amd-key">${esc(v.slot.slotLabel || v.slot.category)}${v.slot.vendorName ? " — " + esc(v.slot.vendorName) : ""}</div>
+            <div class="amd-val">
+              Status: <strong>${esc((v.slot.status||"not_started").replace("_"," "))}</strong> &middot;
+              PIN: <code>${esc(v.secrets.accessPin || "----")}</code>
+              <button class="acc-btn-view" style="padding:4px 10px;font-size:9px;margin-left:8px;" onclick="window.adminRegenerateVendorPin('${esc(v.slotId)}','${uid}')">Regenerate PIN</button>
+              <div style="margin-top:4px;font-size:11px;color:var(--mid-gray);word-break:break-all;">${esc(window.location.origin)}/vendor/${esc(v.slotId)}</div>
+            </div>
+          </div>`).join("") : `<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:8px 0;">Vendor slots haven't been created for this couple yet — they're created automatically the first time the couple visits their Vendor Access page.</p>`}
       </div>`;
 
       const notes = Array.isArray(data.notes) ? data.notes : [];
@@ -3903,7 +4029,7 @@
           </div>
         </div>`;
       }).join("");
-      return coordinatorHTML + notesHTML + sections + `<div style="text-align:center;margin-top:24px;padding-bottom:16px;border-top:1px solid var(--border);padding-top:24px;">
+      return coordinatorHTML + vendorEventInfoHTML + vendorSlotsHTML + notesHTML + sections + `<div style="text-align:center;margin-top:24px;padding-bottom:16px;border-top:1px solid var(--border);padding-top:24px;">
         <button class="acc-btn-export" style="padding:14px 40px;font-size:11px;" onclick="window.exportCouple('${uid}','couple')">&#8595; Export This Couple to CSV</button>
       </div>`;
     }
@@ -3942,12 +4068,27 @@
       };
       try {
         await ud(dc(db,"couples",uid), { leadCoordinator });
+        await syncPublicProfile(uid);
         const idx = allCouplesCache.findIndex(c => c.id === uid);
         if (idx > -1) allCouplesCache[idx].leadCoordinator = leadCoordinator;
         renderAdminGrid();
         const btns = document.querySelectorAll(`button[onclick*="saveLeadCoordinator('${uid}')"]`);
         btns.forEach(b => { b.textContent = "Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = "Save Coordinator"; b.style.background=""; },10000); });
       } catch(e) { alert("Couldn't save coordinator: " + e.message); }
+    };
+
+    window.saveVendorEventInfo = async function(uid) {
+      const venueRentalEndTime = document.getElementById(`vei-rentalend-${uid}`).value.trim();
+      const vendorArrivalWindow = document.getElementById(`vei-arrival-${uid}`).value.trim();
+      const leadCloser = document.getElementById(`vei-closer-${uid}`).value.trim();
+      try {
+        await updateDoc(doc(db,"couples",uid), { venueRentalEndTime, vendorArrivalWindow, leadCloser });
+        await syncPublicProfile(uid);
+        const idx = allCouplesCache.findIndex(c => c.id === uid);
+        if (idx > -1) Object.assign(allCouplesCache[idx], { venueRentalEndTime, vendorArrivalWindow, leadCloser });
+        const btns = document.querySelectorAll(`button[onclick*="saveVendorEventInfo('${uid}')"]`);
+        btns.forEach(b => { b.textContent = "Saved!"; b.style.background = "var(--gold)"; setTimeout(()=>{ b.textContent = "Save"; b.style.background=""; },3000); });
+      } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
     window.saveAdminSection = async function(uid, meetingKey) {
@@ -4238,6 +4379,182 @@
       if (el) el.classList.toggle("checked");
     };
 
+    // ===== Event Closeout Sheet =====
+    Object.assign(VENDOR_LABELS, { trans_cardinal:"Cardinal Transportation", trans_funbus:"Fun Bus" });
+    let clsCurrentUid = null, clsCurrentData = null;
+
+    window.openCloseoutSheet = async function(uid) {
+      document.getElementById("closeout-modal").style.display = "flex";
+      clsCurrentUid = uid;
+      const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const snap = await gd(dc(db,"couples",uid));
+      if (!snap.exists()) { alert("Couldn't load couple data."); return; }
+      clsCurrentData = snap.data();
+      clsRender();
+    };
+
+    window.closeCloseoutSheet = function() {
+      document.getElementById("closeout-modal").style.display = "none";
+      clsCurrentUid = null; clsCurrentData = null;
+    };
+
+    window.clsSaveField = async function(key, val) {
+      if (!clsCurrentData.closeoutSheet) clsCurrentData.closeoutSheet = {};
+      clsCurrentData.closeoutSheet[key] = val;
+      try {
+        const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",clsCurrentUid), { [`closeoutSheet.${key}`]: val });
+      } catch(e) { console.error(e); }
+    };
+
+    function clsField(labelText, key, isTextarea) {
+      const val = (clsCurrentData.closeoutSheet||{})[key] || "";
+      return isTextarea
+        ? `<div class="cls-field"><label>${esc(labelText)}</label><textarea class="cls-textarea" onblur="window.clsSaveField('${key}',this.value)">${esc(val)}</textarea></div>`
+        : `<div class="cls-field"><label>${esc(labelText)}</label><input class="cls-input" type="text" value="${esc(val)}" onblur="window.clsSaveField('${key}',this.value)"></div>`;
+    }
+    function clsCheck(labelText, key) {
+      const checked = (clsCurrentData.closeoutSheet||{})[key] ? "checked" : "";
+      return `<label style="display:flex;align-items:center;gap:6px;font-size:12px;"><input type="checkbox" ${checked} onchange="window.clsSaveField('${key}',this.checked)"> ${esc(labelText)}</label>`;
+    }
+    function clsStatic(labelText, val) {
+      return `<div class="cls-field"><label>${esc(labelText)}</label><div class="cls-static">${val ? esc(val) : "&nbsp;"}</div></div>`;
+    }
+
+    function clsStaticBig(labelText, val) {
+      return `<div class="cls-field"><label>${esc(labelText)}</label><div class="cls-static-big">${val ? esc(val) : "&nbsp;"}</div></div>`;
+    }
+
+    function clsRender() {
+      const d = clsCurrentData;
+      const m1 = d.meeting1 || {}, m2 = d.meeting2 || {}, m3 = d.meeting3 || {};
+      const names = m1.coupleNames || d.displayName || "Couple";
+      const rawDate = m1.weddingDate;
+      const wDate = rawDate ? new Date(rawDate+"T12:00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"}) : "";
+      const addOns = [m1.addOns, m2.addOns].filter(Boolean).join(" · ");
+      const lc = d.leadCoordinator || {};
+      document.getElementById("cls-title").textContent = "Closeout — " + names;
+
+      const vendorCats = [
+        {label:"Caterer", prefix:"cat", confirm:m3.catererName},
+        {label:"Florist", prefix:"flor", confirm:m3.floristConfirm},
+        {label:"DJ / Band", prefix:"dj", confirm:m3.djBandConfirm},
+        {label:"Photographer/Videographer", prefix:"photo", confirm:m3.photoConfirm},
+        {label:"Cake / Dessert", prefix:"cake", confirm:m3.dessertsCake},
+        {label:"Transportation", prefix:"trans", confirm:""}
+      ];
+      const vendorRows = vendorCats.map(v => {
+        const name = dofVendorFor(m1, v.prefix, v.confirm);
+        return `<tr><td style="font-weight:600;">${esc(v.label)}</td><td>${name ? esc(name) : "—"}</td><td></td><td></td></tr>`;
+      }).join("");
+
+      document.getElementById("closeout-sheet").innerHTML = `
+        <div class="cls-h1">The Seventy Five &mdash; Event Closeout Sheet</div>
+        <div class="cls-sub">Rockbridge, Ohio &middot; Hocking Hills</div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Event Overview</div>
+          <div class="cls-row">
+            ${clsStatic("Wedding Couple", names)}
+            ${clsStatic("Wedding Day &amp; Date", wDate)}
+          </div>
+          <div class="cls-row3">
+            ${clsStatic("Guest Count", m1.guestCount)}
+            ${clsStatic("Guest Arrival Time", m1.guestArrival || m3.guestArrival)}
+            ${clsStatic("Ceremony Start", m1.ceremonyTime)}
+          </div>
+          <div class="cls-row">
+            ${clsStatic("Reception Start", m3.receptionStart || m1.receptionTime)}
+          </div>
+          ${clsStaticBig("Add-Ons (outside contracted price)", addOns)}
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Team</div>
+          <div class="cls-row">
+            ${clsStatic("Lead Coordinator", lc.name)}
+            ${clsField("Assistant Coordinator &amp; Team", "assistantCoordinator", false)}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Deposits</div>
+          <div class="cls-row">
+            ${clsCheck("Security Deposit Collected", "securityDepositCollected")}
+            ${clsCheck("Caterer Deposit Collected (w/ itemized invoice)", "catererDepositCollected")}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Vendors</div>
+          <table class="cls-vendor-table">
+            <thead><tr><th>Category</th><th>Vendor</th><th>Review / Notes</th><th>Social Tags</th></tr></thead>
+            <tbody>${vendorRows}</tbody>
+          </table>
+        </div>
+
+        <div class="cls-section">
+          ${clsField("Vendor Notes (special callouts or issues)", "vendorNotes", true)}
+        </div>
+        <div class="cls-section">
+          <div class="cls-row">
+            ${clsField("Damaged Items", "damagedItems", true)}
+            ${clsField("Client Left Behind / Missing Something", "clientMissingItems", true)}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Shift Handoff</div>
+          <div class="cls-sig-row">
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Opening Lead Signature</div></div>
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Time Departed</div></div>
+          </div>
+          <div class="cls-sig-row" style="margin-top:14px;">
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Closing Lead Signature (arrival)</div></div>
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Time Arrived</div></div>
+          </div>
+        </div>
+
+        <div class="cls-section">
+          ${clsField("Staff Late or Issues", "staffIssues", true)}
+        </div>
+        <div class="cls-section">
+          <div class="cls-row">
+            ${clsField("Special Comments from Guests", "guestComments", true)}
+            ${clsField("Client Feedback / Complaints", "clientFeedback", true)}
+          </div>
+        </div>
+        <div class="cls-section">
+          ${clsField("Maintenance Issues", "maintenanceIssues", true)}
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-section-title">Exit &amp; Closeout Checklist</div>
+          <div class="cls-row">
+            ${clsField("Guest Exit Time", "guestExitTime", false)}
+            ${clsField("Staff Exit Time", "staffExitTime", false)}
+          </div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+            ${clsCheck("Venue fully reset & cleaned", "venueReset")}
+            ${clsCheck("All doors locked and lights off", "doorsLocked")}
+            ${clsCheck("All staff SOP has been checked and approved", "staffSOPChecked")}
+            ${clsCheck("Building key returned back to lock box on external container", "keyReturned")}
+          </div>
+        </div>
+
+        <div class="cls-section">
+          <div class="cls-sig-row">
+            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Closing Lead Signature</div></div>
+            <div></div>
+          </div>
+        </div>
+
+        <div class="cls-section">
+          ${clsField("Special Notes for Closing Shift", "specialNotesClosing", true)}
+        </div>
+      `;
+    }
+
     function buildCSV(couples) {
       const keySet = new Set();
       couples.forEach(c => ["meeting1","meeting2","meeting3"].forEach(m => Object.keys(c[m]||{}).forEach(k => keySet.add(m+"__"+k))));
@@ -4501,11 +4818,611 @@
       }
     };
 
+    // ═══════════════════════════════════════════════════════════════
+    // VENDOR PORTAL (Phase 1: access model + generic skeleton)
+    // ═══════════════════════════════════════════════════════════════
+
+    function vendorCategoryLabelForSlot(slot) {
+      return (slot && slot.slotLabel) || (vendorCategoryDef(slot && slot.category) || {}).label || (slot && slot.category) || "Vendor";
+    }
+
+    async function ensureVendorSlotExists(coupleUid, coupleSlug, categoryKey, slotKey, slotLabel) {
+      const slotId = vendorSlotId(coupleSlug, categoryKey, slotKey);
+      const slotRef = doc(db, "vendorSlots", slotId);
+      const existing = await getDoc(slotRef);
+      if (existing.exists()) return slotId;
+      await setDoc(slotRef, {
+        coupleUid, coupleSlug, category: categoryKey, slotKey: slotKey || "", slotLabel: slotLabel || "",
+        vendorName: "", contactName: "", phone: "", email: "", website: "", socialHandles: "",
+        status: "not_started", arrivalTime: "", exitTime: "",
+        mealRequest: { requested: false, dietary: "", enteredBy: "" },
+        responses: {},
+        notes: { text: "", lastEditedBy: "", lastEditedAt: "" },
+        lastEditedBy: "", lastEditedAt: ""
+      });
+      await setDoc(doc(db, "vendorSlotSecrets", slotId), { coupleUid, accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null });
+      return slotId;
+    }
+
+    async function ensureDefaultVendorSlots(coupleUid, coupleSlug) {
+      for (const cat of VENDOR_CATEGORIES) {
+        if (cat.mode !== "fixed") continue;
+        for (const s of cat.slots) {
+          try { await ensureVendorSlotExists(coupleUid, coupleSlug, cat.key, s.key, s.label); }
+          catch(e) { console.error("Vendor slot creation failed:", cat.key, s.key, e); }
+        }
+      }
+    }
+
+    // ── SHARED TIMELINE (live-linked to the real Wedding Day Timeline) ──────
+    // couples/{uid}.timelineItems[] (edited only via the existing Timeline
+    // planning tool / admin editor, untouched by any of this) stays the ONE
+    // source of truth for time/activity/location. couples/{uid}/sharedTimeline/{id}
+    // docs (id == the matching timelineItems[] entry's id) hold ONLY the
+    // multi-party tagged `notes` array -- nothing else -- so a vendor/couple
+    // reading the timeline always sees whatever the real timeline currently
+    // says, never a stale copy.
+    function mergeTimelineWithNotes(baseItems, notesById) {
+      return (Array.isArray(baseItems) ? baseItems : []).slice()
+        .sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"))
+        .map(item => ({ id: item.id, time: item.time || "", title: item.activity || "", notes: notesById[item.id] || [] }));
+    }
+
+    async function fetchTimelineNotesById(coupleUid) {
+      const notesById = {};
+      try {
+        const snaps = await getDocs(collection(db, "couples", coupleUid, "sharedTimeline"));
+        snaps.docs.forEach(d => { notesById[d.id] = Array.isArray(d.data().notes) ? d.data().notes : []; });
+      } catch(e) { console.error("Loading shared timeline notes failed:", e); }
+      return notesById;
+    }
+
+    function renderTimelineNoteListHTML(items, noteInputPrefix, addNoteFnName) {
+      if (!items.length) return `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">No timeline items yet — add some from the Wedding Day Timeline planning tool.</p>`;
+      return items.map(item => {
+        const notes = Array.isArray(item.notes) ? item.notes : [];
+        return `
+          <div style="border-bottom:1px solid var(--border);padding:14px 0;">
+            <div style="display:flex;gap:14px;align-items:baseline;">
+              <span style="font-size:12px;color:var(--gold-dark);letter-spacing:0.06em;min-width:70px;">${esc(item.time||"")}</span>
+              <span style="font-size:15px;color:var(--charcoal);">${esc(item.title||"")}</span>
+            </div>
+            ${notes.length ? `<div style="margin:8px 0 4px 84px;display:flex;flex-direction:column;gap:6px;">` + notes.map(n => `
+              <div style="font-size:12px;color:var(--mid-gray);"><strong style="color:var(--gold-dark);">${esc(n.author||"")}</strong> &middot; ${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}<br>${esc(n.text||"")}</div>`).join("") + `</div>` : ""}
+            <div style="margin:8px 0 0 84px;display:flex;gap:8px;">
+              <input class="form-input" style="font-size:12px;padding:7px 10px;" placeholder="Add a note..." id="${noteInputPrefix}-${item.id}">
+              <button style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:7px 14px;cursor:pointer;white-space:nowrap;" onclick="window.${addNoteFnName}('${item.id}')">Add Note</button>
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    async function addTimelineNote(coupleUid, items, itemId, inputId, author, rerenderFn) {
+      const input = document.getElementById(inputId);
+      const text = input.value.trim();
+      if (!text) return;
+      const item = items.find(i => i.id === itemId);
+      if (!item) return;
+      const notes = Array.isArray(item.notes) ? item.notes.slice() : [];
+      notes.push({ text, author, timestamp: new Date().toISOString() });
+      try {
+        // merge:true because this may be the first note ever added to this item —
+        // the sharedTimeline doc for it might not exist yet.
+        await setDoc(doc(db, "couples", coupleUid, "sharedTimeline", itemId), { notes }, { merge: true });
+        item.notes = notes;
+        input.value = "";
+        rerenderFn();
+      } catch(e) { alert("Couldn't add note: " + e.message); }
+    }
+
+    // ── COUPLE-SIDE: VENDOR ACCESS HUB ────────────────────────────
+    let vendorHubSlots = [];
+    let vendorHubTimelineItems = [];
+
+    async function loadVendorHubTimeline(coupleUid) {
+      const notesById = await fetchTimelineNotesById(coupleUid);
+      vendorHubTimelineItems = mergeTimelineWithNotes(timelineItemsCache, notesById);
+      renderVendorHubTimelineList();
+    }
+
+    function renderVendorHubTimelineList() {
+      const wrap = document.getElementById("vendorhub-timeline-list");
+      if (wrap) wrap.innerHTML = renderTimelineNoteListHTML(vendorHubTimelineItems, "vhtl-note", "addVendorHubTimelineNote");
+    }
+
+    window.addVendorHubTimelineNote = function(itemId) {
+      return addTimelineNote(currentUser.uid, vendorHubTimelineItems, itemId, `vhtl-note-${itemId}`, "Couple", renderVendorHubTimelineList);
+    };
+
+    window.loadVendorHub = async function(coupleUid, coupleSlug) {
+      if (!coupleUid || !coupleSlug) return;
+      await ensureDefaultVendorSlots(coupleUid, coupleSlug);
+      await loadVendorHubTimeline(coupleUid);
+      try {
+        const q = query(collection(db, "vendorSlots"), where("coupleUid", "==", coupleUid));
+        const snaps = await getDocs(q);
+        const slots = [];
+        for (const s of snaps.docs) {
+          let secrets = {};
+          try { const secSnap = await getDoc(doc(db, "vendorSlotSecrets", s.id)); secrets = secSnap.exists() ? secSnap.data() : {}; } catch(e) {}
+          slots.push({ slotId: s.id, slot: s.data(), secrets });
+        }
+        vendorHubSlots = slots;
+        renderVendorHub();
+      } catch(e) { console.error("Loading vendor hub failed:", e); }
+    };
+
+    function vendorStatusBadge(status) {
+      const map = { not_started: ["Not Started", "var(--mid-gray)"], in_progress: ["In Progress", "var(--gold-dark)"], submitted: ["Submitted", "#4a7c59"] };
+      const [label, color] = map[status] || map.not_started;
+      return `<span style="display:inline-block;padding:3px 10px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;border:1px solid ${color};color:${color};border-radius:10px;white-space:nowrap;">${label}</span>`;
+    }
+
+    function renderVendorSlotCard(entry) {
+      const { slotId, slot, secrets } = entry;
+      const link = `${window.location.origin}/vendor/${slotId}`;
+      const mr = slot.mealRequest || {};
+      const n = slot.notes || {};
+      const stampText = n.lastEditedBy ? `Last edited by ${esc(n.lastEditedBy)}${n.lastEditedAt ? " at " + new Date(n.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}` : "";
+      return `
+        <div style="border:1px solid var(--border);padding:22px 24px;border-radius:2px;background:var(--warm-white);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+            <input class="form-input" style="font-family:var(--font-heading);font-size:18px;border:none;background:transparent;padding:0;max-width:280px;" value="${esc(slot.vendorName || "")}" placeholder="${esc(vendorCategoryLabelForSlot(slot))}" data-vhf="vendorName" onblur="window.saveVendorHubField('${slotId}',this)">
+            ${vendorStatusBadge(slot.status)}
+          </div>
+          <div class="form-grid" style="margin-bottom:16px;">
+            <div class="form-group"><label class="form-label">Contact Name</label><input class="form-input" value="${esc(slot.contactName||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="contactName"></div>
+            <div class="form-group"><label class="form-label">Phone</label><input class="form-input" value="${esc(slot.phone||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="phone"></div>
+            <div class="form-group"><label class="form-label">Email</label><input class="form-input" value="${esc(slot.email||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="email"></div>
+            <div class="form-group"><label class="form-label">Website</label><input class="form-input" value="${esc(slot.website||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="website"></div>
+            <div class="form-group full"><label class="form-label">Social Handle(s)</label><input class="form-input" value="${esc(slot.socialHandles||"")}" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="socialHandles"></div>
+            <div class="form-group"><label class="form-label">Arrival Time</label><input class="form-input" value="${esc(slot.arrivalTime||"")}" placeholder="e.g. 2:00 PM" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="arrivalTime"></div>
+            <div class="form-group"><label class="form-label">Exit Time</label><input class="form-input" value="${esc(slot.exitTime||"")}" placeholder="e.g. 10:30 PM" onblur="window.saveVendorHubField('${slotId}',this)" data-vhf="exitTime"></div>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label class="form-label" style="display:block;margin-bottom:8px;">Meal Request</label>
+            <div class="check-group inline" style="margin-bottom:8px;">
+              <label class="check-item"><input type="radio" name="vh-meal-${slotId}" value="yes" ${mr.requested?"checked":""} onchange="window.saveVendorHubMeal('${slotId}')"><span>Requesting a meal</span></label>
+              <label class="check-item"><input type="radio" name="vh-meal-${slotId}" value="no" ${!mr.requested?"checked":""} onchange="window.saveVendorHubMeal('${slotId}')"><span>No meal needed</span></label>
+            </div>
+            <textarea class="form-textarea" style="min-height:60px;" placeholder="Dietary restrictions / allergies" id="vh-dietary-${slotId}" onblur="window.saveVendorHubMeal('${slotId}')">${esc(mr.dietary||"")}</textarea>
+          </div>
+
+          <div style="margin-bottom:16px;">
+            <label class="form-label" style="display:block;margin-bottom:8px;">Notes</label>
+            <textarea class="form-textarea" id="vh-notes-${slotId}" onblur="window.saveVendorHubNotes('${slotId}')">${esc(n.text||"")}</textarea>
+            <p id="vh-notes-stamp-${slotId}" style="font-size:11px;color:var(--mid-gray);margin-top:4px;">${stampText}</p>
+          </div>
+
+          <p style="font-size:12px;color:var(--mid-gray);margin-bottom:8px;">Share this link with your vendor for them to have access to this page:</p>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <span style="font-size:12px;color:var(--gold-dark);word-break:break-all;">${esc(link)}</span>
+            <button style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:6px 12px;cursor:pointer;border-radius:1px;" onclick="navigator.clipboard.writeText('${esc(link)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy';},1500);">Copy</button>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <span style="font-size:12px;color:var(--charcoal);">PIN to include when you share this: <strong style="letter-spacing:0.1em;">${esc(secrets.accessPin || "----")}</strong></span>
+            <button style="background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:6px 12px;cursor:pointer;border-radius:1px;" onclick="window.regenerateVendorPin('${slotId}')">Regenerate PIN</button>
+          </div>
+        </div>`;
+    }
+
+    function renderVendorHub() {
+      const wrap = document.getElementById("vendorhub-list");
+      if (!wrap) return;
+      let html = "";
+      VENDOR_CATEGORIES.forEach(cat => {
+        const catSlots = vendorHubSlots.filter(e => e.slot.category === cat.key);
+        html += `<div style="margin-bottom:56px;">
+          <h3 style="font-family:var(--font-heading);font-size:26px;font-weight:300;color:var(--charcoal);margin-bottom:16px;">${esc(cat.label)}</h3>`;
+        if (!catSlots.length) {
+          html += `<p style="font-size:13px;color:var(--mid-gray);margin-bottom:16px;">No vendor added yet.</p>`;
+        } else {
+          html += `<div style="display:flex;flex-direction:column;gap:20px;margin-bottom:16px;">` + catSlots.map(renderVendorSlotCard).join("") + `</div>`;
+        }
+        if (cat.mode === "repeatable") {
+          html += `<button class="acc-btn-export" style="padding:10px 22px;font-size:10px;" onclick="window.addVendorHubSlot('${cat.key}')">+ Add ${cat.key === "other" ? "Vendor" : "Another " + esc(cat.label) + " Vendor"}</button>`;
+        }
+        html += `</div>`;
+      });
+      wrap.innerHTML = html;
+    }
+
+    window.saveVendorHubField = async function(slotId, el) {
+      const field = el.getAttribute("data-vhf");
+      const value = el.value.trim();
+      try {
+        await updateDoc(doc(db, "vendorSlots", slotId), { [field]: value, lastEditedBy: "Couple", lastEditedAt: new Date().toISOString() });
+        const entry = vendorHubSlots.find(e => e.slotId === slotId);
+        if (entry) entry.slot[field] = value;
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.saveVendorHubMeal = async function(slotId) {
+      const checked = document.querySelector(`input[name="vh-meal-${slotId}"]:checked`);
+      const requested = !!checked && checked.value === "yes";
+      const dietaryEl = document.getElementById(`vh-dietary-${slotId}`);
+      const dietary = dietaryEl ? dietaryEl.value.trim() : "";
+      const mealRequest = { requested, dietary, enteredBy: "Couple" };
+      try {
+        await updateDoc(doc(db, "vendorSlots", slotId), { mealRequest, lastEditedBy: "Couple", lastEditedAt: new Date().toISOString() });
+        const entry = vendorHubSlots.find(e => e.slotId === slotId);
+        if (entry) entry.slot.mealRequest = mealRequest;
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    window.saveVendorHubNotes = async function(slotId) {
+      const textEl = document.getElementById(`vh-notes-${slotId}`);
+      const text = textEl ? textEl.value.trim() : "";
+      const notes = { text, lastEditedBy: "Couple", lastEditedAt: new Date().toISOString() };
+      try {
+        await updateDoc(doc(db, "vendorSlots", slotId), { notes });
+        const entry = vendorHubSlots.find(e => e.slotId === slotId);
+        if (entry) entry.slot.notes = notes;
+        const stampEl = document.getElementById(`vh-notes-stamp-${slotId}`);
+        if (stampEl) stampEl.textContent = `Last edited by Couple at ${new Date(notes.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}`;
+      } catch(e) { alert("Couldn't save notes: " + e.message); }
+    };
+
+    window.regenerateVendorPin = async function(slotId) {
+      if (!confirm("Regenerate this vendor's PIN? Their old PIN will stop working immediately, and you'll need to share the new one with them.")) return;
+      try {
+        const newPin = randomVendorPin();
+        await updateDoc(doc(db, "vendorSlotSecrets", slotId), { accessPin: newPin, failedAttempts: 0, lockedUntil: null });
+        const entry = vendorHubSlots.find(e => e.slotId === slotId);
+        if (entry) entry.secrets.accessPin = newPin;
+        renderVendorHub();
+      } catch(e) { alert("Couldn't regenerate PIN: " + e.message); }
+    };
+
+    window.addVendorHubSlot = async function(categoryKey) {
+      const cat = vendorCategoryDef(categoryKey);
+      let label;
+      if (categoryKey === "other") {
+        label = prompt("What kind of vendor is this? (e.g. Officiant, Rentals, Photo Booth)");
+      } else {
+        label = prompt(`Label for this additional ${cat.label} vendor (e.g. distinguishing a florist from a rental/design co.)`, cat.label);
+      }
+      if (!label || !label.trim()) return;
+      label = label.trim();
+      const slotKey = "s" + Date.now().toString(36);
+      try {
+        const slotId = await ensureVendorSlotExists(currentUser.uid, currentCoupleSlug, categoryKey, slotKey, label);
+        const slotSnap = await getDoc(doc(db, "vendorSlots", slotId));
+        const secSnap = await getDoc(doc(db, "vendorSlotSecrets", slotId));
+        vendorHubSlots.push({ slotId, slot: slotSnap.data(), secrets: secSnap.exists() ? secSnap.data() : {} });
+        renderVendorHub();
+      } catch(e) { alert("Couldn't add vendor: " + e.message); }
+    };
+
+    // ── VENDOR-SIDE: LINK + PIN GATE ───────────────────────────────
+    function parseVendorSlotId(slotId) {
+      const parts = String(slotId || "").split("_");
+      if (parts.length < 2) return null;
+      const coupleSlug = parts[0];
+      const categoryKey = parts[1];
+      const slotKey = parts.slice(2).join("_") || "";
+      const catDef = vendorCategoryDef(categoryKey);
+      if (!catDef) return null;
+      let slotLabel = catDef.label;
+      const found = catDef.slots.find(s => s.key === slotKey);
+      if (found) slotLabel = found.label;
+      return { coupleSlug, categoryKey, slotKey, catDef, slotLabel };
+    }
+
+    async function loadVendorGate(slotId) {
+      vendorSlotId_ = slotId;
+      const parsed = parseVendorSlotId(slotId);
+      const titleEl = document.getElementById("vendor-gate-title");
+      if (!parsed) {
+        titleEl.textContent = "This link isn't recognized. Please double check it with the couple.";
+        document.getElementById("vendor-gate-form").style.display = "none";
+        return;
+      }
+      vendorCoupleSlug_ = parsed.coupleSlug;
+      vendorCategoryDef_ = parsed.catDef;
+      vendorSlotLabel_ = parsed.slotLabel;
+      try {
+        const snap = await getDoc(doc(db, "publicCouples", parsed.coupleSlug));
+        vendorPublicData = snap.exists() ? snap.data() : null;
+      } catch(e) { vendorPublicData = null; }
+      const coupleNames = vendorPublicData && vendorPublicData.coupleNames ? vendorPublicData.coupleNames : "";
+      titleEl.innerHTML = `The Seventy Five${coupleNames ? ` &middot; ${esc(coupleNames)}'s Wedding` : ""}<br><span style="color:var(--gold-light);">${esc(vendorSlotLabel_)} Access</span>`;
+    }
+
+    window.submitVendorPin = async function() {
+      const pinEl = document.getElementById("vendor-gate-pin");
+      const btn = document.getElementById("vendor-gate-btn");
+      const errEl = document.getElementById("vendor-gate-error");
+      errEl.style.display = "none";
+      const pin = (pinEl.value || "").trim();
+      if (!/^\d{4}$/.test(pin)) { errEl.textContent = "Enter the 4-digit PIN your couple shared with you."; errEl.style.display = "block"; return; }
+      btn.disabled = true; btn.textContent = "Checking…";
+      try {
+        const verify = httpsCallable(functions, "verifyVendorPin");
+        const res = await verify({ slotId: vendorSlotId_, pin });
+        await signInWithCustomToken(auth, res.data.token);
+        const slotSnap = await getDoc(doc(db, "vendorSlots", vendorSlotId_));
+        if (!slotSnap.exists()) throw new Error("Vendor tab not found.");
+        vendorSlotData = slotSnap.data();
+        vendorCoupleUid_ = vendorSlotData.coupleUid;
+        // Re-fetch (rather than trust the pre-auth copy from loadVendorGate) so venue
+        // info, POC, and the timeline are current as of right now, not page-load time.
+        try {
+          const freshPublic = await getDoc(doc(db, "publicCouples", vendorCoupleSlug_));
+          if (freshPublic.exists()) vendorPublicData = freshPublic.data();
+        } catch(e) {}
+        document.getElementById("vendor-gate").style.display = "none";
+        document.getElementById("vendor-content").style.display = "block";
+        await renderVendorSkeleton();
+      } catch(e) {
+        errEl.textContent = e.message || "Something went wrong. Please try again.";
+        errEl.style.display = "block";
+      } finally {
+        btn.disabled = false; btn.textContent = "Access My Vendor Tab";
+      }
+    };
+
+    // ── VENDOR-SIDE: GENERIC SKELETON ──────────────────────────────
+    async function renderVendorSkeleton() {
+      let venueInfo = {};
+      try {
+        const vSnap = await getDoc(doc(db, "settings", "venueInfo"));
+        venueInfo = vSnap.exists() ? vSnap.data() : {};
+      } catch(e) {}
+
+      document.getElementById("vendor-view-title").textContent = vendorSlotLabel_ + (vendorSlotData.vendorName ? " — " + vendorSlotData.vendorName : "");
+
+      const lc = (vendorPublicData && vendorPublicData.leadCoordinator) || {};
+      document.getElementById("vendor-venue-info").innerHTML = `
+        <div class="amd-row"><div class="amd-key">Venue Rental Ends</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.venueRentalEndTime) || "Not yet set")}</div></div>
+        <div class="amd-row"><div class="amd-key">Vendor Arrival Window</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.vendorArrivalWindow) || "Not yet set")}</div></div>
+        <div class="amd-row"><div class="amd-key">Directions</div><div class="amd-val">${esc(venueInfo.directions || "10835 State Route 374, Rockbridge, Ohio 43149")}</div></div>
+        <div class="amd-row"><div class="amd-key">Parking</div><div class="amd-val">${esc(venueInfo.parking || "Details coming soon.")}</div></div>
+        <div class="amd-row"><div class="amd-key">Groom Suite / Vendor Space Policy</div><div class="amd-val">${esc(venueInfo.groomSuitePolicy || "Details coming soon.")}</div></div>`;
+
+      document.getElementById("vendor-poc-info").innerHTML = `
+        <div class="amd-row"><div class="amd-key">Lead Coordinator</div><div class="amd-val">${esc(lc.name || "TBD")}${lc.phone ? " · " + esc(lc.phone) : ""}${lc.email ? " · " + esc(lc.email) : ""}</div></div>
+        <div class="amd-row"><div class="amd-key">Venue Manager</div><div class="amd-val">${esc(venueInfo.venueManagerName || "TBD")}${venueInfo.venueManagerTitle ? " — " + esc(venueInfo.venueManagerTitle) : ""}</div></div>
+        <div class="amd-row"><div class="amd-key">Couple's Social Handles</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.coupleSocialHandles) || "Not provided")}</div></div>`;
+
+      renderVendorLogisticsForm();
+      renderVendorMealRequest();
+      renderVendorStatusAndStamp();
+      renderVendorNotes();
+      await loadVendorTimeline();
+    }
+
+    async function saveVendorSlotUpdate(update, whoLabel) {
+      update.lastEditedBy = whoLabel;
+      update.lastEditedAt = new Date().toISOString();
+      await updateDoc(doc(db, "vendorSlots", vendorSlotId_), update);
+      Object.assign(vendorSlotData, update);
+      renderVendorStatusAndStamp();
+    }
+
+    function renderVendorLogisticsForm() {
+      const s = vendorSlotData;
+      document.getElementById("vendor-logistics-form").innerHTML = `
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Company Name</label><input class="form-input" id="vf-vendorName" value="${esc(s.vendorName||"")}"></div>
+          <div class="form-group"><label class="form-label">Contact Name</label><input class="form-input" id="vf-contactName" value="${esc(s.contactName||"")}"></div>
+          <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="vf-phone" value="${esc(s.phone||"")}"></div>
+          <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="vf-email" value="${esc(s.email||"")}"></div>
+          <div class="form-group"><label class="form-label">Website</label><input class="form-input" id="vf-website" value="${esc(s.website||"")}"></div>
+          <div class="form-group"><label class="form-label">Social Handle(s)</label><input class="form-input" id="vf-socialHandles" value="${esc(s.socialHandles||"")}"></div>
+          <div class="form-group"><label class="form-label">Arrival Time</label><input class="form-input" id="vf-arrivalTime" value="${esc(s.arrivalTime||"")}" placeholder="e.g. 2:00 PM"></div>
+          <div class="form-group"><label class="form-label">Exit Time</label><input class="form-input" id="vf-exitTime" value="${esc(s.exitTime||"")}" placeholder="e.g. 10:30 PM"></div>
+        </div>
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveVendorLogistics()">Save</button><span class="autosave-indicator" id="vf-save-indicator">Saved</span></div>`;
+    }
+
+    window.saveVendorLogistics = async function() {
+      const fields = ["vendorName","contactName","phone","email","website","socialHandles","arrivalTime","exitTime"];
+      const update = {};
+      fields.forEach(f => { update[f] = document.getElementById("vf-"+f).value.trim(); });
+      try {
+        await saveVendorSlotUpdate(update, vendorSlotLabel_ || "Vendor");
+        const ind = document.getElementById("vf-save-indicator");
+        if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    function renderVendorMealRequest() {
+      const mr = vendorSlotData.mealRequest || {};
+      document.getElementById("vendor-meal-form").innerHTML = `
+        <div class="check-group inline" style="margin-bottom:12px;">
+          <label class="check-item"><input type="radio" name="vf-meal-req" value="yes" ${mr.requested ? "checked" : ""}><span>Yes, requesting a meal</span></label>
+          <label class="check-item"><input type="radio" name="vf-meal-req" value="no" ${!mr.requested ? "checked" : ""}><span>No meal needed</span></label>
+        </div>
+        <div class="form-group full"><label class="form-label">Dietary Restrictions / Allergies</label><textarea class="form-textarea" id="vf-meal-dietary">${esc(mr.dietary||"")}</textarea></div>
+        <p style="font-size:11px;color:var(--mid-gray);margin-top:6px;">The venue doesn't require vendor meals, but they're commonly offered — especially for buffet-style events.${mr.enteredBy ? ` Last set by ${esc(mr.enteredBy)}.` : ""}</p>
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveVendorMealRequest()">Save</button></div>`;
+    }
+
+    window.saveVendorMealRequest = async function() {
+      const checked = document.querySelector('input[name="vf-meal-req"]:checked');
+      const requested = !!checked && checked.value === "yes";
+      const dietary = document.getElementById("vf-meal-dietary").value.trim();
+      const whoLabel = vendorSlotLabel_ || "Vendor";
+      try { await saveVendorSlotUpdate({ mealRequest: { requested, dietary, enteredBy: whoLabel } }, whoLabel); renderVendorMealRequest(); }
+      catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    function renderVendorStatusAndStamp() {
+      const s = vendorSlotData;
+      const el = document.getElementById("vendor-status-stamp");
+      if (!el) return;
+      el.innerHTML = `
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <label class="form-label" style="margin:0;">Status</label>
+          <select class="form-input" style="max-width:200px;" id="vf-status" onchange="window.saveVendorStatus()">
+            <option value="not_started" ${s.status==="not_started"?"selected":""}>Not Started</option>
+            <option value="in_progress" ${s.status==="in_progress"?"selected":""}>In Progress</option>
+            <option value="submitted" ${s.status==="submitted"?"selected":""}>Submitted</option>
+          </select>
+          ${s.lastEditedBy ? `<span style="font-size:11px;color:var(--mid-gray);">Last edited by ${esc(s.lastEditedBy)}${s.lastEditedAt ? " at " + new Date(s.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span>` : ""}
+        </div>`;
+    }
+
+    window.saveVendorStatus = async function() {
+      const status = document.getElementById("vf-status").value;
+      try { await saveVendorSlotUpdate({ status }, vendorSlotLabel_ || "Vendor"); }
+      catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    function renderVendorNotes() {
+      const n = vendorSlotData.notes || {};
+      document.getElementById("vendor-notes-form").innerHTML = `
+        <textarea class="form-textarea tall" id="vf-notes-text" placeholder="Anything else we should know...">${esc(n.text||"")}</textarea>
+        ${n.lastEditedBy ? `<p style="font-size:11px;color:var(--mid-gray);margin-top:6px;">Last edited by ${esc(n.lastEditedBy)}${n.lastEditedAt ? " at " + new Date(n.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</p>` : ""}
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveVendorNotes()">Save Notes</button></div>`;
+    }
+
+    window.saveVendorNotes = async function() {
+      const text = document.getElementById("vf-notes-text").value.trim();
+      const whoLabel = vendorSlotLabel_ || "Vendor";
+      const notes = { text, lastEditedBy: whoLabel, lastEditedAt: new Date().toISOString() };
+      try {
+        await updateDoc(doc(db, "vendorSlots", vendorSlotId_), { notes });
+        vendorSlotData.notes = notes;
+        renderVendorNotes();
+      } catch(e) { alert("Couldn't save notes: " + e.message); }
+    };
+
+    // ── VENDOR-SIDE: SHARED TIMELINE (reads live from vendorPublicData, see above) ──
+    async function loadVendorTimeline() {
+      if (!vendorCoupleUid_) return;
+      const notesById = await fetchTimelineNotesById(vendorCoupleUid_);
+      const baseItems = (vendorPublicData && vendorPublicData.timelineItems) || [];
+      vendorTimelineItems = mergeTimelineWithNotes(baseItems, notesById);
+      renderVendorTimelineList();
+    }
+
+    function renderVendorTimelineList() {
+      const wrap = document.getElementById("vendor-timeline-list");
+      if (wrap) wrap.innerHTML = renderTimelineNoteListHTML(vendorTimelineItems, "vtl-note", "addVendorTimelineNote");
+    }
+
+    window.addVendorTimelineNote = function(itemId) {
+      return addTimelineNote(vendorCoupleUid_, vendorTimelineItems, itemId, `vtl-note-${itemId}`, vendorSlotLabel_ || "Vendor", renderVendorTimelineList);
+    };
+
+    // ── VENDOR-SIDE: EXPORT ─────────────────────────────────────────
+    function vendorExportRows() {
+      const s = vendorSlotData;
+      const mr = s.mealRequest || {};
+      const rows = [
+        ["Couple", (vendorPublicData && vendorPublicData.coupleNames) || ""],
+        ["Wedding Date", (vendorPublicData && vendorPublicData.weddingDate) || ""],
+        ["Venue Address", "10835 State Route 374, Rockbridge, Ohio 43149"],
+        ["Category", vendorSlotLabel_ || ""],
+        ["Arrival Time", s.arrivalTime || ""],
+        ["Exit Time", s.exitTime || ""],
+        ["Company Name", s.vendorName || ""],
+        ["Contact Name", s.contactName || ""],
+        ["Phone", s.phone || ""],
+        ["Email", s.email || ""],
+        ["Website", s.website || ""],
+        ["Social Handles", s.socialHandles || ""],
+        ["Meal Requested", mr.requested ? "Yes" : "No"],
+        ["Dietary Restrictions", mr.dietary || ""],
+        ["Status", (s.status||"").replace("_"," ")],
+        ["Notes", (s.notes && s.notes.text) || ""]
+      ];
+      return rows.filter(([,v]) => String(v).trim() !== "");
+    }
+
+    function vendorExportFilename(ext) {
+      const couple = ((vendorPublicData && vendorPublicData.coupleNames) || "vendor").replace(/[^a-z0-9]/gi,"_");
+      const cat = (vendorSlotLabel_ || "vendor").replace(/[^a-z0-9]/gi,"_");
+      return `${couple}_${cat}.${ext}`;
+    }
+
+    window.exportVendorCSV = function() {
+      const rows = [["Field","Value"], ...vendorExportRows()];
+      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = vendorExportFilename("csv");
+      a.click();
+    };
+
+    window.exportVendorPDF = function() {
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF();
+      let y = 20;
+      pdf.setFont("helvetica","bold"); pdf.setFontSize(16);
+      pdf.text("The Seventy Five", 14, y); y += 8;
+      pdf.setFont("helvetica","normal"); pdf.setFontSize(11);
+      pdf.text(`${(vendorPublicData && vendorPublicData.coupleNames) || ""} — ${vendorSlotLabel_ || ""}`, 14, y); y += 10;
+      vendorExportRows().forEach(([k,v]) => {
+        if (y > 275) { pdf.addPage(); y = 20; }
+        pdf.setFont("helvetica","bold"); pdf.text(String(k) + ":", 14, y);
+        pdf.setFont("helvetica","normal");
+        const lines = pdf.splitTextToSize(String(v), 130);
+        pdf.text(lines, 60, y);
+        y += 7 * lines.length;
+      });
+      if (vendorTimelineItems.length) {
+        y += 6;
+        if (y > 260) { pdf.addPage(); y = 20; }
+        pdf.setFont("helvetica","bold"); pdf.text("Shared Timeline", 14, y); y += 8;
+        pdf.setFont("helvetica","normal");
+        vendorTimelineItems.forEach(item => {
+          if (y > 275) { pdf.addPage(); y = 20; }
+          pdf.text(`${item.time || ""} — ${item.title || ""}`, 14, y); y += 6;
+          (item.notes||[]).forEach(n => {
+            if (y > 275) { pdf.addPage(); y = 20; }
+            const lines = pdf.splitTextToSize(`  [${n.author}] ${n.text}`, 170);
+            pdf.text(lines, 14, y); y += 6 * lines.length;
+          });
+        });
+      }
+      pdf.save(vendorExportFilename("pdf"));
+    };
+
+    // ── ADMIN: VENUE INFO SETTINGS MODAL ─────────────────────────────
+    window.openVenueInfoManager = async function() {
+      const modal = document.getElementById("venue-info-modal");
+      let v = {};
+      try { const snap = await getDoc(doc(db, "settings", "venueInfo")); v = snap.exists() ? snap.data() : {}; } catch(e) {}
+      document.getElementById("vim-directions").value = v.directions || "";
+      document.getElementById("vim-parking").value = v.parking || "";
+      document.getElementById("vim-groomsuite").value = v.groomSuitePolicy || "";
+      document.getElementById("vim-managername").value = v.venueManagerName || "";
+      document.getElementById("vim-managertitle").value = v.venueManagerTitle || "Venue Manager";
+      modal.style.display = "flex";
+    };
+    window.closeVenueInfoManager = function() { document.getElementById("venue-info-modal").style.display = "none"; };
+    window.saveVenueInfo = async function() {
+      const data = {
+        directions: document.getElementById("vim-directions").value.trim(),
+        parking: document.getElementById("vim-parking").value.trim(),
+        groomSuitePolicy: document.getElementById("vim-groomsuite").value.trim(),
+        venueManagerName: document.getElementById("vim-managername").value.trim(),
+        venueManagerTitle: document.getElementById("vim-managertitle").value.trim()
+      };
+      const btn = document.getElementById("save-venueinfo-btn");
+      if (btn) { btn.textContent = "Saving…"; btn.disabled = true; }
+      try {
+        await setDoc(doc(db, "settings", "venueInfo"), data);
+        if (btn) btn.textContent = "Saved!";
+        setTimeout(() => { window.closeVenueInfoManager(); if (btn) { btn.textContent = "Save Changes"; btn.disabled = false; } }, 900);
+      } catch(e) {
+        if (btn) { btn.textContent = "Save Changes"; btn.disabled = false; }
+        alert("Save failed: " + e.message);
+      }
+    };
+
     window.addEventListener("DOMContentLoaded", () => {
       const pw = document.getElementById("login-password");
       if (pw) pw.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
       const em = document.getElementById("login-email");
       if (em) em.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
+      const vendorPinInput = document.getElementById("vendor-gate-pin");
+      if (vendorPinInput) vendorPinInput.addEventListener("keydown", e => { if (e.key === "Enter") window.submitVendorPin(); });
       const pinInput = document.getElementById("resource-pin-input");
       if (pinInput) pinInput.addEventListener("keydown", e => { if (e.key === "Enter") window.submitResourcePin(); });
     });
@@ -4862,6 +5779,45 @@
     .dof-task.checked{color:rgba(253,250,246,0.4);text-decoration:line-through;}
     @media (max-width:900px){.dof-rail{width:230px;}.dof-grid{grid-template-columns:1fr;}}
 
+    /* ===== Event Closeout Sheet ===== */
+    #closeout-modal{display:none;position:fixed;inset:0;z-index:600;background:#525659;flex-direction:column;}
+    .cls-topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#232323;flex-shrink:0;}
+    .cls-topbar h2{font-family:var(--font-heading);font-size:20px;color:var(--warm-white);font-weight:400;}
+    .cls-topbar-btns{display:flex;gap:10px;}
+    .cls-btn{background:var(--gold-dark);border:none;color:var(--warm-white);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;padding:10px 18px;cursor:pointer;border-radius:2px;}
+    .cls-btn.secondary{background:transparent;border:1px solid rgba(253,250,246,0.3);}
+    .cls-scroll{flex:1;overflow-y:auto;padding:30px;display:flex;justify-content:center;}
+    #closeout-sheet{background:#fff;color:#1a1a1a;width:8.5in;min-height:11in;padding:0.5in;font-family:var(--font-body);box-shadow:0 4px 20px rgba(0,0,0,0.4);}
+    .cls-h1{font-family:var(--font-heading);font-size:22px;text-align:center;margin-bottom:2px;}
+    .cls-sub{text-align:center;font-size:12px;color:#666;margin-bottom:18px;}
+    .cls-section{margin-bottom:16px;page-break-inside:avoid;}
+    .cls-section-title{font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#8a6d3b;border-bottom:1px solid #ccc;padding-bottom:4px;margin-bottom:8px;}
+    .cls-row{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;margin-bottom:6px;}
+    .cls-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 20px;margin-bottom:6px;}
+    .cls-field{font-size:12px;}
+    .cls-field label{display:block;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-bottom:2px;}
+    .cls-static{padding:3px 0;border-bottom:1px dotted #ccc;min-height:16px;}
+    .cls-static-big{padding:6px 4px;border:1px solid #ccc;min-height:60px;margin-top:2px;}
+    .cls-input{width:100%;border:none;border-bottom:1px solid #999;font-family:var(--font-body);font-size:12px;padding:3px 0;outline:none;background:transparent;}
+    .cls-textarea{width:100%;border:1px solid #ccc;font-family:var(--font-body);font-size:12px;padding:5px;outline:none;background:transparent;resize:vertical;min-height:90px;box-sizing:border-box;}
+    .cls-check{display:flex;align-items:center;gap:14px;font-size:12px;margin-bottom:4px;}
+    .cls-check label{display:flex;align-items:center;gap:5px;}
+    .cls-vendor-table{width:100%;border-collapse:collapse;font-size:11px;}
+    .cls-vendor-table th{text-align:left;font-size:9px;text-transform:uppercase;color:#888;border-bottom:1px solid #999;padding:4px 6px;}
+    .cls-vendor-table td{border-bottom:1px dotted #ccc;padding:6px;vertical-align:top;}
+    .cls-sig-row{display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-top:10px;}
+    .cls-sig-line{border-bottom:1px solid #333;min-height:22px;}
+    .cls-sig-label{font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-top:3px;}
+    @media print {
+      body *{visibility:hidden;}
+      #closeout-modal, #closeout-modal *{visibility:visible;}
+      #closeout-modal{position:absolute;inset:0;background:#fff;}
+      .cls-topbar, .no-print{display:none !important;}
+      .cls-scroll{padding:0;overflow:visible;display:block;}
+      #closeout-sheet{box-shadow:none;width:100%;min-height:0;padding:0.4in;}
+      .cls-input, .cls-textarea{border-color:#999 !important;}
+    }
+
   </style>
 </head>
 <body>
@@ -4977,6 +5933,98 @@
   </div>
 </div>
 
+<!-- ══════════════════ VENDOR VIEW (link + PIN, no login) ══════════════════ -->
+<div id="vendor-view" style="display:none;min-height:100vh;background:var(--charcoal);">
+  <div id="vendor-gate" style="display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;">
+    <div style="max-width:380px;width:100%;text-align:center;">
+      <p class="hero-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
+      <h2 id="vendor-gate-title" style="font-family:var(--font-heading);font-size:28px;font-weight:300;color:#fdfaf6;margin:12px 0 20px;line-height:1.3;">Loading&hellip;</h2>
+      <div id="vendor-gate-form">
+        <p style="font-size:13px;color:rgba(253,250,246,0.55);margin-bottom:26px;line-height:1.7;">Enter the 4-digit PIN your couple shared with you to view your vendor tab.</p>
+        <input class="login-input" type="text" inputmode="numeric" maxlength="4" id="vendor-gate-pin" placeholder="PIN" autocomplete="off" style="text-align:center;letter-spacing:0.3em;"/>
+        <button class="btn-email" id="vendor-gate-btn" onclick="window.submitVendorPin()" style="margin-top:4px;">Access My Vendor Tab</button>
+      </div>
+      <div id="vendor-gate-error" style="display:none;margin-top:16px;font-size:12px;color:#e07070;line-height:1.6;"></div>
+    </div>
+  </div>
+
+  <div id="vendor-content" style="display:none;">
+    <section style="background:var(--charcoal);padding:70px 24px 40px;text-align:center;">
+      <p class="hero-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
+      <h1 id="vendor-view-title" style="font-family:var(--font-heading);font-size:clamp(32px,5vw,48px);font-weight:300;color:#fdfaf6;margin-top:10px;"></h1>
+    </section>
+    <section style="background:var(--warm-white);padding:50px 24px 100px;">
+      <div style="max-width:720px;margin:0 auto;">
+
+        <div class="form-section-block">
+          <span class="section-label">Venue Info</span>
+          <h2 class="form-section-title">Read-only <em>reference</em></h2>
+          <div id="vendor-venue-info"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block">
+          <span class="section-label">Point of Contact</span>
+          <h2 class="form-section-title">Who to <em>reach</em></h2>
+          <div id="vendor-poc-info"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block">
+          <span class="section-label">Vendor Logistics</span>
+          <h2 class="form-section-title">Your <em>details</em></h2>
+          <div id="vendor-logistics-form"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block">
+          <span class="section-label">Meal Request</span>
+          <h2 class="form-section-title">Will you be <em>eating</em>?</h2>
+          <div id="vendor-meal-form"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block">
+          <span class="section-label">Status</span>
+          <div id="vendor-status-stamp" style="margin-top:12px;"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block">
+          <span class="section-label">Shared Timeline</span>
+          <h2 class="form-section-title">Notes <em>everyone</em> can see</h2>
+          <p style="font-size:12px;color:var(--mid-gray);margin-bottom:16px;">Visible to the couple, admin, and every vendor on this event. Add a note to any time slot — it's tagged with your category and the time you added it.</p>
+          <div id="vendor-timeline-list"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block">
+          <span class="section-label">Notes</span>
+          <h2 class="form-section-title">Anything <em>else</em>?</h2>
+          <div id="vendor-notes-form"></div>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-section-block" style="text-align:center;">
+          <span class="section-label">Export</span>
+          <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:12px;">
+            <button class="btn-back" onclick="window.exportVendorPDF()">&#8595; Export PDF</button>
+            <button class="btn-back" onclick="window.exportVendorCSV()">&#8595; Export CSV</button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </div>
+</div>
+
 <!-- ══════════════════ LOGIN SCREEN ══════════════════ -->
 <div id="login-screen">
   <div class="login-bg"></div>
@@ -5048,6 +6096,7 @@
         <a href="#" onclick="window.showPage('timeline');return false;">Wedding Day Timeline</a>
         <a href="#" onclick="window.showPage('ideas');return false;">Ideas &amp; Inspiration Board</a>
         <a href="#" onclick="window.showPage('notes');return false;">Notes</a>
+        <a href="#" onclick="window.showPage('vendorhub');return false;">Vendor Access</a>
       </div>
     </li>
     <li><a href="#" onclick="window.showPage('guestportal');return false;">Guest Portal</a></li>
@@ -6885,6 +7934,33 @@
   </div>
 </div><!-- end page-notes -->
 
+<!-- ══════════════════ VENDOR ACCESS ══════════════════ -->
+<div id="page-vendorhub" class="page">
+  <div class="meeting-hero">
+    <div class="meeting-hero-bg meeting2-bg"></div>
+    <div class="meeting-hero-content">
+      <span class="section-label">Planning Tools</span>
+      <h1>Vendor <em>Access</em></h1>
+      <p>Give each of your outside vendors their own link + PIN so they can fill in their own details directly.</p>
+    </div>
+  </div>
+
+  <div class="planning-form-wrap">
+    <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share each vendor's link and PIN with them directly — they'll be dropped straight into their own tab, with no account needed. Only that vendor can see their own tab; they can't see any other vendor's information.</p>
+    <div id="vendorhub-list"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+
+    <div class="form-section-block" style="margin-top:24px;">
+      <h2 class="form-section-title">Shared <em>Timeline</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Pulled live from your Wedding Day Timeline planning tool. Every vendor, and admin, can see this and add their own tagged notes to any time slot.</p>
+      <div id="vendorhub-timeline-list"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
+    </div>
+  </div>
+
+  <div class="form-save-row">
+    <button class="btn-back" onclick="window.showPage('home')">&#8592; Back to Overview</button>
+  </div>
+</div><!-- end page-vendorhub -->
+
 <!-- ══════════════════ GUEST PORTAL ══════════════════ -->
 <div id="page-guestportal" class="page">
   <div class="meeting-hero">
@@ -7319,6 +8395,7 @@
         <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.openSignupCodeModal()">&#128273; Signup Code</button>
         <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.showLinenOrders()">&#129525; Linen Orders</button>
         <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.openResourcePinGate()">&#128274; Manage Resources</button>
+        <button class="btn-export-all" style="background:var(--charcoal);" onclick="window.openVenueInfoManager()">Manage Venue Info</button>
         <button class="btn-export-all" id="export-all-btn" onclick="window.exportAllCouples()">&#8595; Export All Couples to CSV</button>
       </div>
     </div>
@@ -7482,6 +8559,20 @@
     </div>
   </div>
 
+  <!-- Event Closeout Sheet -->
+  <div id="closeout-modal">
+    <div class="cls-topbar">
+      <h2 id="cls-title">Event Closeout Sheet</h2>
+      <div class="cls-topbar-btns">
+        <button class="cls-btn secondary" onclick="window.closeCloseoutSheet()">Close</button>
+        <button class="cls-btn" onclick="window.print()">&#128424;&#65039; Print / Save as PDF</button>
+      </div>
+    </div>
+    <div class="cls-scroll">
+      <div id="closeout-sheet"></div>
+    </div>
+  </div>
+
   <!-- Client Timeline Modal -->
   <div id="admin-timeline-modal">
     <div class="admin-modal-box">
@@ -7562,6 +8653,36 @@
       <div style="padding:20px 32px;border-top:1px solid var(--border);display:flex;gap:12px;flex-shrink:0;">
         <button class="acc-btn-export" style="flex:1;" onclick="window.addResourceRow()">+ Add New Resource</button>
         <button class="acc-btn-view" style="flex:1;" id="save-resources-btn" onclick="window.saveResources()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+  <!-- ══════════════════ VENUE INFO MODAL ══════════════════ -->
+  <div id="venue-info-modal" style="display:none;position:fixed;inset:0;z-index:600;background:rgba(44,44,44,0.75);align-items:center;justify-content:center;padding:24px;">
+    <div class="admin-modal-box" style="max-width:640px;">
+      <div class="admin-modal-header">
+        <h2>Venue Info <span style="font-size:12px;color:var(--mid-gray);">(shown on every vendor tab)</span></h2>
+        <button class="admin-modal-close" onclick="window.closeVenueInfoManager()">&times;</button>
+      </div>
+      <div class="admin-modal-body">
+        <div class="form-group full" style="margin-bottom:18px;">
+          <label class="form-label">Directions</label>
+          <textarea class="form-textarea" id="vim-directions" placeholder="10835 State Route 374, Rockbridge, Ohio 43149"></textarea>
+        </div>
+        <div class="form-group full" style="margin-bottom:18px;">
+          <label class="form-label">Parking</label>
+          <textarea class="form-textarea" id="vim-parking"></textarea>
+        </div>
+        <div class="form-group full" style="margin-bottom:18px;">
+          <label class="form-label">Groom Suite / Vendor Space Policy</label>
+          <textarea class="form-textarea" id="vim-groomsuite"></textarea>
+        </div>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Venue Manager Name</label><input class="form-input" id="vim-managername"></div>
+          <div class="form-group"><label class="form-label">Venue Manager Title</label><input class="form-input" id="vim-managertitle" placeholder="Venue Manager"></div>
+        </div>
+      </div>
+      <div style="padding:20px 32px;border-top:1px solid var(--border);display:flex;gap:12px;flex-shrink:0;">
+        <button class="acc-btn-view" style="flex:1;" id="save-venueinfo-btn" onclick="window.saveVenueInfo()">Save Changes</button>
       </div>
     </div>
   </div>

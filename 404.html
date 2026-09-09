@@ -9,7 +9,9 @@
     // We grab whatever was typed after the slash and forward it to the root,
     // which reads it and shows that couple's guest page.
     var path = window.location.pathname.replace(/^\//, "").replace(/\/$/, "");
-    if (path) {
+    if (path.indexOf("vendor/") === 0) {
+      window.location.replace("/?vendor=" + encodeURIComponent(path.slice("vendor/".length)));
+    } else if (path) {
       window.location.replace("/?guest=" + encodeURIComponent(path));
     } else {
       window.location.replace("/");

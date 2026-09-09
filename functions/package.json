@@ -1,0 +1,14 @@
+{
+  "name": "the75-portal-functions",
+  "description": "Server-side functions for the75-portal (vendor PIN verification)",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "type": "commonjs",
+  "dependencies": {
+    "firebase-admin": "^12.1.0",
+    "firebase-functions": "^5.0.0"
+  },
+  "private": true
+}

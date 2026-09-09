@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email in [
+          'jess@theseventyfivevenue.com',
+          'emily@theboxhop.com',
+          'emilyt@theseventyfivevenue.com',
+          'seth@theboxhop.com',
+          'kara@theseventyfivevenue.com',
+          'events@theseventyfivevenue.com'
+        ];
+    }
+    match /couples/{userId} {
+      allow read, update, delete: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId &&
+        request.resource.data.signupCode == get(/databases/$(database)/documents/settings/signupCode).data.code;
+      allow read, write: if isAdmin();
+    }
+    match /settings/{document} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+    match /publicCouples/{slug} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if request.auth != null && (
+        isAdmin() ||
+        get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.slug == slug
+      );
+    }
+    match /rsvpSubmissions/{submissionId} {
+      allow create: if true;
+      allow read, delete: if request.auth != null && (
+        isAdmin() ||
+        resource.data.coupleSlug == get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.slug
+      );
+    }
+    match /linenOrders/{coupleId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // VENDOR PORTAL (added) -- vendors have no account; they authenticate
+    // via link + PIN, verified server-side by the verifyVendorPin Cloud
+    // Function (Admin SDK, bypasses these rules entirely). On success it
+    // mints a custom auth token carrying a `vendorSlotId` claim, which is
+    // what these rules trust -- never anything the client alone can assert.
+    // ═══════════════════════════════════════════════════════════════
+
+    function isOwningCouple(coupleUid) {
+      return request.auth != null && request.auth.uid == coupleUid;
+    }
+
+    function isVerifiedVendorFor(slotId) {
+      return request.auth != null && request.auth.token.vendorSlotId == slotId;
+    }
+
+    // Public-safe vendor tab data (company info, logistics, meal request,
+    // notes, status). Never contains the PIN or lockout state -- see
+    // vendorSlotSecrets below.
+    match /vendorSlots/{slotId} {
+      allow read: if isOwningCouple(resource.data.coupleUid) || isAdmin() || isVerifiedVendorFor(slotId);
+
+      // Only the couple (for their own event) or admin can create a slot.
+      allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
+
+      // Couple/admin can change anything; a verified vendor can only touch
+      // their own operational fields -- never coupleUid, coupleSlug, or
+      // category/slotLabel (which identify/rename the slot itself).
+      allow update: if isOwningCouple(resource.data.coupleUid) || isAdmin() ||
+        (isVerifiedVendorFor(slotId) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+           'vendorName', 'contactName', 'phone', 'email', 'website', 'socialHandles',
+           'arrivalTime', 'exitTime', 'mealRequest', 'responses', 'notes',
+           'status', 'lastEditedBy', 'lastEditedAt'
+         ]));
+
+      allow delete: if isAdmin();
+    }
+
+    // PIN + brute-force lockout state. Couple/admin only (to show/regenerate
+    // the PIN in the "share access" header box). verifyVendorPin reads/writes
+    // this via the Admin SDK -- a verified vendor identity has NO access here,
+    // by design, so the PIN itself is never sent to any vendor's client.
+    match /vendorSlotSecrets/{slotId} {
+      allow read, update: if isOwningCouple(resource.data.coupleUid) || isAdmin();
+      allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Holds ONLY a tagged `notes` array: [{text, author, timestamp}, ...].
+    // {itemId} matches the id of the corresponding entry in the real
+    // couples/{uid}.timelineItems[] array (edited only via the existing
+    // Timeline planning tool / admin editor -- untouched by the vendor
+    // portal), which is mirrored read-only into publicCouples/{slug} so a
+    // vendor can read current time/activity/location without any broader
+    // access to the couple's private document.
+    match /couples/{uid}/sharedTimeline/{itemId} {
+      function vendorBelongsToThisCouple() {
+        return request.auth != null && request.auth.token.vendorSlotId != null &&
+          get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == uid;
+      }
+
+      allow read: if isOwningCouple(uid) || isAdmin() || vendorBelongsToThisCouple();
+      allow delete: if isOwningCouple(uid) || isAdmin();
+
+      // A vendor may be the first party ever to note a given item (the doc
+      // won't exist yet), so `create` -- not just `update` -- must allow it,
+      // restricted to a notes-only document either way.
+      allow create: if isOwningCouple(uid) || isAdmin() ||
+        (vendorBelongsToThisCouple() && request.resource.data.keys().hasOnly(['notes']));
+      allow update: if isOwningCouple(uid) || isAdmin() ||
+        (vendorBelongsToThisCouple() &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['notes']));
+    }
+
+    // settings/venueInfo (directions/parking/groom-suite policy/venue manager
+    // copy, shown read-only on every vendor tab) needs NO new rule -- the
+    // existing `match /settings/{document}` block above already allows read
+    // to any authenticated party (a verified vendor included, since they're
+    // signed in via custom token by the time they read this) and write to
+    // admin only, which is exactly the intended access.
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
