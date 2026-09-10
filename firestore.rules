@@ -76,7 +76,8 @@ service cloud.firestore {
     // guest-roster restriction: only Caterer/Bar and Photographer/
     // Videographer ever see per-guest detail (name/table/allergy/Group) --
     // every other category can see the aggregate guestCount (mirrored into
-    // publicCouples, not gated by this) but not who's coming.
+    // the venueInfo doc below, gated by isVerifiedVendorForCouple -- any
+    // vendor of this event, not just caterer/photo) but not who's coming.
     function isVerifiedVendorForCoupleInCategory(coupleUid, categories) {
       let vs = get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId));
       return request.auth != null && request.auth.token.vendorSlotId != null &&
@@ -134,9 +135,10 @@ service cloud.firestore {
     // {itemId} matches the id of the corresponding entry in the real
     // couples/{uid}.timelineItems[] array (edited only via the existing
     // Timeline planning tool / admin editor -- untouched by the vendor
-    // portal), which is mirrored read-only into publicCouples/{slug} so a
-    // vendor can read current time/activity/location without any broader
-    // access to the couple's private document.
+    // portal), which is mirrored read-only into
+    // couples/{uid}/vendorSharedData/venueInfo (PIN-gated -- see that match
+    // block below) so a vendor can read current time/activity/location
+    // without any broader access to the couple's private document.
     match /couples/{uid}/sharedTimeline/{itemId} {
       function vendorBelongsToThisCouple() {
         return request.auth != null && request.auth.token.vendorSlotId != null &&
