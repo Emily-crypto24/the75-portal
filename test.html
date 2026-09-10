@@ -4962,15 +4962,16 @@
       return addTimelineNote(currentUser.uid, vendorHubTimelineItems, itemId, inputId, "Couple", renderVendorHubTimelineList);
     };
 
-    // Cached once per hub load (not once per card) -- every caterer card on
-    // the hub page shares the same cross-referenced data.
-    let vendorHubCatererCrossRefs = {};
+    // Cached once per hub load (not once per card) -- every card on the hub
+    // page, across every category, shares the same cross-referenced data.
+    let vendorHubCategoryCrossRefs = {};
 
     window.loadVendorHub = async function(coupleUid, coupleSlug) {
       if (!coupleUid || !coupleSlug) return;
       await loadVendorHubTimeline(coupleUid);
       await syncVendorDietaryData(coupleUid);
       await renderVendorHubSocialHandles(coupleUid);
+      await renderHairMakeupRosterEditor(coupleUid);
       try {
         // Fetch what already exists via a LIST query first (safe -- see the
         // comment on createVendorSlotDoc). Default slots only ever get
@@ -4989,9 +4990,7 @@
           vendorDefaultSlotsInitialized = true;
         }
         vendorHubSlots = existing;
-        if (vendorHubSlots.some(e => e.slot.category === "caterer")) {
-          vendorHubCatererCrossRefs = await fetchCatererCrossRefs(coupleUid, coupleSlug);
-        }
+        vendorHubCategoryCrossRefs = await fetchAllCategoryCrossRefs(coupleUid, coupleSlug);
         renderVendorHub();
       } catch(e) { console.error("Loading vendor hub failed:", e); }
     };
@@ -5041,7 +5040,7 @@
             ${slotNotesSectionHTML(`hub-${slotId}`)}
           </div>
 
-          ${renderCategoryDetailsHTML(slotId, slot, `hub-${slotId}`, vendorHubCatererCrossRefs)}
+          ${renderCategoryDetailsHTML(slotId, slot, `hub-${slotId}`, vendorHubCategoryCrossRefs)}
 
           <p style="font-size:12px;color:var(--mid-gray);margin-bottom:8px;">Share this link with your vendor for them to have access to this page:</p>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
@@ -5267,8 +5266,7 @@
     async function renderVendorCategoryDetails() {
       const wrap = document.getElementById("vendor-category-details");
       if (!wrap) return;
-      if (vendorSlotData.category !== "caterer") { wrap.innerHTML = ""; return; }
-      const crossRefs = await fetchCatererCrossRefs(vendorCoupleUid_, vendorCoupleSlug_);
+      const crossRefs = await fetchAllCategoryCrossRefs(vendorCoupleUid_, vendorCoupleSlug_);
       wrap.innerHTML = renderCategoryDetailsHTML(vendorSlotId_, vendorSlotData, vendorSlotId_, crossRefs);
     }
 
@@ -5400,7 +5398,7 @@
         ["Dietary Restrictions", mr.dietary || ""],
         ["Status", (s.status||"").replace("_"," ")],
         ["Notes", normalizeSlotNotes(s.notes).map(n => `[${n.author||""}] ${n.text||""}`).join(" | ")]
-      ];
+      ].concat(genericResponsesExportRows(s.responses));
       return rows.filter(([,v]) => String(v).trim() !== "");
     }
 
@@ -5517,22 +5515,28 @@
       } catch(e) { console.error("Syncing vendor dietary data failed:", e); }
     }
 
-    // Fetches everything Caterer/Bar reads that it doesn't own: the dietary
-    // mirror above, DJ/Band's cake-cutting answer (vendor-to-vendor,
-    // read-only -- DJ/Band isn't built yet, so this is null until it is),
-    // every vendor's own Meal Request (vendor-to-vendor rollup), and the
-    // Guest List/RSVP tab's dinner style (already mirrored into
-    // publicCouples long before the vendor portal existed).
-    async function fetchCatererCrossRefs(coupleUid, coupleSlug) {
-      const out = { dietary: [], cakeCutting: null, mealsRollup: [], dinnerStyle: "" };
+    // Fetches every cross-tab value ANY category's fields read that they
+    // don't own: Guest List's dietary rows + dinner style (Caterer/Bar), the
+    // Vendor Meals rollup (Caterer/Bar), DJ/Band's cake-cutting answer
+    // (Caterer/Bar, source of truth on DJ/Band's own tab) and lighting
+    // package (Florist/Design's uplighting cross-check), Shuttle Service's
+    // last pickup time (DJ/Band's "last shuttle" announcement line), Florist/
+    // Design's detail-shot-flowers flag (Photographer/Videographer), the
+    // Generic Skeleton's venue rental end time (DJ/Band's Last Dance
+    // auto-calc), and the Hair/Makeup roster (shared between the Hair and
+    // Makeup slots). Fetched ONCE per page load and handed to every
+    // category's render function -- cheap enough (one query + a handful of
+    // gets) to just always fetch rather than gate per-category.
+    async function fetchAllCategoryCrossRefs(coupleUid, coupleSlug) {
+      const out = {
+        dietary: [], mealsRollup: [], dinnerStyle: "", venueRentalEndTime: "",
+        cakeCutting: null, lightingPackage: null, lastShuttleTime: null,
+        extraFlowersForDetailShots: null, hairMakeupRoster: null
+      };
       try {
         const dietSnap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "dietary"));
         out.dietary = (dietSnap.exists() && Array.isArray(dietSnap.data().rows)) ? dietSnap.data().rows : [];
       } catch(e) { console.error("Fetching dietary data failed:", e); }
-      try {
-        const djSnap = await getDoc(doc(db, "vendorSlots", vendorSlotId(coupleSlug, "dj", "")));
-        out.cakeCutting = djSnap.exists() ? ((djSnap.data().responses || {}).cakeCutting || null) : null;
-      } catch(e) {}
       try {
         const allSlots = await fetchVendorSlotsForCouple(coupleUid);
         out.mealsRollup = allSlots.map(e => ({
@@ -5540,19 +5544,43 @@
           requested: !!(e.slot.mealRequest && e.slot.mealRequest.requested),
           dietary: (e.slot.mealRequest || {}).dietary || ""
         }));
-      } catch(e) {}
+        const djSlot = allSlots.find(e => e.slot.category === "dj");
+        if (djSlot) {
+          out.cakeCutting = (djSlot.slot.responses || {}).cakeCutting || null;
+          out.lightingPackage = (djSlot.slot.responses || {}).lightingPackage || null;
+        }
+        const shuttleSlot = allSlots.find(e => e.slot.category === "shuttle");
+        if (shuttleSlot) out.lastShuttleTime = (shuttleSlot.slot.responses || {}).lastPickupTime || null;
+        const floristSlots = allSlots.filter(e => e.slot.category === "florist");
+        if (floristSlots.length) out.extraFlowersForDetailShots = floristSlots.some(e => !!(e.slot.responses||{}).extraFlowersForDetailShots);
+      } catch(e) { console.error("Fetching vendor cross-refs failed:", e); }
       try {
         const pub = await getDoc(doc(db, "publicCouples", coupleSlug));
-        out.dinnerStyle = pub.exists() ? (pub.data().dinnerStyle || "") : "";
+        if (pub.exists()) {
+          out.dinnerStyle = pub.data().dinnerStyle || "";
+          out.venueRentalEndTime = pub.data().venueRentalEndTime || "";
+        }
+      } catch(e) {}
+      try {
+        const rosterSnap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "hairMakeupRoster"));
+        out.hairMakeupRoster = rosterSnap.exists() ? rosterSnap.data() : null;
       } catch(e) {}
       return out;
     }
 
-    // Dispatches to the right category's fields. Only "caterer" is built so
-    // far -- every other category returns "" (nothing rendered) until built.
+    // Dispatches to the right category's fields. All 7 categories are built.
     function renderCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
-      if (slot.category === "caterer") return catererCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs || {});
-      return "";
+      crossRefs = crossRefs || {};
+      switch (slot.category) {
+        case "caterer": return catererCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs);
+        case "dj": return djCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs);
+        case "photo": return photoCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs);
+        case "florist": return floristCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs);
+        case "hairmakeup": return hairMakeupCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs);
+        case "shuttle": return shuttleCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs);
+        case "other": return otherCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs);
+        default: return "";
+      }
     }
 
     // ── CATEGORY: CATERER/BAR ───────────────────────────────────────
@@ -5772,6 +5800,840 @@
         const ind = document.getElementById(`cf-save-indicator-${idPrefix}`);
         if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
       } catch(e) { alert("Couldn't save: " + e.message); }
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // SHARED HELPERS for the remaining categories (DJ/Band onward). Caterer/
+    // Bar above stays as its own bespoke code -- already shipped and working,
+    // not worth the regression risk of retrofitting it onto these.
+    // ═══════════════════════════════════════════════════════════════
+
+    // Reads every [data-cf] (plain field, or a yes/no radio pair -> boolean)
+    // and [data-cf-radio] (a >2-option radio group -> the checked option's
+    // string value, e.g. "private"/"announced") element inside a container.
+    function collectGenericCfFields(container) {
+      const out = {};
+      container.querySelectorAll("[data-cf]").forEach(el => {
+        const key = el.getAttribute("data-cf");
+        if (el.type === "radio") { if (el.checked) out[key] = el.value === "yes"; }
+        else { out[key] = el.value.trim(); }
+      });
+      container.querySelectorAll("[data-cf-radio]").forEach(el => {
+        if (el.checked) out[el.getAttribute("data-cf-radio")] = el.value;
+      });
+      return out;
+    }
+
+    // Generic repeatable-row reader, e.g. collectRows(container, "data-proc-row", "data-proc-field").
+    function collectRows(container, rowAttr, fieldAttr) {
+      const rows = [];
+      container.querySelectorAll(`[${rowAttr}]`).forEach(rowEl => {
+        const row = {};
+        rowEl.querySelectorAll(`[${fieldAttr}]`).forEach(f => { row[f.getAttribute(fieldAttr)] = f.value.trim(); });
+        rows.push(row);
+      });
+      return rows;
+    }
+
+    async function saveCategoryResponses(slotId, idPrefix, responses) {
+      const whoLabel = isVendorViewMode ? (vendorSlotLabel_ || "Vendor") : "Couple";
+      try {
+        await updateDoc(doc(db, "vendorSlots", slotId), { responses, lastEditedBy: whoLabel, lastEditedAt: new Date().toISOString() });
+        if (isVendorViewMode && vendorSlotData && vendorSlotId_ === slotId) { vendorSlotData.responses = responses; renderVendorStatusAndStamp(); }
+        const hubEntry = vendorHubSlots.find(e => e.slotId === slotId);
+        if (hubEntry) hubEntry.slot.responses = responses;
+        const ind = document.getElementById(`cf-save-indicator-${idPrefix}`);
+        if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    }
+
+    // Simple 12-hour clock-string math for DJ/Band's Last Dance auto-calc.
+    function parseClockTime(str) {
+      if (!str) return null;
+      const m = String(str).trim().toUpperCase().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/);
+      if (!m) return null;
+      let h = parseInt(m[1], 10), min = parseInt(m[2], 10);
+      if (m[3] === "PM" && h !== 12) h += 12;
+      if (m[3] === "AM" && h === 12) h = 0;
+      if (!m[3] && h > 23) return null;
+      return h * 60 + min;
+    }
+    function formatClockTime(totalMin) {
+      totalMin = ((totalMin % 1440) + 1440) % 1440;
+      let h = Math.floor(totalMin / 60), mi = totalMin % 60;
+      const ap = h >= 12 ? "PM" : "AM";
+      let h12 = h % 12; if (h12 === 0) h12 = 12;
+      return `${h12}:${String(mi).padStart(2, "0")} ${ap}`;
+    }
+    function subtractMinutesFromClock(str, minutes) {
+      const t = parseClockTime(str);
+      return t === null ? null : formatClockTime(t - minutes);
+    }
+
+    // Generic export-row fallback for a category's responses{} -- humanizes
+    // camelCase keys, flattens arrays/objects into a readable string, skips
+    // blanks. Used by every category (including Caterer/Bar, whose bespoke
+    // vendorExportRows() never included its own responses{} fields at all).
+    function humanizeFieldKey(key) {
+      return key.replace(/([A-Z])/g, " $1").replace(/^./, c => c.toUpperCase()).trim();
+    }
+    function genericResponsesExportRows(responses) {
+      const rows = [];
+      Object.entries(responses || {}).forEach(([key, val]) => {
+        if (val === null || val === undefined || val === "") return;
+        if (Array.isArray(val)) {
+          if (!val.length) return;
+          const flat = val.map(item => (item && typeof item === "object") ? Object.values(item).filter(Boolean).join(" ") : String(item)).filter(Boolean).join(" | ");
+          if (flat) rows.push([humanizeFieldKey(key), flat]);
+        } else if (typeof val === "object") {
+          const flat = Object.entries(val).filter(([,v]) => v).map(([k,v]) => `${humanizeFieldKey(k)}: ${v}`).join(", ");
+          if (flat) rows.push([humanizeFieldKey(key), flat]);
+        } else if (typeof val === "boolean") {
+          rows.push([humanizeFieldKey(key), val ? "Yes" : "No"]);
+        } else {
+          rows.push([humanizeFieldKey(key), String(val)]);
+        }
+      });
+      return rows;
+    }
+
+    // ── CATEGORY: DJ/BAND ───────────────────────────────────────────
+    function defaultDJResponses() {
+      return {
+        genresInclude: "", genresAvoid: "", mustPlay: "", doNotPlay: "",
+        explicitLyrics: "no", explicitLyricsAfterTime: "",
+        processionalSongs: [], recessionalSong: "", recessionalWalkers: "",
+        entryPoint: "", grandEntranceWho: "", announcementStyle: "",
+        specialtyDances: [],
+        cakeCutting: { value: "" },
+        privateLastDance: false, lastDanceSong: "",
+        tablesChairsLinensNeeded: false, tablesChairsLinensSpecifics: "",
+        powerNeeds: "", setupSpaceNeeds: "",
+        otherMusicianFlag: false, otherMusicianDetails: "",
+        lightingPackage: "",
+        mcDuties: false, mcAnnouncements: "", namePronunciations: ""
+      };
+    }
+
+    let djProcessionalDraft = {};
+    function djProcessionalRowsHTML(idPrefix, rows) {
+      if (!rows.length) return `<p style="font-size:12px;color:var(--mid-gray);font-style:italic;margin-bottom:10px;">No processional songs added yet.</p>`;
+      return rows.map((row, idx) => `
+        <div class="form-grid" data-proc-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Song</label><input class="form-input" type="text" data-proc-field="song" value="${esc(row.song||"")}"></div>
+          <div class="form-group full"><label class="form-label">Who's Walking In</label><input class="form-input" type="text" placeholder="Name(s) or group" data-proc-field="walkers" value="${esc(row.walkers||"")}"></div>
+          <button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeDJProcessionalRow('${idPrefix}',${idx})">Remove</button>
+        </div>`).join("");
+    }
+    window.addDJProcessionalRow = function(idPrefix) {
+      djProcessionalDraft[idPrefix] = djProcessionalDraft[idPrefix] || [];
+      djProcessionalDraft[idPrefix].push({ song: "", walkers: "" });
+      const wrap = document.getElementById(`dj-proc-${idPrefix}`);
+      if (wrap) wrap.innerHTML = djProcessionalRowsHTML(idPrefix, djProcessionalDraft[idPrefix]);
+    };
+    window.removeDJProcessionalRow = function(idPrefix, idx) {
+      if (!djProcessionalDraft[idPrefix]) return;
+      djProcessionalDraft[idPrefix].splice(idx, 1);
+      const wrap = document.getElementById(`dj-proc-${idPrefix}`);
+      if (wrap) wrap.innerHTML = djProcessionalRowsHTML(idPrefix, djProcessionalDraft[idPrefix]);
+    };
+
+    let djDancesDraft = {};
+    function djDanceRowsHTML(idPrefix, rows) {
+      if (!rows.length) return `<p style="font-size:12px;color:var(--mid-gray);font-style:italic;margin-bottom:10px;">No specialty dances added yet.</p>`;
+      return rows.map((row, idx) => `
+        <div class="form-grid" data-dance-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Dance</label><input class="form-input" type="text" placeholder="e.g. First Dance, Father-Daughter" data-dance-field="name" value="${esc(row.name||"")}"></div>
+          <div class="form-group"><label class="form-label">Song</label><input class="form-input" type="text" data-dance-field="song" value="${esc(row.song||"")}"></div>
+          <div class="form-group"><label class="form-label">Full Song or Cutoff?</label>
+            <select class="form-input" data-dance-field="mode">
+              <option value="full" ${row.mode==="full"?"selected":""}>Full Song</option>
+              <option value="cutoff" ${row.mode==="cutoff"?"selected":""}>Cut Off at Time</option>
+            </select>
+          </div>
+          <div class="form-group"><label class="form-label">Cutoff Time (if applicable)</label><input class="form-input" type="text" placeholder="e.g. 2 minutes" data-dance-field="cutoffTime" value="${esc(row.cutoffTime||"")}"></div>
+          <button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeDJDanceRow('${idPrefix}',${idx})">Remove</button>
+        </div>`).join("");
+    }
+    window.addDJDanceRow = function(idPrefix) {
+      djDancesDraft[idPrefix] = djDancesDraft[idPrefix] || [];
+      djDancesDraft[idPrefix].push({ name: "", song: "", mode: "full", cutoffTime: "" });
+      const wrap = document.getElementById(`dj-dances-${idPrefix}`);
+      if (wrap) wrap.innerHTML = djDanceRowsHTML(idPrefix, djDancesDraft[idPrefix]);
+    };
+    window.removeDJDanceRow = function(idPrefix, idx) {
+      if (!djDancesDraft[idPrefix]) return;
+      djDancesDraft[idPrefix].splice(idx, 1);
+      const wrap = document.getElementById(`dj-dances-${idPrefix}`);
+      if (wrap) wrap.innerHTML = djDanceRowsHTML(idPrefix, djDancesDraft[idPrefix]);
+    };
+
+    function djCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      const r = Object.assign(defaultDJResponses(), slot.responses || {});
+      if (!djProcessionalDraft[idPrefix]) djProcessionalDraft[idPrefix] = (r.processionalSongs||[]).slice();
+      if (!djDancesDraft[idPrefix]) djDancesDraft[idPrefix] = (r.specialtyDances||[]).slice();
+      const venueEnd = crossRefs.venueRentalEndTime || "";
+      const lastDanceTime = (r.privateLastDance && venueEnd) ? subtractMinutesFromClock(venueEnd, 40) : null;
+      const shuttleTime = crossRefs.lastShuttleTime;
+
+      return `
+      <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+        <span class="section-label">DJ/Band Details</span>
+        <h2 class="form-section-title">Music <em>preferences</em></h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Genres to Include</label><input class="form-input" data-cf="genresInclude" value="${esc(r.genresInclude)}"></div>
+          <div class="form-group full"><label class="form-label">Genres to Avoid</label><input class="form-input" data-cf="genresAvoid" value="${esc(r.genresAvoid)}"></div>
+          <div class="form-group full"><label class="form-label">Must-Play List</label><textarea class="form-textarea" data-cf="mustPlay">${esc(r.mustPlay)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Do-Not-Play List</label><textarea class="form-textarea" data-cf="doNotPlay">${esc(r.doNotPlay)}</textarea></div>
+        </div>
+        <label class="form-label" style="display:block;margin:16px 0 8px;">Explicit Lyrics</label>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-explicit-${idPrefix}" value="no" data-cf-radio="explicitLyrics" ${r.explicitLyrics==="no"?"checked":""}><span>No</span></label>
+          <label class="check-item"><input type="radio" name="cf-explicit-${idPrefix}" value="yes" data-cf-radio="explicitLyrics" ${r.explicitLyrics==="yes"?"checked":""}><span>Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-explicit-${idPrefix}" value="after" data-cf-radio="explicitLyrics" ${r.explicitLyrics==="after"?"checked":""}><span>Yes, but only after a certain time</span></label>
+        </div>
+        <div class="form-group" style="max-width:260px;"><label class="form-label">If "After" — What Time</label><input class="form-input" data-cf="explicitLyricsAfterTime" value="${esc(r.explicitLyricsAfterTime)}" placeholder="e.g. 9:00 PM"></div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Ceremony <em>Music</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Shared with the Lead Coordinator for the ceremony walk-through.</p>
+        <label class="form-label" style="display:block;margin-bottom:8px;">Processional Song(s)</label>
+        <div id="dj-proc-${idPrefix}">${djProcessionalRowsHTML(idPrefix, djProcessionalDraft[idPrefix])}</div>
+        <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;margin-bottom:16px;" onclick="window.addDJProcessionalRow('${idPrefix}')">+ Add Processional Song</button>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Recessional Song</label><input class="form-input" data-cf="recessionalSong" value="${esc(r.recessionalSong)}"></div>
+          <div class="form-group"><label class="form-label">Who's Walking Out</label><input class="form-input" data-cf="recessionalWalkers" value="${esc(r.recessionalWalkers)}"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Grand <em>Entrance</em></h2>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Entry Point</label><input class="form-input" data-cf="entryPoint" value="${esc(r.entryPoint)}" placeholder="Curtains / back doors / other"></div>
+          <div class="form-group"><label class="form-label">Who's Included</label><input class="form-input" data-cf="grandEntranceWho" value="${esc(r.grandEntranceWho)}"></div>
+          <div class="form-group full"><label class="form-label">Announcement Style</label><input class="form-input" data-cf="announcementStyle" value="${esc(r.announcementStyle)}" placeholder="Individually or as a group"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Specialty <em>Dances</em></h2>
+        <div id="dj-dances-${idPrefix}">${djDanceRowsHTML(idPrefix, djDancesDraft[idPrefix])}</div>
+        <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;margin-bottom:16px;" onclick="window.addDJDanceRow('${idPrefix}')">+ Add Specialty Dance</button>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Cake <em>Cutting</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">This is the source of truth — Caterer/Bar reads this value read-only.</p>
+        <div class="check-group inline">
+          <label class="check-item"><input type="radio" name="cf-cake-${idPrefix}" value="private" data-cf-radio="cakeCuttingValue" ${r.cakeCutting.value==="private"?"checked":""}><span>Private</span></label>
+          <label class="check-item"><input type="radio" name="cf-cake-${idPrefix}" value="announced" data-cf-radio="cakeCuttingValue" ${r.cakeCutting.value==="announced"?"checked":""}><span>Announced</span></label>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Last <em>Dance</em></h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-lastdance-${idPrefix}" value="yes" data-cf="privateLastDance" ${r.privateLastDance?"checked":""}><span>Private last dance: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-lastdance-${idPrefix}" value="no" data-cf="privateLastDance" ${!r.privateLastDance?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;max-width:340px;"><label class="form-label">Final Song</label><input class="form-input" data-cf="lastDanceSong" value="${esc(r.lastDanceSong)}"></div>
+        ${r.privateLastDance ? `<div class="amd-row"><div class="amd-key">Auto-Calculated Start Time</div><div class="amd-val">${lastDanceTime ? esc(lastDanceTime) + ` <span style="color:var(--mid-gray);font-size:11px;">(40 min before venue rental ends at ${esc(venueEnd)} — lights come up 30 min prior)</span>` : "Venue rental end time isn't set yet (admin sets this) — can't calculate."}</div></div>` : ""}
+        <p style="font-size:11px;color:var(--mid-gray);margin-top:10px;">Standing note: DJ/Band is responsible for asking guests to exit the property or move to the cocktail area during this private moment.</p>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">End of <em>Night</em></h2>
+        <div class="amd-row"><div class="amd-key">Last Shuttle</div><div class="amd-val">${shuttleTime ? esc(shuttleTime) + ` <span style="color:var(--mid-gray);font-size:11px;">(set on the Shuttle Service tab — read-only here, to announce as "last shuttle")</span>` : "Not yet set — Shuttle Service hasn't answered this yet"}</div></div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Equipment & <em>A/V</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Standing note: the venue provides zero A/V equipment — DJ/Band supplies all sound/mic/lighting for ceremony, cocktail hour, and reception.</p>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-tables-${idPrefix}" value="yes" data-cf="tablesChairsLinensNeeded" ${r.tablesChairsLinensNeeded?"checked":""}><span>Need tables/chairs/linens from venue: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-tables-${idPrefix}" value="no" data-cf="tablesChairsLinensNeeded" ${!r.tablesChairsLinensNeeded?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Specifics</label><textarea class="form-textarea" data-cf="tablesChairsLinensSpecifics">${esc(r.tablesChairsLinensSpecifics)}</textarea></div>
+          <div class="form-group"><label class="form-label">Power/Outlet Needs</label><input class="form-input" data-cf="powerNeeds" value="${esc(r.powerNeeds)}"></div>
+          <div class="form-group"><label class="form-label">Setup Space Requirements</label><input class="form-input" data-cf="setupSpaceNeeds" value="${esc(r.setupSpaceNeeds)}"></div>
+          <div class="form-group full"><label class="form-label">Lighting Package</label><input class="form-input" data-cf="lightingPackage" value="${esc(r.lightingPackage)}" placeholder="Read by Florist/Design so uplighting isn't assumed by both or neither"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Other Ceremony/Cocktail <em>Musicians</em></h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-othermusic-${idPrefix}" value="yes" data-cf="otherMusicianFlag" ${r.otherMusicianFlag?"checked":""}><span>Couple also has a separate musician: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-othermusic-${idPrefix}" value="no" data-cf="otherMusicianFlag" ${!r.otherMusicianFlag?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-group full"><label class="form-label">Details</label><input class="form-input" data-cf="otherMusicianDetails" value="${esc(r.otherMusicianDetails)}" placeholder="e.g. violinist for ceremony, listed under Other"></div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">MC <em>Duties</em></h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-mc-${idPrefix}" value="yes" data-cf="mcDuties" ${r.mcDuties?"checked":""}><span>MC role: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-mc-${idPrefix}" value="no" data-cf="mcDuties" ${!r.mcDuties?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Announcements Needed</label><textarea class="form-textarea" data-cf="mcAnnouncements">${esc(r.mcAnnouncements)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Name Pronunciations</label><textarea class="form-textarea" data-cf="namePronunciations">${esc(r.namePronunciations)}</textarea></div>
+        </div>
+
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveDJDetails('${slotId}','${idPrefix}')">Save DJ/Band Details</button><span class="autosave-indicator" id="cf-save-indicator-${idPrefix}">Saved</span></div>
+      </div>`;
+    }
+
+    window.saveDJDetails = async function(slotId, idPrefix) {
+      const container = document.getElementById(`cf-section-${idPrefix}`);
+      if (!container) return;
+      const responses = collectGenericCfFields(container);
+      responses.cakeCutting = { value: responses.cakeCuttingValue || "" };
+      delete responses.cakeCuttingValue;
+      responses.processionalSongs = collectRows(container, "data-proc-row", "data-proc-field").filter(r => r.song || r.walkers);
+      responses.specialtyDances = collectRows(container, "data-dance-row", "data-dance-field").filter(r => r.name || r.song);
+      await saveCategoryResponses(slotId, idPrefix, responses);
+    };
+
+    // ── CATEGORY: PHOTOGRAPHER/VIDEOGRAPHER ─────────────────────────
+    function defaultPhotoResponses() {
+      return {
+        stylePrefs: "", editingStyle: "",
+        coverageStart: "", coverageEnd: "",
+        brideGettingReadyLocation: "", groomGettingReadyLocation: "",
+        familySituations: "", referenceFileUrl: "",
+        contentSharingWithVenue: false, socialTagging: false,
+        videographyIncluded: false, engagementSession: false,
+        secondShooter: false, secondShooterName: "",
+        gettingReadyCoverage: "both",
+        firstLook: false, firstLookDetails: "",
+        familyFormals: "", mustHaveShots: "",
+        droneUse: false,
+        hiddenCaveVisit: false, hiddenCaveFlagNote: "",
+        sunsetTime: "", equipmentNeeds: ""
+      };
+    }
+
+    function photoCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      const r = Object.assign(defaultPhotoResponses(), slot.responses || {});
+      const extraFlowers = crossRefs.extraFlowersForDetailShots;
+      return `
+      <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+        <span class="section-label">Photographer/Videographer Details</span>
+        <h2 class="form-section-title">Style & <em>editing</em></h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Style Preferences</label><input class="form-input" data-cf="stylePrefs" value="${esc(r.stylePrefs)}" placeholder="e.g. dramatic, playful, candid, editorial — mood/posing"></div>
+          <div class="form-group full"><label class="form-label">Editing Style</label><input class="form-input" data-cf="editingStyle" value="${esc(r.editingStyle)}" placeholder="e.g. Light & Bright / Natural / Warm / Moody — color grading, not posing"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Coverage <em>hours</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">The actual contracted shooting window — distinct from the Generic Skeleton's arrival/exit time, which is venue access/parking logistics.</p>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Coverage Start</label><input class="form-input" data-cf="coverageStart" value="${esc(r.coverageStart)}" placeholder="e.g. 1:00 PM"></div>
+          <div class="form-group"><label class="form-label">Coverage End</label><input class="form-input" data-cf="coverageEnd" value="${esc(r.coverageEnd)}" placeholder="e.g. 10:00 PM"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Getting Ready <em>locations</em></h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Bride/Partner Location</label><input class="form-input" data-cf="brideGettingReadyLocation" value="${esc(r.brideGettingReadyLocation)}" placeholder="Name + address if off-site"></div>
+          <div class="form-group full"><label class="form-label">Groom/Partner Location</label><input class="form-input" data-cf="groomGettingReadyLocation" value="${esc(r.groomGettingReadyLocation)}" placeholder="Name + address if off-site"></div>
+          <div class="form-group full"><label class="form-label">Special Family/Guest Situations to Be Aware Of</label><textarea class="form-textarea" data-cf="familySituations">${esc(r.familySituations)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Reference/Inspiration File</label><input class="form-input" data-cf="referenceFileUrl" value="${esc(r.referenceFileUrl)}" placeholder="Link to flat-lay, invites, mood board, or any reference file"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Detail <em>shots</em></h2>
+        <div class="amd-row"><div class="amd-key">Florist Leaving Extra Flowers</div><div class="amd-val">${extraFlowers === null ? "Not yet set — Florist/Design hasn't answered this yet" : (extraFlowers ? "Yes" : "No") + ` <span style="color:var(--mid-gray);font-size:11px;">(set on the Florist/Design tab — read-only here)</span>`}</div></div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Sharing & <em>tagging</em></h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-sharing-${idPrefix}" value="yes" data-cf="contentSharingWithVenue" ${r.contentSharingWithVenue?"checked":""}><span>Content sharing with venue for socials: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-sharing-${idPrefix}" value="no" data-cf="contentSharingWithVenue" ${!r.contentSharingWithVenue?"checked":""}><span>No</span></label>
+        </div>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-tagging-${idPrefix}" value="yes" data-cf="socialTagging" ${r.socialTagging?"checked":""}><span>Tagging couple on social media: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-tagging-${idPrefix}" value="no" data-cf="socialTagging" ${!r.socialTagging?"checked":""}><span>No</span></label>
+        </div>
+        <p style="font-size:11px;color:var(--mid-gray);">The couple's actual handles are on the "Couple's Social Handles" section above, pulled read-only from the Generic Skeleton.</p>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Coverage <em>details</em></h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-video-${idPrefix}" value="yes" data-cf="videographyIncluded" ${r.videographyIncluded?"checked":""}><span>Full videography included: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-video-${idPrefix}" value="no" data-cf="videographyIncluded" ${!r.videographyIncluded?"checked":""}><span>No</span></label>
+        </div>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-engage-${idPrefix}" value="yes" data-cf="engagementSession" ${r.engagementSession?"checked":""}><span>Engagement session included: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-engage-${idPrefix}" value="no" data-cf="engagementSession" ${!r.engagementSession?"checked":""}><span>No</span></label>
+        </div>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-second-${idPrefix}" value="yes" data-cf="secondShooter" ${r.secondShooter?"checked":""}><span>Second shooter/assistant: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-second-${idPrefix}" value="no" data-cf="secondShooter" ${!r.secondShooter?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-group" style="margin-bottom:10px;max-width:340px;"><label class="form-label">Second Shooter Name</label><input class="form-input" data-cf="secondShooterName" value="${esc(r.secondShooterName)}"></div>
+        <div class="form-group" style="max-width:340px;margin-bottom:10px;"><label class="form-label">Getting-Ready Coverage</label>
+          <select class="form-input" data-cf="gettingReadyCoverage">
+            <option value="both" ${r.gettingReadyCoverage==="both"?"selected":""}>Both</option>
+            <option value="one" ${r.gettingReadyCoverage==="one"?"selected":""}>One</option>
+            <option value="neither" ${r.gettingReadyCoverage==="neither"?"selected":""}>Neither</option>
+          </select>
+        </div>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-firstlook-${idPrefix}" value="yes" data-cf="firstLook" ${r.firstLook?"checked":""}><span>First look: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-firstlook-${idPrefix}" value="no" data-cf="firstLook" ${!r.firstLook?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-group full" style="margin-bottom:10px;"><label class="form-label">First Look Time/Location</label><input class="form-input" data-cf="firstLookDetails" value="${esc(r.firstLookDetails)}"></div>
+        <div class="form-group full" style="margin-bottom:10px;"><label class="form-label">Family Formals List</label><textarea class="form-textarea" data-cf="familyFormals">${esc(r.familyFormals)}</textarea></div>
+        <div class="form-group full"><label class="form-label">Must-Have Shot List</label><textarea class="form-textarea" data-cf="mustHaveShots">${esc(r.mustHaveShots)}</textarea></div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Drone & <em>hidden cave</em></h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-drone-${idPrefix}" value="yes" data-cf="droneUse" ${r.droneUse?"checked":""}><span>Drone use: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-drone-${idPrefix}" value="no" data-cf="droneUse" ${!r.droneUse?"checked":""}><span>No</span></label>
+        </div>
+        <p style="font-size:11px;color:var(--mid-gray);margin-bottom:10px;">The venue allows drone footage — this is just logistics/scheduling awareness, not a permission ask.</p>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-cave-${idPrefix}" value="yes" data-cf="hiddenCaveVisit" ${r.hiddenCaveVisit?"checked":""}><span>Hidden cave visit: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-cave-${idPrefix}" value="no" data-cf="hiddenCaveVisit" ${!r.hiddenCaveVisit?"checked":""}><span>No</span></label>
+        </div>
+        ${r.hiddenCaveVisit ? `<p style="font-size:12px;color:var(--gold-dark);margin-bottom:10px;">The spec calls for this to auto-add a ~20–30 min block to the Shared Timeline (typically during dinner). Vendor Access can only add tagged <em>notes</em> to timeline slots that already exist in the real Wedding Day Timeline (one-way from Planning Tools, per your architecture rule) — it can't create a new timeline block on its own. Flag it below and ask your coordinator to add the block on the real Timeline tool.</p>` : ""}
+        <div class="form-group full"><label class="form-label">How to Flag It to Caterer (hold plates vs. serve on return)</label><input class="form-input" data-cf="hiddenCaveFlagNote" value="${esc(r.hiddenCaveFlagNote)}"></div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Wrap-up</h2>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Sunset/Golden Hour Portrait Time</label><input class="form-input" data-cf="sunsetTime" value="${esc(r.sunsetTime)}"></div>
+          <div class="form-group full"><label class="form-label">Equipment Needs</label><textarea class="form-textarea" data-cf="equipmentNeeds">${esc(r.equipmentNeeds)}</textarea></div>
+        </div>
+
+        <div class="form-save-row"><button class="btn-save" onclick="window.savePhotoDetails('${slotId}','${idPrefix}')">Save Photographer/Videographer Details</button><span class="autosave-indicator" id="cf-save-indicator-${idPrefix}">Saved</span></div>
+      </div>`;
+    }
+
+    window.savePhotoDetails = async function(slotId, idPrefix) {
+      const container = document.getElementById(`cf-section-${idPrefix}`);
+      if (!container) return;
+      const responses = collectGenericCfFields(container);
+      await saveCategoryResponses(slotId, idPrefix, responses);
+    };
+
+    // ── CATEGORY: FLORIST/DESIGN ────────────────────────────────────
+    function defaultFloristResponses() {
+      return {
+        deliveryTime: "", installType: "full", breakdownTiming: "",
+        archProviding: false, archMovingToReception: "", aisleDecor: "", pewMarkers: "",
+        bridalBouquet: "", bridesmaidsBouquetCountManual: "", boutonnieresCountManual: "", corsagesCount: "", otherPersonalFlowers: "",
+        centerpieces: "", headTableFlorals: "", cakeTableFlorals: "", candlesProviding: false,
+        extraFlowersForDetailShots: false,
+        backdrops: "", draping: "", specialtyFurniture: "", signage: "", specialtyRentals: "",
+        uplightingNote: "", colorPaletteUrl: "", floorPlanNotes: "",
+        allergyNotes: ""
+      };
+    }
+
+    function floristCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      const r = Object.assign(defaultFloristResponses(), slot.responses || {});
+      const djLighting = crossRefs.lightingPackage;
+      return `
+      <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+        <span class="section-label">Florist/Design Details</span>
+        <h2 class="form-section-title">Delivery & <em>install</em></h2>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Delivery/Setup Time</label><input class="form-input" data-cf="deliveryTime" value="${esc(r.deliveryTime)}" placeholder="May be earlier than general arrival"></div>
+          <div class="form-group"><label class="form-label">Install Type</label>
+            <select class="form-input" data-cf="installType">
+              <option value="full" ${r.installType==="full"?"selected":""}>Full Install</option>
+              <option value="dropoff" ${r.installType==="dropoff"?"selected":""}>Drop-off Only</option>
+            </select>
+          </div>
+          <div class="form-group full"><label class="form-label">Breakdown Timing</label><input class="form-input" data-cf="breakdownTiming" value="${esc(r.breakdownTiming)}" placeholder="Same night or next-day pickup"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Ceremony</h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-arch-${idPrefix}" value="yes" data-cf="archProviding" ${r.archProviding?"checked":""}><span>Providing arch/arbor: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-arch-${idPrefix}" value="no" data-cf="archProviding" ${!r.archProviding?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Arch Moving to Reception? Who's Responsible</label><input class="form-input" data-cf="archMovingToReception" value="${esc(r.archMovingToReception)}" placeholder="Florist or venue"></div>
+          <div class="form-group"><label class="form-label">Aisle Décor</label><input class="form-input" data-cf="aisleDecor" value="${esc(r.aisleDecor)}"></div>
+          <div class="form-group"><label class="form-label">Pew/Chair Markers</label><input class="form-input" data-cf="pewMarkers" value="${esc(r.pewMarkers)}"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Bouquets & <em>personal flowers</em></h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Bridal Bouquet</label><input class="form-input" data-cf="bridalBouquet" value="${esc(r.bridalBouquet)}"></div>
+          <div class="form-group"><label class="form-label">Bridesmaids Bouquet Count (manual)</label><input class="form-input" data-cf="bridesmaidsBouquetCountManual" value="${esc(r.bridesmaidsBouquetCountManual)}" placeholder="Will auto-pull from Guest List Bridal Party once Guest List Groups are built"></div>
+          <div class="form-group"><label class="form-label">Boutonnieres Count (manual)</label><input class="form-input" data-cf="boutonnieresCountManual" value="${esc(r.boutonnieresCountManual)}" placeholder="Same — manual for now"></div>
+          <div class="form-group"><label class="form-label">Corsages Count</label><input class="form-input" data-cf="corsagesCount" value="${esc(r.corsagesCount)}" placeholder="Moms/grandmothers — not auto-tagged"></div>
+          <div class="form-group full"><label class="form-label">Other (flower crown, toss bouquet, etc.)</label><input class="form-input" data-cf="otherPersonalFlowers" value="${esc(r.otherPersonalFlowers)}"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Reception</h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Centerpieces (style/type — rounds vs. longs)</label><textarea class="form-textarea" data-cf="centerpieces">${esc(r.centerpieces)}</textarea></div>
+          <div class="form-group"><label class="form-label">Head/Sweetheart Table Florals</label><input class="form-input" data-cf="headTableFlorals" value="${esc(r.headTableFlorals)}"></div>
+          <div class="form-group"><label class="form-label">Cake Table Florals</label><input class="form-input" data-cf="cakeTableFlorals" value="${esc(r.cakeTableFlorals)}"></div>
+        </div>
+        <div class="check-group inline" style="margin-top:10px;">
+          <label class="check-item"><input type="radio" name="cf-candles-${idPrefix}" value="yes" data-cf="candlesProviding" ${r.candlesProviding?"checked":""}><span>Providing candles: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-candles-${idPrefix}" value="no" data-cf="candlesProviding" ${!r.candlesProviding?"checked":""}><span>No</span></label>
+        </div>
+        <p style="font-size:11px;color:var(--mid-gray);margin-top:6px;">Flag for venue open-flame policy check if providing candles.</p>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Detail <em>shots</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">This is the source of truth — Photographer/Videographer reads this value read-only.</p>
+        <div class="check-group inline">
+          <label class="check-item"><input type="radio" name="cf-extraflowers-${idPrefix}" value="yes" data-cf="extraFlowersForDetailShots" ${r.extraFlowersForDetailShots?"checked":""}><span>Leaving extra flowers/loose stems: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-extraflowers-${idPrefix}" value="no" data-cf="extraFlowersForDetailShots" ${!r.extraFlowersForDetailShots?"checked":""}><span>No</span></label>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Design <em>(non-floral)</em></h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Backdrops (ceremony arch alternative, sweetheart table)</label><input class="form-input" data-cf="backdrops" value="${esc(r.backdrops)}" placeholder="Material/style"></div>
+          <div class="form-group full"><label class="form-label">Draping/Fabric Installations</label><input class="form-input" data-cf="draping" value="${esc(r.draping)}"></div>
+          <div class="form-group full"><label class="form-label">Specialty Furniture (lounge seating, cocktail tables, benches)</label><input class="form-input" data-cf="specialtyFurniture" value="${esc(r.specialtyFurniture)}"></div>
+          <div class="form-group full"><label class="form-label">Signage (welcome sign, seating chart, menu) — Who's Designing/Providing</label><input class="form-input" data-cf="signage" value="${esc(r.signage)}"></div>
+          <div class="form-group full"><label class="form-label">Specialty Rentals (neon signs, marquee letters, moon gates, etc.)</label><input class="form-input" data-cf="specialtyRentals" value="${esc(r.specialtyRentals)}"></div>
+        </div>
+        <div class="amd-row"><div class="amd-key">DJ/Band Lighting Package</div><div class="amd-val">${djLighting ? esc(djLighting) + ` <span style="color:var(--mid-gray);font-size:11px;">(set on the DJ/Band tab — read-only here)</span>` : "Not yet set — DJ/Band hasn't answered this yet"}</div></div>
+        <div class="form-grid" style="margin-top:12px;">
+          <div class="form-group full"><label class="form-label">Uplighting/Ambiance Lighting Note</label><input class="form-input" data-cf="uplightingNote" value="${esc(r.uplightingNote)}" placeholder="Cross-check against DJ/Band's lighting package above so it's not assumed by both or neither"></div>
+          <div class="form-group full"><label class="form-label">Color Palette / Mood Board</label><input class="form-input" data-cf="colorPaletteUrl" value="${esc(r.colorPaletteUrl)}" placeholder="Link to reference upload"></div>
+          <div class="form-group full"><label class="form-label">Floor Plan/Layout Preferences</label><textarea class="form-textarea" data-cf="floorPlanNotes">${esc(r.floorPlanNotes)}</textarea></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Allergy/Sensitivity <em>Notes</em></h2>
+        <div class="form-group full"><label class="form-label">Flowers to Avoid for Guest Allergies</label><textarea class="form-textarea" data-cf="allergyNotes">${esc(r.allergyNotes)}</textarea></div>
+
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveFloristDetails('${slotId}','${idPrefix}')">Save Florist/Design Details</button><span class="autosave-indicator" id="cf-save-indicator-${idPrefix}">Saved</span></div>
+      </div>`;
+    }
+
+    window.saveFloristDetails = async function(slotId, idPrefix) {
+      const container = document.getElementById(`cf-section-${idPrefix}`);
+      if (!container) return;
+      const responses = collectGenericCfFields(container);
+      await saveCategoryResponses(slotId, idPrefix, responses);
+    };
+
+    // ── CATEGORY: HAIR/MAKEUP ───────────────────────────────────────
+    // Split-slot category (Hair + Makeup, built in Phase 1). "Who's Being
+    // Serviced" is shared roster data -- couple/admin-authored, read by both
+    // slots -- stored separately from either slot's own responses{} so it
+    // doesn't duplicate/diverge between the two. Lives at
+    // couples/{uid}/vendorSharedData/hairMakeupRoster, already covered by the
+    // existing wildcard rule (read: verified vendor of this couple; write:
+    // owning couple/admin only -- vendors consume it, they don't set it).
+    const HAIR_MAKEUP_DEFAULT_ROWS = [
+      { label: "Bride", service: "both" },
+      { label: "Bridal Party", service: "neither" },
+      { label: "Moms/Grandmothers/Aunts", service: "neither" },
+      { label: "Flower Girl/Other Minors", service: "neither" },
+      { label: "Groom/Partner", service: "neither" }
+    ];
+
+    async function fetchHairMakeupRoster(coupleUid) {
+      try {
+        const snap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "hairMakeupRoster"));
+        return (snap.exists() && Array.isArray(snap.data().rows) && snap.data().rows.length) ? snap.data().rows : HAIR_MAKEUP_DEFAULT_ROWS.slice();
+      } catch(e) { console.error("Fetching Hair/Makeup roster failed:", e); return HAIR_MAKEUP_DEFAULT_ROWS.slice(); }
+    }
+
+    let hairMakeupRosterDraft = {};
+    function hairMakeupRosterRowsHTML(idPrefix, rows, editable) {
+      return rows.map((row, idx) => `
+        <div class="form-grid" data-roster-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          ${editable
+            ? `<div class="form-group full"><label class="form-label">Person/Group</label><input class="form-input" type="text" data-roster-field="label" value="${esc(row.label||"")}"></div>`
+            : `<div class="form-group full"><label class="form-label">Person/Group</label><div class="amd-val" style="padding-top:8px;">${esc(row.label||"")}</div></div>`}
+          <div class="form-group">
+            <label class="form-label">Service</label>
+            ${editable ? `<select class="form-input" data-roster-field="service">
+              <option value="hair" ${row.service==="hair"?"selected":""}>Hair Only</option>
+              <option value="makeup" ${row.service==="makeup"?"selected":""}>Makeup Only</option>
+              <option value="both" ${row.service==="both"?"selected":""}>Both</option>
+              <option value="neither" ${row.service==="neither"?"selected":""}>Neither</option>
+            </select>` : `<div class="amd-val" style="padding-top:8px;text-transform:capitalize;">${esc(row.service||"neither")}</div>`}
+          </div>
+          ${editable ? `<button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeHairMakeupRosterRow('${idPrefix}',${idx})">Remove</button>` : ""}
+        </div>`).join("");
+    }
+
+    window.addHairMakeupRosterRow = function(idPrefix) {
+      hairMakeupRosterDraft[idPrefix] = hairMakeupRosterDraft[idPrefix] || [];
+      hairMakeupRosterDraft[idPrefix].push({ label: "", service: "neither" });
+      const wrap = document.getElementById(`roster-rows-${idPrefix}`);
+      if (wrap) wrap.innerHTML = hairMakeupRosterRowsHTML(idPrefix, hairMakeupRosterDraft[idPrefix], true);
+    };
+    window.removeHairMakeupRosterRow = function(idPrefix, idx) {
+      if (!hairMakeupRosterDraft[idPrefix]) return;
+      hairMakeupRosterDraft[idPrefix].splice(idx, 1);
+      const wrap = document.getElementById(`roster-rows-${idPrefix}`);
+      if (wrap) wrap.innerHTML = hairMakeupRosterRowsHTML(idPrefix, hairMakeupRosterDraft[idPrefix], true);
+    };
+    window.saveHairMakeupRoster = async function(idPrefix, coupleUid) {
+      const wrap = document.getElementById(`roster-rows-${idPrefix}`);
+      if (!wrap) return;
+      const rows = collectRows(wrap, "data-roster-row", "data-roster-field").filter(r => r.label);
+      try {
+        await setDoc(doc(db, "couples", coupleUid, "vendorSharedData", "hairMakeupRoster"), { rows, lastEditedAt: new Date().toISOString() });
+        const ind = document.getElementById(`roster-save-indicator-${idPrefix}`);
+        if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
+      } catch(e) { alert("Couldn't save roster: " + e.message); }
+    };
+
+    // Couple-editable roster, rendered once on the Hair/Makeup category page
+    // (not per-vendor-card -- it's shared between the two slots). Called
+    // from loadVendorHub alongside the timeline/social-handles sections.
+    async function renderHairMakeupRosterEditor(coupleUid) {
+      const wrap = document.getElementById("roster-rows-hairmakeup");
+      if (!wrap) return;
+      const rows = await fetchHairMakeupRoster(coupleUid);
+      hairMakeupRosterDraft["hairmakeup"] = rows.slice();
+      wrap.innerHTML = hairMakeupRosterRowsHTML("hairmakeup", hairMakeupRosterDraft["hairmakeup"], true);
+    }
+
+    window.saveHairMakeupRosterFromPage = function() {
+      return window.saveHairMakeupRoster("hairmakeup", currentUser.uid);
+    };
+
+    function defaultHairMakeupResponses() {
+      return {
+        serviceOrder: "", touchUpVisit: false, trialRunDate: "",
+        inspirationPhotoUrl: "", hairStyle: "", makeupStyle: "", skinSensitivities: "",
+        groomServices: ""
+      };
+    }
+
+    function hairMakeupCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      const r = Object.assign(defaultHairMakeupResponses(), slot.responses || {});
+      const isHairSlot = slot.slotKey === "hair";
+      const isMakeupSlot = slot.slotKey === "makeup";
+      const roster = crossRefs.hairMakeupRoster || HAIR_MAKEUP_DEFAULT_ROWS;
+      const relevantRoster = roster.filter(row => row.service === "both" || (isHairSlot && row.service === "hair") || (isMakeupSlot && row.service === "makeup"));
+
+      return `
+      <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+        <span class="section-label">${isHairSlot ? "Hair" : isMakeupSlot ? "Makeup" : "Hair/Makeup"} Details</span>
+        <h2 class="form-section-title">Who's being <em>serviced</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Set once by the couple, shared between the Hair and Makeup slots — this ${isHairSlot ? "Hair" : isMakeupSlot ? "Makeup" : "vendor"} slot only sees who needs ${isHairSlot ? "hair" : isMakeupSlot ? "makeup" : "service"}.</p>
+        ${relevantRoster.length ? `<div class="amd-section">` + relevantRoster.map(row => `<div class="amd-row"><div class="amd-key">${esc(row.label)}</div><div class="amd-val" style="text-transform:capitalize;">${esc(row.service)}</div></div>`).join("") + `</div>` : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">Nobody flagged for this service yet.</p>`}
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Timing & <em>order</em></h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Service Order (who's first/last)</label><textarea class="form-textarea" data-cf="serviceOrder" placeholder="Bride typically last, right before photos">${esc(r.serviceOrder)}</textarea></div>
+        </div>
+        <div class="check-group inline" style="margin:10px 0;">
+          <label class="check-item"><input type="radio" name="cf-touchup-${idPrefix}" value="yes" data-cf="touchUpVisit" ${r.touchUpVisit?"checked":""}><span>Touch-up visit later in day: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-touchup-${idPrefix}" value="no" data-cf="touchUpVisit" ${!r.touchUpVisit?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-group" style="max-width:260px;"><label class="form-label">Trial Run Date (informational)</label><input class="form-input" data-cf="trialRunDate" value="${esc(r.trialRunDate)}"></div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Style <em>reference</em></h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Inspiration Photo</label><input class="form-input" data-cf="inspirationPhotoUrl" value="${esc(r.inspirationPhotoUrl)}" placeholder="Link to inspiration photo(s)"></div>
+          ${!isMakeupSlot ? `<div class="form-group full"><label class="form-label">Hair Style</label><input class="form-input" data-cf="hairStyle" value="${esc(r.hairStyle)}" placeholder="Up / down / half-up"></div>` : ""}
+          ${!isHairSlot ? `<div class="form-group full"><label class="form-label">Makeup Style</label><input class="form-input" data-cf="makeupStyle" value="${esc(r.makeupStyle)}" placeholder="Natural / glam / airbrush / etc."></div>` : ""}
+          <div class="form-group full"><label class="form-label">Skin Sensitivities/Allergies</label><input class="form-input" data-cf="skinSensitivities" value="${esc(r.skinSensitivities)}" placeholder="Adhesives, products"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Groom/Partner <em>services</em></h2>
+        <div class="form-group full"><label class="form-label">Any Services for Groom/Other Partner</label><textarea class="form-textarea" data-cf="groomServices">${esc(r.groomServices)}</textarea></div>
+
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveHairMakeupDetails('${slotId}','${idPrefix}')">Save ${isHairSlot ? "Hair" : isMakeupSlot ? "Makeup" : "Hair/Makeup"} Details</button><span class="autosave-indicator" id="cf-save-indicator-${idPrefix}">Saved</span></div>
+      </div>`;
+    }
+
+    window.saveHairMakeupDetails = async function(slotId, idPrefix) {
+      const container = document.getElementById(`cf-section-${idPrefix}`);
+      if (!container) return;
+      const responses = collectGenericCfFields(container);
+      await saveCategoryResponses(slotId, idPrefix, responses);
+    };
+
+    // ── CATEGORY: SHUTTLE SERVICE ────────────────────────────────────
+    function defaultShuttleResponses() {
+      return {
+        fleetCount: "", capacityPerShuttle: "",
+        dropoffRuns: [], pickupRuns: [],
+        driverName: "", driverPhone: "",
+        lastPickupTime: ""
+      };
+    }
+
+    let shuttleDropoffDraft = {};
+    function shuttleDropoffRowsHTML(idPrefix, rows) {
+      if (!rows.length) return `<p style="font-size:12px;color:var(--mid-gray);font-style:italic;margin-bottom:10px;">No drop-off runs added yet.</p>`;
+      return rows.map((row, idx) => `
+        <div class="form-grid" data-dropoff-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Pickup Location</label><input class="form-input" type="text" data-dropoff-field="pickupLocation" value="${esc(row.pickupLocation||"")}"></div>
+          <div class="form-group"><label class="form-label">Drop-off Time at Venue</label><input class="form-input" type="text" placeholder="e.g. 4:00 PM" data-dropoff-field="dropoffTime" value="${esc(row.dropoffTime||"")}"></div>
+          <div class="form-group"><label class="form-label">Which Shuttle</label><input class="form-input" type="text" data-dropoff-field="shuttleAssigned" value="${esc(row.shuttleAssigned||"")}"></div>
+          <button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeShuttleDropoffRow('${idPrefix}',${idx})">Remove</button>
+        </div>`).join("");
+    }
+    window.addShuttleDropoffRow = function(idPrefix) {
+      shuttleDropoffDraft[idPrefix] = shuttleDropoffDraft[idPrefix] || [];
+      shuttleDropoffDraft[idPrefix].push({ pickupLocation: "", dropoffTime: "", shuttleAssigned: "" });
+      const wrap = document.getElementById(`shuttle-dropoff-${idPrefix}`);
+      if (wrap) wrap.innerHTML = shuttleDropoffRowsHTML(idPrefix, shuttleDropoffDraft[idPrefix]);
+    };
+    window.removeShuttleDropoffRow = function(idPrefix, idx) {
+      if (!shuttleDropoffDraft[idPrefix]) return;
+      shuttleDropoffDraft[idPrefix].splice(idx, 1);
+      const wrap = document.getElementById(`shuttle-dropoff-${idPrefix}`);
+      if (wrap) wrap.innerHTML = shuttleDropoffRowsHTML(idPrefix, shuttleDropoffDraft[idPrefix]);
+    };
+
+    let shuttlePickupDraft = {};
+    function shuttlePickupRowsHTML(idPrefix, rows) {
+      if (!rows.length) return `<p style="font-size:12px;color:var(--mid-gray);font-style:italic;margin-bottom:10px;">No pickup runs added yet.</p>`;
+      return rows.map((row, idx) => `
+        <div class="form-grid" data-pickup-row="${idx}" style="margin-bottom:10px;align-items:end;">
+          <div class="form-group"><label class="form-label">Pickup Time at Venue</label><input class="form-input" type="text" placeholder="e.g. 11:00 PM" data-pickup-field="pickupTime" value="${esc(row.pickupTime||"")}"></div>
+          <div class="form-group"><label class="form-label">Drop-off Location(s)</label><input class="form-input" type="text" data-pickup-field="dropoffLocations" value="${esc(row.dropoffLocations||"")}"></div>
+          <div class="form-group"><label class="form-label">Which Shuttle</label><input class="form-input" type="text" data-pickup-field="shuttleAssigned" value="${esc(row.shuttleAssigned||"")}"></div>
+          <button type="button" style="background:none;border:1px solid #c0392b;color:#c0392b;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:9px 10px;cursor:pointer;" onclick="window.removeShuttlePickupRow('${idPrefix}',${idx})">Remove</button>
+        </div>`).join("");
+    }
+    window.addShuttlePickupRow = function(idPrefix) {
+      shuttlePickupDraft[idPrefix] = shuttlePickupDraft[idPrefix] || [];
+      shuttlePickupDraft[idPrefix].push({ pickupTime: "", dropoffLocations: "", shuttleAssigned: "" });
+      const wrap = document.getElementById(`shuttle-pickup-${idPrefix}`);
+      if (wrap) wrap.innerHTML = shuttlePickupRowsHTML(idPrefix, shuttlePickupDraft[idPrefix]);
+    };
+    window.removeShuttlePickupRow = function(idPrefix, idx) {
+      if (!shuttlePickupDraft[idPrefix]) return;
+      shuttlePickupDraft[idPrefix].splice(idx, 1);
+      const wrap = document.getElementById(`shuttle-pickup-${idPrefix}`);
+      if (wrap) wrap.innerHTML = shuttlePickupRowsHTML(idPrefix, shuttlePickupDraft[idPrefix]);
+    };
+
+    function shuttleCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      const r = Object.assign(defaultShuttleResponses(), slot.responses || {});
+      if (!shuttleDropoffDraft[idPrefix]) shuttleDropoffDraft[idPrefix] = (r.dropoffRuns||[]).slice();
+      if (!shuttlePickupDraft[idPrefix]) shuttlePickupDraft[idPrefix] = (r.pickupRuns||[]).slice();
+      return `
+      <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+        <span class="section-label">Shuttle Service Details</span>
+        <h2 class="form-section-title">Fleet</h2>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label"># Shuttles Running</label><input class="form-input" data-cf="fleetCount" value="${esc(r.fleetCount)}"></div>
+          <div class="form-group"><label class="form-label">Capacity per Shuttle</label><input class="form-input" data-cf="capacityPerShuttle" value="${esc(r.capacityPerShuttle)}"></div>
+        </div>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Drop-off <em>(start of night)</em></h2>
+        <div id="shuttle-dropoff-${idPrefix}">${shuttleDropoffRowsHTML(idPrefix, shuttleDropoffDraft[idPrefix])}</div>
+        <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;margin-bottom:16px;" onclick="window.addShuttleDropoffRow('${idPrefix}')">+ Add Drop-off Run</button>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Pickup <em>(end of night)</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">This is the source of truth for DJ/Band's "last shuttle" field — the latest pickup time below is saved automatically as that value.</p>
+        <div id="shuttle-pickup-${idPrefix}">${shuttlePickupRowsHTML(idPrefix, shuttlePickupDraft[idPrefix])}</div>
+        <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;margin-bottom:16px;" onclick="window.addShuttlePickupRow('${idPrefix}')">+ Add Pickup Run</button>
+
+        <div class="form-divider"></div>
+        <h2 class="form-section-title">Driver <em>Contact</em></h2>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">On-Site Driver Name</label><input class="form-input" data-cf="driverName" value="${esc(r.driverName)}"></div>
+          <div class="form-group"><label class="form-label">Driver Cell Number</label><input class="form-input" data-cf="driverPhone" value="${esc(r.driverPhone)}"></div>
+        </div>
+
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveShuttleDetails('${slotId}','${idPrefix}')">Save Shuttle Service Details</button><span class="autosave-indicator" id="cf-save-indicator-${idPrefix}">Saved</span></div>
+      </div>`;
+    }
+
+    window.saveShuttleDetails = async function(slotId, idPrefix) {
+      const container = document.getElementById(`cf-section-${idPrefix}`);
+      if (!container) return;
+      const responses = collectGenericCfFields(container);
+      responses.dropoffRuns = collectRows(container, "data-dropoff-row", "data-dropoff-field").filter(r => r.pickupLocation || r.dropoffTime);
+      const pickupRuns = collectRows(container, "data-pickup-row", "data-pickup-field").filter(r => r.pickupTime || r.dropoffLocations);
+      responses.pickupRuns = pickupRuns;
+      // Source of truth for DJ/Band's "last shuttle" line: the latest valid
+      // pickup time among this run's entries, computed automatically rather
+      // than asking the vendor to also type it in separately.
+      const parsedTimes = pickupRuns.map(r => ({ raw: r.pickupTime, min: parseClockTime(r.pickupTime) })).filter(t => t.min !== null);
+      responses.lastPickupTime = parsedTimes.length ? parsedTimes.reduce((a,b) => b.min > a.min ? b : a).raw : "";
+      await saveCategoryResponses(slotId, idPrefix, responses);
+    };
+
+    // ── CATEGORY: OTHER ──────────────────────────────────────────────
+    // Repeatable structure already exists (Phase 1). Optional light-touch
+    // fields depend on what the couple named this entry (slotLabel) --
+    // matched loosely by keyword, per spec ("Officiant," "Transportation,"
+    // "Ceremony/Cocktail Musician" are the three called out; anything else
+    // just gets the full Generic Skeleton with no extra fields, per spec).
+    function defaultOtherResponses() {
+      return {
+        officiantMealNeeded: false, robeColor: "", ceremonyElements: "",
+        transportTimes: "", transportLocations: ""
+      };
+    }
+
+    function otherCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
+      const r = Object.assign(defaultOtherResponses(), slot.responses || {});
+      const label = (slot.slotLabel || "").toLowerCase();
+      const isOfficiant = /officiant/.test(label);
+      const isTransport = /transport/.test(label);
+      const isMusician = /musician|ceremony.*cocktail|cocktail.*ceremony/.test(label);
+
+      if (!isOfficiant && !isTransport && !isMusician) {
+        return `
+        <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+          <span class="section-label">${esc(slot.slotLabel || "Other Vendor")} Details</span>
+          <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;">No category-specific fields for this vendor type — use the Notes field above for anything specific to it.</p>
+        </div>`;
+      }
+
+      let sectionsHTML = "";
+      if (isOfficiant) {
+        sectionsHTML += `
+        <h2 class="form-section-title">Officiant</h2>
+        <div class="check-group inline" style="margin-bottom:10px;">
+          <label class="check-item"><input type="radio" name="cf-officiantmeal-${idPrefix}" value="yes" data-cf="officiantMealNeeded" ${r.officiantMealNeeded?"checked":""}><span>Meal needed: Yes</span></label>
+          <label class="check-item"><input type="radio" name="cf-officiantmeal-${idPrefix}" value="no" data-cf="officiantMealNeeded" ${!r.officiantMealNeeded?"checked":""}><span>No</span></label>
+        </div>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Robe/Attire Color (for photo coordination)</label><input class="form-input" data-cf="robeColor" value="${esc(r.robeColor)}"></div>
+          <div class="form-group full"><label class="form-label">Special Ceremony Elements to Know About</label><textarea class="form-textarea" data-cf="ceremonyElements">${esc(r.ceremonyElements)}</textarea></div>
+        </div>`;
+      }
+      if (isTransport) {
+        sectionsHTML += `
+        <h2 class="form-section-title" style="margin-top:${isOfficiant?"24px":"0"};">Transportation</h2>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Pickup/Drop-off Times</label><textarea class="form-textarea" data-cf="transportTimes">${esc(r.transportTimes)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Pickup/Drop-off Locations</label><textarea class="form-textarea" data-cf="transportLocations">${esc(r.transportLocations)}</textarea></div>
+        </div>`;
+      }
+      if (isMusician) {
+        sectionsHTML += `
+        <h2 class="form-section-title" style="margin-top:${(isOfficiant||isTransport)?"24px":"0"};">Ceremony/Cocktail Musician</h2>
+        <p style="font-size:12px;color:var(--mid-gray);">Cross-reference note already on the DJ/Band tab, so DJ/Band knows who else is covering music.</p>`;
+      }
+
+      return `
+      <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
+        <span class="section-label">${esc(slot.slotLabel || "Other Vendor")} Details</span>
+        ${sectionsHTML}
+        <div class="form-save-row"><button class="btn-save" onclick="window.saveOtherDetails('${slotId}','${idPrefix}')">Save Details</button><span class="autosave-indicator" id="cf-save-indicator-${idPrefix}">Saved</span></div>
+      </div>`;
+    }
+
+    window.saveOtherDetails = async function(slotId, idPrefix) {
+      const container = document.getElementById(`cf-section-${idPrefix}`);
+      if (!container) return;
+      const responses = collectGenericCfFields(container);
+      await saveCategoryResponses(slotId, idPrefix, responses);
     };
 
     // ═══════════════════════════════════════════════════════════════
@@ -8744,6 +9606,16 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share each link and PIN with your vendor(s) directly — they'll be dropped straight into their own tab, with no account needed. Neither can see the other's information.</p>
+    <div class="form-section-block">
+      <h2 class="form-section-title">Who's Being <em>Serviced</em></h2>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Set this once — your Hair vendor will only see who needs hair, your Makeup vendor only who needs makeup.</p>
+      <div id="roster-rows-hairmakeup"></div>
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:8px;">
+        <button type="button" class="acc-btn-export" style="padding:8px 18px;font-size:10px;" onclick="window.addHairMakeupRosterRow('hairmakeup')">+ Add Person/Group</button>
+        <button class="btn-save" style="padding:8px 24px;font-size:10px;" onclick="window.saveHairMakeupRosterFromPage()">Save</button>
+        <span class="autosave-indicator" id="roster-save-indicator-hairmakeup">Saved</span>
+      </div>
+    </div>
     <div id="vendorcat-cards-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('hairmakeup')">+ Add Another Hair/Makeup Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
