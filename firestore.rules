@@ -173,10 +173,10 @@ service cloud.firestore {
     // indirectly through a mirror. Read restricted to Caterer/Bar and
     // Photographer/Videographer ONLY -- the two categories that actually
     // need per-guest detail; every other category only ever sees the
-    // aggregate guestCount (mirrored separately into publicCouples).
-    // Deliberately NOT under publicCouples, which is world-readable with no
-    // auth (by design, for the guest RSVP page) -- allergy/attendee detail
-    // shouldn't be.
+    // aggregate guestCount (mirrored separately into the venueInfo doc
+    // below). Deliberately NOT under publicCouples, which is world-readable
+    // with no auth (by design, for the guest RSVP page) -- allergy/attendee
+    // detail shouldn't be.
     match /couples/{uid}/vendorSharedData/guestRoster {
       allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCoupleInCategory(uid, ['caterer', 'photo']);
       allow write: if isOwningCouple(uid) || isAdmin();
