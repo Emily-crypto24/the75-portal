@@ -9,9 +9,19 @@
  * rules then trust that claim to scope the vendor's subsequent reads/writes
  * to `vendorSlots/{slotId}` only.
  *
- * Brute-force protection: 5 wrong attempts locks the slot for 15 minutes.
- * The attempt counter and lock live in vendorSlotSecrets, updated inside a
- * transaction so concurrent guesses can't race past the limit.
+ * Brute-force protection, two layers:
+ *  1. Per-slot: 5 wrong PIN attempts locks that slot for 15 minutes. The
+ *     attempt counter and lock live in vendorSlotSecrets, updated inside a
+ *     transaction so concurrent guesses can't race past the limit.
+ *  2. Per-IP: a coarse cap on total calls to this function (any slotId,
+ *     found or not) from one source IP in a rolling window -- see
+ *     checkIpRateLimit. Layer 1 alone doesn't stop someone from trying many
+ *     DIFFERENT slotIds (e.g. guessing common couple-name combinations)
+ *     without ever tripping any single slot's lockout; layer 2 catches that.
+ *     It's a coarse mitigation, not a complete one -- a determined attacker
+ *     rotating IPs isn't stopped by this alone (see the security review
+ *     notes on what still needs real infrastructure, e.g. Cloud Armor, to
+ *     fully close).
  */
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
@@ -28,6 +38,37 @@ const LOCK_MINUTES = 15;
 const SLOT_ID_RE = /^[a-zA-Z0-9_-]{1,200}$/;
 const PIN_RE = /^\d{4}$/;
 
+const IP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const IP_RATE_LIMIT_MAX = 20; // total calls per IP per window, across every slotId
+
+// Coarse per-IP throttle so guessing many different slotIds can't dodge the
+// per-slot lockout above (a "not found" slotId never touches vendorSlotSecrets,
+// so without this, slotId guessing itself has no rate limit at all). Fails
+// OPEN (returns true) if the IP is unavailable or Firestore errors, rather
+// than locking out all vendors because of an infrastructure hiccup -- a
+// deliberate availability-over-strictness tradeoff for a wedding-day tool.
+async function checkIpRateLimit(ip) {
+  if (!ip) return true;
+  const docId = String(ip).replace(/[^a-zA-Z0-9]/g, "_").slice(0, 200) || "unknown";
+  const ref = db.collection("pinAttemptLog").doc(docId);
+  const now = Date.now();
+  try {
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists ? snap.data() : null;
+      if (!data || now - data.windowStart > IP_RATE_LIMIT_WINDOW_MS) {
+        tx.set(ref, { windowStart: now, count: 1 });
+        return true;
+      }
+      if (data.count >= IP_RATE_LIMIT_MAX) return false;
+      tx.update(ref, { count: admin.firestore.FieldValue.increment(1) });
+      return true;
+    });
+  } catch (e) {
+    return true;
+  }
+}
+
 exports.verifyVendorPin = onCall({ enforceAppCheck: true }, async (request) => {
   const slotId = String((request.data && request.data.slotId) || "").trim();
   const pin = String((request.data && request.data.pin) || "").trim();
@@ -37,6 +78,12 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true }, async (request) => {
   }
   if (!PIN_RE.test(pin)) {
     throw new HttpsError("invalid-argument", "PIN must be 4 digits.");
+  }
+
+  const ip = request.rawRequest && request.rawRequest.ip;
+  const withinIpLimit = await checkIpRateLimit(ip);
+  if (!withinIpLimit) {
+    throw new HttpsError("resource-exhausted", "Too many attempts from this network. Please try again later.");
   }
 
   const secretsRef = db.collection("vendorSlotSecrets").doc(slotId);
@@ -77,10 +124,18 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true }, async (request) => {
     return { status: "ok", slotData: slotSnap.data() };
   });
 
-  if (outcome.status === "not_found") {
-    // Deliberately the same error shape as a wrong PIN -- don't reveal
-    // whether a link itself is valid to someone probing slot ids.
-    throw new HttpsError("not-found", "Link or PIN not recognized.");
+  // "not_found" and "wrong" throw the IDENTICAL error (same code, same
+  // message) -- SECURITY FIX: they previously used different HttpsError
+  // codes ("not-found" vs "permission-denied") and different message text,
+  // even though the comment already claimed they were the same. That let a
+  // caller distinguish "this slotId doesn't exist" from "this slotId exists
+  // but the PIN was wrong" by inspecting the error, which is exactly the
+  // oracle a slotId-guessing attacker wants (and "not_found" guesses don't
+  // count against the per-slot lockout at all, since there's no doc to
+  // write a counter to -- so this was a free, unthrottled way to enumerate
+  // real couples/events before the IP rate limit above was added).
+  if (outcome.status === "not_found" || outcome.status === "wrong") {
+    throw new HttpsError("permission-denied", "Incorrect PIN.");
   }
   if (outcome.status === "locked") {
     const unit = outcome.minutesLeft === 1 ? "minute" : "minutes";
@@ -88,9 +143,6 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true }, async (request) => {
       "resource-exhausted",
       `Too many incorrect attempts. Try again in ${outcome.minutesLeft} ${unit}.`
     );
-  }
-  if (outcome.status === "wrong") {
-    throw new HttpsError("permission-denied", "Incorrect PIN.");
   }
 
   const uid = `vendor_${slotId}`;

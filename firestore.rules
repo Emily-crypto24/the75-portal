@@ -197,6 +197,22 @@ service cloud.firestore {
       allow write: if isOwningCouple(uid) || isAdmin();
     }
 
+    // Venue/POC/timeline info for the vendor skeleton (lead coordinator
+    // name+phone+email, venue rental end time, vendor arrival window, the
+    // full day-of timelineItems mirror, and guestCount). SECURITY FIX: this
+    // was previously mirrored into publicCouples, which is world-readable
+    // with NO auth at all (`allow get: if true`, by design, for the
+    // unauthenticated guest RSVP page) -- meaning the venue coordinator's
+    // personal contact info and the couple's full day-of schedule were
+    // reachable by anyone who could guess/obtain a couple's slug, with no
+    // PIN required, completely bypassing the vendor PIN-gate this data was
+    // supposed to sit behind. Moved here instead: readable only by the
+    // owning couple, admin, or a verified vendor of this specific event.
+    match /couples/{uid}/vendorSharedData/venueInfo {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+
     // Fallback for any other/future vendorSharedData doc: private to
     // couple/admin until explicitly opened up in its own match block above.
     match /couples/{uid}/vendorSharedData/{docId} {

