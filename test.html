@@ -5228,16 +5228,19 @@
     }
 
     window.submitVendorPin = async function() {
+      const nameEl = document.getElementById("vendor-gate-name");
       const pinEl = document.getElementById("vendor-gate-pin");
       const btn = document.getElementById("vendor-gate-btn");
       const errEl = document.getElementById("vendor-gate-error");
       errEl.style.display = "none";
+      const companyName = (nameEl.value || "").trim();
       const pin = (pinEl.value || "").trim();
+      if (!companyName) { errEl.textContent = "Enter your company name."; errEl.style.display = "block"; return; }
       if (!/^\d{4}$/.test(pin)) { errEl.textContent = "Enter the 4-digit PIN your couple shared with you."; errEl.style.display = "block"; return; }
       btn.disabled = true; btn.textContent = "Checking…";
       try {
         const verify = httpsCallable(functions, "verifyVendorPin");
-        const res = await verify({ slotId: vendorSlotId_, pin });
+        const res = await verify({ slotId: vendorSlotId_, pin, companyName });
         await signInWithCustomToken(auth, res.data.token);
         const slotSnap = await getDoc(doc(db, "vendorSlots", vendorSlotId_));
         if (!slotSnap.exists()) throw new Error("Vendor tab not found.");
@@ -7055,6 +7058,8 @@
       if (pw) pw.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
       const em = document.getElementById("login-email");
       if (em) em.addEventListener("keydown", e => { if (e.key === "Enter") window.signInWithEmail(); });
+      const vendorNameInput = document.getElementById("vendor-gate-name");
+      if (vendorNameInput) vendorNameInput.addEventListener("keydown", e => { if (e.key === "Enter") window.submitVendorPin(); });
       const vendorPinInput = document.getElementById("vendor-gate-pin");
       if (vendorPinInput) vendorPinInput.addEventListener("keydown", e => { if (e.key === "Enter") window.submitVendorPin(); });
       const pinInput = document.getElementById("resource-pin-input");
@@ -7574,7 +7579,8 @@
       <p class="hero-eyebrow">The Seventy Five &middot; Rockbridge, Ohio</p>
       <h2 id="vendor-gate-title" style="font-family:var(--font-heading);font-size:28px;font-weight:300;color:#fdfaf6;margin:12px 0 20px;line-height:1.3;">Loading&hellip;</h2>
       <div id="vendor-gate-form">
-        <p style="font-size:13px;color:rgba(253,250,246,0.55);margin-bottom:26px;line-height:1.7;">Enter the 4-digit PIN your couple shared with you to view your vendor tab.</p>
+        <p style="font-size:13px;color:rgba(253,250,246,0.55);margin-bottom:26px;line-height:1.7;">Enter your company name and the 4-digit PIN your couple shared with you to view your vendor tab.</p>
+        <input class="login-input" type="text" id="vendor-gate-name" placeholder="Company Name" autocomplete="off"/>
         <input class="login-input" type="text" inputmode="numeric" maxlength="4" id="vendor-gate-pin" placeholder="PIN" autocomplete="off" style="text-align:center;letter-spacing:0.3em;"/>
         <button class="btn-email" id="vendor-gate-btn" onclick="window.submitVendorPin()" style="margin-top:4px;">Access My Vendor Tab</button>
       </div>

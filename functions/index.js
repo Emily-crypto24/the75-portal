@@ -1,13 +1,24 @@
 /**
  * Server-side vendor PIN verification.
  *
- * Vendors have no account -- they authenticate with a link (slotId) + a 4-digit
- * PIN. This function is the ONLY place the PIN is ever checked. It reads the
- * real PIN from `vendorSlotSecrets/{slotId}` (a collection normal clients can
- * never read -- see firestore.rules), and on a correct match mints a custom
- * auth token scoped to that one slot via a `vendorSlotId` claim. Firestore
- * rules then trust that claim to scope the vendor's subsequent reads/writes
- * to `vendorSlots/{slotId}` only.
+ * Vendors have no account -- they authenticate with a link (slotId) + their
+ * company name + a 4-digit PIN. This function is the ONLY place the PIN is
+ * ever checked. It reads the real PIN from `vendorSlotSecrets/{slotId}` (a
+ * collection normal clients can never read -- see firestore.rules), and on a
+ * correct match mints a custom auth token scoped to that one slot via a
+ * `vendorSlotId` claim. Firestore rules then trust that claim to scope the
+ * vendor's subsequent reads/writes to `vendorSlots/{slotId}` only.
+ *
+ * The company name is NOT a security secret the way the PIN is -- it's an
+ * identity-confirmation field, matched case-insensitively (trimmed,
+ * lowercased both sides) against vendorSlots.vendorName, the same UX pattern
+ * as the guest portal's name field. It's checked server-side (not
+ * client-side) purely because the client has no read access to vendorName
+ * before the PIN succeeds. A name mismatch does NOT count against the PIN's
+ * own attempt counter/lockout below -- that stays PIN-only, unchanged. If
+ * vendorName isn't set yet (nobody's claimed this slot's company name),
+ * whatever the vendor types on their first successful PIN entry is saved as
+ * vendorName, so it matches on every future visit.
  *
  * Brute-force protection, two layers:
  *  1. Per-slot: 5 wrong PIN attempts locks that slot for 15 minutes. The
@@ -37,6 +48,11 @@ const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
 const SLOT_ID_RE = /^[a-zA-Z0-9_-]{1,200}$/;
 const PIN_RE = /^\d{4}$/;
+const COMPANY_NAME_MAX_LEN = 200;
+
+function normalizeCompanyName(s) {
+  return String(s || "").trim().toLowerCase();
+}
 
 const IP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const IP_RATE_LIMIT_MAX = 20; // total calls per IP per window, across every slotId
@@ -72,9 +88,13 @@ async function checkIpRateLimit(ip) {
 exports.verifyVendorPin = onCall({ enforceAppCheck: true }, async (request) => {
   const slotId = String((request.data && request.data.slotId) || "").trim();
   const pin = String((request.data && request.data.pin) || "").trim();
+  const companyNameRaw = String((request.data && request.data.companyName) || "").trim().slice(0, COMPANY_NAME_MAX_LEN);
 
   if (!SLOT_ID_RE.test(slotId)) {
     throw new HttpsError("invalid-argument", "Invalid access link.");
+  }
+  if (!companyNameRaw) {
+    throw new HttpsError("invalid-argument", "Enter your company name.");
   }
   if (!PIN_RE.test(pin)) {
     throw new HttpsError("invalid-argument", "PIN must be 4 digits.");
@@ -143,6 +163,26 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true }, async (request) => {
       "resource-exhausted",
       `Too many incorrect attempts. Try again in ${outcome.minutesLeft} ${unit}.`
     );
+  }
+
+  // PIN was correct. Company name is checked here, not folded into the
+  // transaction above -- a name mismatch/typo shouldn't burn any of the
+  // PIN's 5-attempt budget, since the name was never the actual secret.
+  const storedName = (outcome.slotData.vendorName || "").trim();
+  if (storedName) {
+    if (normalizeCompanyName(storedName) !== normalizeCompanyName(companyNameRaw)) {
+      throw new HttpsError("permission-denied", "That company name doesn't match our records for this link. Please double check with your couple.");
+    }
+  } else {
+    // Nobody's claimed a company name for this slot yet -- whatever this
+    // vendor typed becomes the name of record, so it matches on future visits.
+    try {
+      await slotRef.update({ vendorName: companyNameRaw });
+    } catch (e) {
+      // Non-fatal: worst case the name stays unclaimed and every future
+      // visit accepts any company name until someone sets it via the
+      // Logistics form instead. Don't block access over this.
+    }
   }
 
   const uid = `vendor_${slotId}`;
