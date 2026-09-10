@@ -2227,6 +2227,7 @@
       document.getElementById("gl-children-list").innerHTML = "";
       document.getElementById("gl-notes").value = "";
       document.getElementById("gl-tableNumber").value = "";
+      document.getElementById("gl-groupTag").value = "";
       window.toggleGuestTableField();
       updateGuestFormMealFields();
       document.getElementById("gl-mealChoice").value = "";
@@ -2254,6 +2255,7 @@
       document.getElementById("gl-notes").value = g.notes || "";
       window.toggleGuestTableField();
       document.getElementById("gl-tableNumber").value = g.tableNumber || "";
+      document.getElementById("gl-groupTag").value = g.groupTag || "";
       updateGuestFormMealFields();
       document.getElementById("gl-mealChoice").value = g.mealChoice || "";
       document.getElementById("gl-plusOneMealChoice").value = g.plusOneMealChoice || "";
@@ -2280,6 +2282,7 @@
         plusOneAllergies: document.getElementById("gl-plusOneAllergies").value.trim(),
         children: readChildRows(document.getElementById("gl-children-list")),
         tableNumber: document.getElementById("gl-tableNumber").value.trim(),
+        groupTag: document.getElementById("gl-groupTag").value,
         notes: document.getElementById("gl-notes").value.trim()
       };
       if (editingGuestId) {
@@ -3375,7 +3378,13 @@
           // Mirrors the real Wedding Day Timeline (timelineItems[], edited only via the
           // existing Timeline planning tool / admin editor) so the vendor portal's shared
           // timeline always reflects the current data instead of a one-time copy.
-          timelineItems: Array.isArray(data.timelineItems) ? data.timelineItems : []
+          timelineItems: Array.isArray(data.timelineItems) ? data.timelineItems : [],
+          // Single live-linked headcount (attending guests + their allowed,
+          // named plus-ones) -- same formula the admin dashboard already
+          // uses. Just a number, not guest-specific detail, so every vendor
+          // category can read it (unlike the guestRoster doc below, which
+          // is restricted to Caterer/Bar + Photographer/Videographer).
+          guestCount: guestList.reduce((sum, g) => g.rsvpStatus === "Attending" ? sum + 1 + (g.plusOneAllowed && g.plusOneName ? 1 : 0) : sum, 0)
         });
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
@@ -4969,7 +4978,7 @@
     window.loadVendorHub = async function(coupleUid, coupleSlug) {
       if (!coupleUid || !coupleSlug) return;
       await loadVendorHubTimeline(coupleUid);
-      await syncVendorDietaryData(coupleUid);
+      await syncVendorGuestRoster(coupleUid);
       await renderVendorHubSocialHandles(coupleUid);
       await renderHairMakeupRosterEditor(coupleUid);
       try {
@@ -5243,6 +5252,7 @@
 
       const lc = (vendorPublicData && vendorPublicData.leadCoordinator) || {};
       document.getElementById("vendor-venue-info").innerHTML = `
+        <div class="amd-row"><div class="amd-key">Guest Count</div><div class="amd-val">${(vendorPublicData && Number.isFinite(vendorPublicData.guestCount)) ? esc(String(vendorPublicData.guestCount)) : "Not yet set"} <span style="color:var(--mid-gray);font-size:11px;">(live-linked from Guest List/RSVP)</span></div></div>
         <div class="amd-row"><div class="amd-key">Venue Rental Ends</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.venueRentalEndTime) || "Not yet set")}</div></div>
         <div class="amd-row"><div class="amd-key">Vendor Arrival Window</div><div class="amd-val">${esc((vendorPublicData && vendorPublicData.vendorArrivalWindow) || "Not yet set")}</div></div>
         <div class="amd-row"><div class="amd-key">Directions</div><div class="amd-val">${esc(venueInfo.directions || "10835 State Route 374, Rockbridge, Ohio 43149")}</div></div>
@@ -5499,20 +5509,26 @@
     // event, never touching Planning Tools.
     // ═══════════════════════════════════════════════════════════════
 
-    // Filtered guest dietary data, written ONLY by the couple/admin (never a
-    // vendor) into a vendor-readable-but-not-public doc -- see the comment on
-    // couples/{uid}/vendorSharedData/{docId} in firestore.rules for why this
-    // isn't just added to the already-public publicCouples doc. Re-synced
-    // every time the couple visits Vendor Access, so it's not stale for long,
-    // but it is NOT a live listener -- a guest-list edit won't appear in an
-    // already-open vendor tab until that vendor reloads.
-    async function syncVendorDietaryData(coupleUid) {
+    // Full per-guest roster (name, table, allergy note, Group tag), written
+    // ONLY by the couple/admin (never a vendor) into
+    // couples/{uid}/vendorSharedData/guestRoster -- readable ONLY by
+    // Caterer/Bar and Photographer/Videographer (firestore.rules restricts
+    // this doc specifically; every other vendor category has no access to
+    // per-guest detail, only the aggregate guestCount mirrored separately
+    // into publicCouples). Deliberately NOT added to the already-public
+    // publicCouples doc -- that's world-readable with no auth, and
+    // allergy/attendee detail shouldn't be. Re-synced every time the couple
+    // visits Vendor Access, so it's not stale for long, but it is NOT a live
+    // listener -- a guest-list edit won't appear in an already-open vendor
+    // tab until that vendor reloads.
+    async function syncVendorGuestRoster(coupleUid) {
       try {
-        const rows = guestListCache
-          .filter(g => (g.allergies || "").trim())
-          .map(g => ({ id: g.id, name: g.guestName || "", tableNumber: g.tableNumber || "", allergies: g.allergies || "" }));
-        await setDoc(doc(db, "couples", coupleUid, "vendorSharedData", "dietary"), { rows, updatedAt: new Date().toISOString() });
-      } catch(e) { console.error("Syncing vendor dietary data failed:", e); }
+        const rows = guestListCache.map(g => ({
+          id: g.id, name: g.guestName || "", tableNumber: g.tableNumber || "",
+          allergies: g.allergies || "", groupTag: g.groupTag || "", rsvpStatus: g.rsvpStatus || ""
+        }));
+        await setDoc(doc(db, "couples", coupleUid, "vendorSharedData", "guestRoster"), { rows, updatedAt: new Date().toISOString() });
+      } catch(e) { console.error("Syncing vendor guest roster failed:", e); }
     }
 
     // Fetches every cross-tab value ANY category's fields read that they
@@ -5529,14 +5545,21 @@
     // gets) to just always fetch rather than gate per-category.
     async function fetchAllCategoryCrossRefs(coupleUid, coupleSlug) {
       const out = {
-        dietary: [], mealsRollup: [], dinnerStyle: "", venueRentalEndTime: "",
+        dietary: [], bridalPartyRoster: [], mealsRollup: [], dinnerStyle: "", venueRentalEndTime: "", guestCount: null,
         cakeCutting: null, lightingPackage: null, lastShuttleTime: null,
+        shuttleDropoffRuns: [], shuttlePickupRuns: [],
         extraFlowersForDetailShots: null, hairMakeupRoster: null
       };
+      // Full per-guest roster -- only ever fetched successfully by a verified
+      // Caterer/Bar or Photographer/Videographer vendor (or the couple/admin);
+      // firestore.rules denies this doc to every other category, so this get()
+      // simply comes back empty/errors harmlessly for them.
       try {
-        const dietSnap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "dietary"));
-        out.dietary = (dietSnap.exists() && Array.isArray(dietSnap.data().rows)) ? dietSnap.data().rows : [];
-      } catch(e) { console.error("Fetching dietary data failed:", e); }
+        const rosterSnap = await getDoc(doc(db, "couples", coupleUid, "vendorSharedData", "guestRoster"));
+        const rows = (rosterSnap.exists() && Array.isArray(rosterSnap.data().rows)) ? rosterSnap.data().rows : [];
+        out.dietary = rows.filter(g => (g.allergies || "").trim());
+        out.bridalPartyRoster = rows.filter(g => g.groupTag === "Bridal Party");
+      } catch(e) { /* expected for categories other than caterer/photo -- not an error */ }
       try {
         const allSlots = await fetchVendorSlotsForCouple(coupleUid);
         out.mealsRollup = allSlots.map(e => ({
@@ -5549,8 +5572,18 @@
           out.cakeCutting = (djSlot.slot.responses || {}).cakeCutting || null;
           out.lightingPackage = (djSlot.slot.responses || {}).lightingPackage || null;
         }
-        const shuttleSlot = allSlots.find(e => e.slot.category === "shuttle");
-        if (shuttleSlot) out.lastShuttleTime = (shuttleSlot.slot.responses || {}).lastPickupTime || null;
+        // Aggregate across every Shuttle Service slot (a couple can add more
+        // than one), not just the first one found -- DJ/Band should see every
+        // run, from every shuttle vendor, with its location, not one
+        // collapsed time from an arbitrary single slot.
+        const shuttleSlots = allSlots.filter(e => e.slot.category === "shuttle");
+        shuttleSlots.forEach(e => {
+          const resp = e.slot.responses || {};
+          (Array.isArray(resp.dropoffRuns) ? resp.dropoffRuns : []).forEach(r => out.shuttleDropoffRuns.push(r));
+          (Array.isArray(resp.pickupRuns) ? resp.pickupRuns : []).forEach(r => out.shuttlePickupRuns.push(r));
+        });
+        const parsedPickups = out.shuttlePickupRuns.map(r => ({ raw: r.pickupTime, min: parseClockTime(r.pickupTime) })).filter(t => t.min !== null);
+        out.lastShuttleTime = parsedPickups.length ? parsedPickups.reduce((a,b) => b.min > a.min ? b : a).raw : null;
         const floristSlots = allSlots.filter(e => e.slot.category === "florist");
         if (floristSlots.length) out.extraFlowersForDetailShots = floristSlots.some(e => !!(e.slot.responses||{}).extraFlowersForDetailShots);
       } catch(e) { console.error("Fetching vendor cross-refs failed:", e); }
@@ -5559,6 +5592,7 @@
         if (pub.exists()) {
           out.dinnerStyle = pub.data().dinnerStyle || "";
           out.venueRentalEndTime = pub.data().venueRentalEndTime || "";
+          out.guestCount = Number.isFinite(pub.data().guestCount) ? pub.data().guestCount : null;
         }
       } catch(e) {}
       try {
@@ -5712,7 +5746,7 @@
 
         <div class="form-divider"></div>
         <h2 class="form-section-title">Dietary Restrictions</h2>
-        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Guest name, table #, and restriction are pulled live from Guest List/RSVP (only guests with something noted are shown here) — read-only. Mark each as an allergy or a preference; Group tags will appear here automatically once Guest List Groups are built.</p>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Guest name, table #, restriction, and Group are pulled live from Guest List/RSVP (only guests with something noted are shown here) — read-only. Mark each as an allergy or a preference.</p>
         ${dietRows.length ? `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr style="border-bottom:1px solid var(--border);">
             <th style="text-align:left;padding:6px 10px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--mid-gray);">Guest</th>
@@ -5730,7 +5764,7 @@
               <option value="allergy" ${(overrides[g.id]||{}).classification==="allergy"?"selected":""}>Allergy</option>
               <option value="preference" ${(overrides[g.id]||{}).classification==="preference"?"selected":""}>Preference</option>
             </select></td>
-            <td style="padding:6px 10px;color:var(--mid-gray);font-style:italic;">—</td>
+            <td style="padding:6px 10px;">${g.groupTag ? esc(g.groupTag) : `<span style="color:var(--mid-gray);font-style:italic;">Not set</span>`}</td>
           </tr>`).join("")}</tbody>
         </table></div>` : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">No dietary restrictions noted on the Guest List yet.</p>`}
 
@@ -5975,6 +6009,8 @@
       const venueEnd = crossRefs.venueRentalEndTime || "";
       const lastDanceTime = (r.privateLastDance && venueEnd) ? subtractMinutesFromClock(venueEnd, 40) : null;
       const shuttleTime = crossRefs.lastShuttleTime;
+      const shuttleDropoffs = crossRefs.shuttleDropoffRuns || [];
+      const shuttlePickups = crossRefs.shuttlePickupRuns || [];
 
       return `
       <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
@@ -6037,8 +6073,13 @@
         <p style="font-size:11px;color:var(--mid-gray);margin-top:10px;">Standing note: DJ/Band is responsible for asking guests to exit the property or move to the cocktail area during this private moment.</p>
 
         <div class="form-divider"></div>
-        <h2 class="form-section-title">End of <em>Night</em></h2>
-        <div class="amd-row"><div class="amd-key">Last Shuttle</div><div class="amd-val">${shuttleTime ? esc(shuttleTime) + ` <span style="color:var(--mid-gray);font-size:11px;">(set on the Shuttle Service tab — read-only here, to announce as "last shuttle")</span>` : "Not yet set — Shuttle Service hasn't answered this yet"}</div></div>
+        <h2 class="form-section-title">Shuttle <em>schedule</em></h2>
+        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Read-only, pulled from the Shuttle Service tab — every drop-off and pickup run, with location, across every shuttle vendor on this event.</p>
+        <div class="amd-row"><div class="amd-key">Last Shuttle (for your announcement)</div><div class="amd-val">${shuttleTime ? esc(shuttleTime) : "Not yet set — Shuttle Service hasn't answered this yet"}</div></div>
+        <label class="form-label" style="display:block;margin:14px 0 6px;">Drop-off Runs (start of night)</label>
+        ${shuttleDropoffs.length ? shuttleDropoffs.map(r => `<div class="amd-row"><div class="amd-key">${esc(r.dropoffTime||"—")}</div><div class="amd-val">From ${esc(r.pickupLocation||"—")}${r.shuttleAssigned ? ` <span style="color:var(--mid-gray);font-size:11px;">(${esc(r.shuttleAssigned)})</span>` : ""}</div></div>`).join("") : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">None set yet.</p>`}
+        <label class="form-label" style="display:block;margin:14px 0 6px;">Pickup Runs (end of night)</label>
+        ${shuttlePickups.length ? shuttlePickups.map(r => `<div class="amd-row"><div class="amd-key">${esc(r.pickupTime||"—")}</div><div class="amd-val">To ${esc(r.dropoffLocations||"—")}${r.shuttleAssigned ? ` <span style="color:var(--mid-gray);font-size:11px;">(${esc(r.shuttleAssigned)})</span>` : ""}</div></div>`).join("") : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">None set yet.</p>`}
 
         <div class="form-divider"></div>
         <h2 class="form-section-title">Equipment & <em>A/V</em></h2>
@@ -6110,6 +6151,7 @@
     function photoCategoryDetailsHTML(slotId, slot, idPrefix, crossRefs) {
       const r = Object.assign(defaultPhotoResponses(), slot.responses || {});
       const extraFlowers = crossRefs.extraFlowersForDetailShots;
+      const bridalParty = crossRefs.bridalPartyRoster || [];
       return `
       <div class="form-section-block" id="cf-section-${idPrefix}" data-cf-slot="${slotId}">
         <span class="section-label">Photographer/Videographer Details</span>
@@ -6179,6 +6221,8 @@
           <label class="check-item"><input type="radio" name="cf-firstlook-${idPrefix}" value="no" data-cf="firstLook" ${!r.firstLook?"checked":""}><span>No</span></label>
         </div>
         <div class="form-group full" style="margin-bottom:10px;"><label class="form-label">First Look Time/Location</label><input class="form-input" data-cf="firstLookDetails" value="${esc(r.firstLookDetails)}"></div>
+        <label class="form-label" style="display:block;margin-bottom:8px;">Bridal Party Roster <span style="font-weight:300;text-transform:none;color:var(--mid-gray);">(read-only, from Guest List/RSVP)</span></label>
+        ${bridalParty.length ? `<div class="amd-section" style="margin-bottom:14px;">` + bridalParty.map(g => `<div class="amd-row"><div class="amd-key">${esc(g.name||"")}</div><div class="amd-val">Bridal Party</div></div>`).join("") + `</div>` : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;margin-bottom:14px;">Nobody tagged as Bridal Party on the Guest List yet.</p>`}
         <div class="form-group full" style="margin-bottom:10px;"><label class="form-label">Family Formals List</label><textarea class="form-textarea" data-cf="familyFormals">${esc(r.familyFormals)}</textarea></div>
         <div class="form-group full"><label class="form-label">Must-Have Shot List</label><textarea class="form-textarea" data-cf="mustHaveShots">${esc(r.mustHaveShots)}</textarea></div>
 
@@ -6671,9 +6715,22 @@
         </div>`).join("");
     }
 
-    function coupleSocialHandlesSectionHTML(idPrefix, data) {
-      if (!coupleSocialExtrasDraft[idPrefix]) coupleSocialExtrasDraft[idPrefix] = (data && Array.isArray(data.extras)) ? data.extras.slice() : [];
+    // editable=false renders a plain read-only view (used on every vendor's
+    // own page) -- only the couple/admin can actually write this doc
+    // (firestore.rules), so a vendor never gets inputs/a Save button for it.
+    function coupleSocialHandlesSectionHTML(idPrefix, data, editable) {
       const stampText = data && data.lastEditedBy ? `Last edited by ${esc(data.lastEditedBy)}${data.lastEditedAt ? " at " + new Date(data.lastEditedAt).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}` : "";
+      if (!editable) {
+        const extras = (data && Array.isArray(data.extras)) ? data.extras : [];
+        const rows = [];
+        if (data && data.partner1) rows.push(["Partner 1", data.partner1]);
+        if (data && data.partner2) rows.push(["Partner 2", data.partner2]);
+        extras.forEach(x => { if (x.label || x.handle) rows.push([x.label || "Other", x.handle || ""]); });
+        return rows.length
+          ? `<div class="amd-section">` + rows.map(([k,v]) => `<div class="amd-row"><div class="amd-key">${esc(k)}</div><div class="amd-val">${esc(v)}</div></div>`).join("") + `</div>`
+          : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">Not provided yet.</p>`;
+      }
+      if (!coupleSocialExtrasDraft[idPrefix]) coupleSocialExtrasDraft[idPrefix] = (data && Array.isArray(data.extras)) ? data.extras.slice() : [];
       return `
         <div class="form-grid" style="margin-bottom:10px;">
           <div class="form-group"><label class="form-label">Partner 1 Handle</label><input class="form-input" type="text" placeholder="@handle" id="csh-partner1-${idPrefix}" value="${esc((data && data.partner1)||"")}"></div>
@@ -6728,21 +6785,23 @@
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
-    // Vendor's own page -- one mount point.
+    // Vendor's own page -- one mount point, read-only (only couple/admin can
+    // write this doc; see firestore.rules).
     async function renderVendorSocialHandles() {
       const wrap = document.getElementById("vendor-social-handles");
       if (!wrap || !vendorCoupleUid_) return;
       const data = await fetchCoupleSocialHandlesDoc(vendorCoupleUid_);
-      wrap.innerHTML = coupleSocialHandlesSectionHTML(vendorSlotId_, data);
+      wrap.innerHTML = coupleSocialHandlesSectionHTML(vendorSlotId_, data, false);
     }
 
     // Couple hub -- rendered into all 7 category pages (same pattern as the
     // Shared Timeline), since it's one event-level value, not per-vendor.
+    // Editable here -- the couple is the only party who can write it.
     async function renderVendorHubSocialHandles(coupleUid) {
       const data = await fetchCoupleSocialHandlesDoc(coupleUid);
       VENDOR_CATEGORIES.forEach(cat => {
         const wrap = document.getElementById(`vendorcat-social-${cat.key}`);
-        if (wrap) wrap.innerHTML = coupleSocialHandlesSectionHTML(`hubsh-${cat.key}`, data);
+        if (wrap) wrap.innerHTML = coupleSocialHandlesSectionHTML(`hubsh-${cat.key}`, data, true);
       });
     }
 
@@ -7503,7 +7562,7 @@
         <div class="form-section-block">
           <span class="section-label">Couple's Social Handles</span>
           <h2 class="form-section-title">Tag them <em>right</em></h2>
-          <p style="font-size:12px;color:var(--mid-gray);margin-bottom:16px;">Shared with every vendor on this event, so no one has to ask separately. Either you or the couple can add to this.</p>
+          <p style="font-size:12px;color:var(--mid-gray);margin-bottom:16px;">Set by the couple — read-only here, so no one has to ask separately.</p>
           <div id="vendor-social-handles"></div>
         </div>
 
@@ -9082,6 +9141,16 @@
           <label class="form-label">Table Number</label>
           <input type="text" class="form-input" id="gl-tableNumber" placeholder="e.g. Table 5">
         </div>
+        <div class="form-group">
+          <label class="form-label">Group</label>
+          <select class="form-input" id="gl-groupTag">
+            <option value="">— Not Set —</option>
+            <option value="Family">Family</option>
+            <option value="Friend">Friend</option>
+            <option value="Plus One">Plus One</option>
+            <option value="Bridal Party">Bridal Party</option>
+          </select>
+        </div>
         <div class="form-group full">
           <label class="form-label">Mailing Address</label>
           <textarea class="form-textarea" id="gl-address" style="min-height:70px;" placeholder="Street, City, State, ZIP"></textarea>
@@ -9502,7 +9571,7 @@
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('caterer')">+ Add Another Caterer/Bar Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
-      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
     <div class="form-section-block" style="margin-top:40px;">
@@ -9529,7 +9598,7 @@
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('dj')">+ Add Another DJ/Band Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
-      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
     <div class="form-section-block" style="margin-top:40px;">
@@ -9556,7 +9625,7 @@
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('photo')">+ Add Another Photographer/Videographer Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
-      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
     <div class="form-section-block" style="margin-top:40px;">
@@ -9583,7 +9652,7 @@
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('florist')">+ Add Another Florist/Design Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
-      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-florist"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
     <div class="form-section-block" style="margin-top:40px;">
@@ -9620,7 +9689,7 @@
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('hairmakeup')">+ Add Another Hair/Makeup Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
-      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
     <div class="form-section-block" style="margin-top:40px;">
@@ -9647,7 +9716,7 @@
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('shuttle')">+ Add Another Shuttle Service Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
-      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
     <div class="form-section-block" style="margin-top:40px;">
@@ -9674,7 +9743,7 @@
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('other')">+ Add Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
-      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately. Either you or a vendor can add to this.</p>
+      <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-other"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     </div>
     <div class="form-section-block" style="margin-top:40px;">

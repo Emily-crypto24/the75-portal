@@ -71,6 +71,18 @@ service cloud.firestore {
         get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == coupleUid;
     }
 
+    // Same as isVerifiedVendorForCouple, but additionally requires the
+    // requester's own slot to be one of the given categories. Backs the
+    // guest-roster restriction: only Caterer/Bar and Photographer/
+    // Videographer ever see per-guest detail (name/table/allergy/Group) --
+    // every other category can see the aggregate guestCount (mirrored into
+    // publicCouples, not gated by this) but not who's coming.
+    function isVerifiedVendorForCoupleInCategory(coupleUid, categories) {
+      let vs = get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId));
+      return request.auth != null && request.auth.token.vendorSlotId != null &&
+        vs.data.coupleUid == coupleUid && vs.data.category in categories;
+    }
+
     // Public-safe vendor tab data (company info, logistics, meal request,
     // notes, status). Never contains the PIN or lockout state -- see
     // vendorSlotSecrets below.
@@ -144,25 +156,51 @@ service cloud.firestore {
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['notes']));
     }
 
-    // Named, cross-tab data under couples/{uid}/vendorSharedData/{docId}, read
-    // by any verified vendor of this couple's event. Two shapes live here,
-    // with different write rules:
-    //   - dietary: MIRRORED from Planning Tools (Guest List's per-guest
-    //     allergy notes). Couple/admin write only -- a vendor never writes
-    //     anything back into Planning Tools data, even indirectly through a
-    //     mirror. Deliberately NOT under publicCouples, which is
-    //     world-readable with no auth (by design, for the guest RSVP page) --
-    //     allergy/health-adjacent data shouldn't be.
-    //   - socialHandles: NATIVE to Vendor Access -- there's no Planning Tools
-    //     field this is pulled from (there never was one), so per the
-    //     one-way rule's own carve-out for fresh Vendor-Access-only entries,
-    //     either the couple or any vendor of this event may write it.
-    match /couples/{uid}/vendorSharedData/{docId} {
+    // Named, cross-tab data under couples/{uid}/vendorSharedData/{docId}.
+    // Each doc gets its own match block with its own read/write scope --
+    // deliberately NOT one wildcard granting broad vendor read, since that
+    // would undermine guestRoster's restriction below (Firestore ORs every
+    // matching rule, so a broad grant on the wildcard would leak through
+    // regardless of a narrower rule on the specific path). The wildcard at
+    // the bottom is couple/admin-only, so any future doc added here is
+    // private by default until explicitly opened up in its own block.
+
+    // Full per-guest roster (name, table, allergy note, Group tag) --
+    // MIRRORED from Planning Tools (Guest List). Couple/admin write only --
+    // a vendor never writes anything back into Planning Tools data, even
+    // indirectly through a mirror. Read restricted to Caterer/Bar and
+    // Photographer/Videographer ONLY -- the two categories that actually
+    // need per-guest detail; every other category only ever sees the
+    // aggregate guestCount (mirrored separately into publicCouples).
+    // Deliberately NOT under publicCouples, which is world-readable with no
+    // auth (by design, for the guest RSVP page) -- allergy/attendee detail
+    // shouldn't be.
+    match /couples/{uid}/vendorSharedData/guestRoster {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCoupleInCategory(uid, ['caterer', 'photo']);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+
+    // Couple's own social handles (Partner 1/Partner 2 + optional extras).
+    // NATIVE to Vendor Access -- there's no Planning Tools field this is
+    // pulled from (there never was one). Read-only to vendors: only the
+    // couple/admin may set it, every vendor of this event may read it.
+    match /couples/{uid}/vendorSharedData/socialHandles {
       allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
       allow write: if isOwningCouple(uid) || isAdmin();
     }
-    match /couples/{uid}/vendorSharedData/socialHandles {
-      allow write: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
+
+    // The Hair/Makeup "who's being serviced" roster -- couple/admin-set,
+    // read by any vendor of this event (harmless for a DJ/Caterer/etc. to
+    // see; only Hair/Makeup's own UI actually uses it).
+    match /couples/{uid}/vendorSharedData/hairMakeupRoster {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+
+    // Fallback for any other/future vendorSharedData doc: private to
+    // couple/admin until explicitly opened up in its own match block above.
+    match /couples/{uid}/vendorSharedData/{docId} {
+      allow read, write: if isOwningCouple(uid) || isAdmin();
     }
 
     // settings/venueInfo (directions/parking/groom-suite policy/venue manager
