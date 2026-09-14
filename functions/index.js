@@ -51,6 +51,16 @@ const SLOT_ID_RE = /^[a-zA-Z0-9_-]{1,200}$/;
 const PIN_RE = /^\d{4}$/;
 const COMPANY_NAME_MAX_LEN = 200;
 
+// Origins allowed to call this function directly from a browser (the
+// callable SDK's preflight OPTIONS request needs an explicit allowlist
+// match, or the browser blocks the whole call before it ever reaches the
+// handler below -- App Check + the PIN/company-name check are what
+// actually gate access; this only decides who gets a same-origin-style
+// response at the transport level).
+const ALLOWED_ORIGINS = [
+  "https://planning.theseventyfivevenue.com",
+];
+
 function normalizeCompanyName(s) {
   return String(s || "").trim().toLowerCase();
 }
@@ -86,7 +96,7 @@ async function checkIpRateLimit(ip) {
   }
 }
 
-exports.verifyVendorPin = onCall({ enforceAppCheck: true }, async (request) => {
+exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }, async (request) => {
   // slotId is declared outside the try block (not const/let inside) so the
   // catch-all below can still tag its log line with which slot was being
   // verified, even if the failure happens before slotId is assigned.

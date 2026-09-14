@@ -662,6 +662,13 @@
     // ── AUTH STATE ──────────────────────────────────────────────
     onAuthStateChanged(auth, async (user) => {
       if (isGuestViewMode) return;
+      // Vendors sign in via signInWithCustomToken (see submitVendorPin), which
+      // fires this same listener -- without this guard it treated the vendor's
+      // synthetic `vendor_{slotId}` uid as a missing couple account, tried (and
+      // failed) to create one, and fell into the signup-error branch, which
+      // re-showed #login-screen underneath the vendor page and even attempted
+      // to delete the vendor's just-minted auth user.
+      if (isVendorViewMode) return;
       if (user) {
         currentUser = user;
 
