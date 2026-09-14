@@ -48,12 +48,23 @@
     const functions = getFunctions(app);
     const provider = new GoogleAuthProvider();
 
-    const ADMIN_EMAILS = ["emily@theboxhop.com","jess@theseventyfivevenue.com","events@theseventyfivevenue.com"];
-    const ADMIN_DOMAIN = "@theseventyfivevenue.com";
-    const isAdmin = (email) => {
-      const e = (email||"").toLowerCase();
-      return ADMIN_EMAILS.includes(e) || e.endsWith(ADMIN_DOMAIN);
-    };
+    // Must match firestore.rules' isAdmin() email list EXACTLY -- these two used to
+    // diverge (this list plus a "@theseventyfivevenue.com" wildcard vs. the rules'
+    // fixed 6-email list), which let seth@theboxhop.com sign in successfully on the
+    // client (he's a real server-side admin) only to have account creation fail
+    // server-side and the app respond by deleting his own just-created auth account.
+    // Keeping one exact list here removes that failure mode and closes a related gap
+    // where the public signup form's admin-email fast path could be triggered by any
+    // "*@theseventyfivevenue.com"-looking address, not just real staff accounts.
+    const ADMIN_EMAILS = [
+      "jess@theseventyfivevenue.com",
+      "emily@theboxhop.com",
+      "emilyt@theseventyfivevenue.com",
+      "seth@theboxhop.com",
+      "kara@theseventyfivevenue.com",
+      "events@theseventyfivevenue.com"
+    ];
+    const isAdmin = (email) => ADMIN_EMAILS.includes((email||"").toLowerCase());
 
     let currentUser = null;
     let pendingCoupleNames = "";
@@ -206,7 +217,7 @@
       if (data.coverPhotoUrl) {
         const heroBg = document.querySelector("#guest-content .hero-bg");
         if (heroBg) {
-          heroBg.style.backgroundImage = `url('${data.coverPhotoUrl.replace(/'/g,"")}')`;
+          heroBg.style.backgroundImage = `url('${cssUrlValue(data.coverPhotoUrl)}')`;
           heroBg.style.backgroundSize = "contain";
           heroBg.style.backgroundRepeat = "no-repeat";
           heroBg.style.backgroundPosition = "center";
@@ -243,7 +254,7 @@
       const venueButtonsRow = (address, mapUrl) => {
         let html = '<div style="margin-top:24px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap;">';
         if (mapUrl) {
-          html += `<a href="${esc(mapUrl)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Map of The Seventy Five</a>`;
+          html += `<a href="${esc(safeUrl(mapUrl))}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Map of The Seventy Five</a>`;
         } else {
           html += `<span style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-align:center;opacity:0.6;cursor:default;">Map of The Seventy Five</span>`;
         }
@@ -317,7 +328,7 @@
             ${p.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.distance)}</div>` : ""}
             ${p.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.address)}</div>` : ""}
             ${p.phone ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:2px;">${esc(p.phone)}</div>` : ""}
-            ${p.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(p.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
+            ${p.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(safeUrl(p.link))}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
             ${p.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(p.notes)}</div>` : ""}
           </div>`;
         const sectionTitle = label => `<h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:36px 0 16px;">${label}</h3>`;
@@ -360,7 +371,7 @@
             ${t.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.distance)}</div>` : ""}
             ${t.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
             ${t.phone ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:2px;">${esc(t.phone)}</div>` : ""}
-            ${t.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
+            ${t.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(safeUrl(t.link))}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
             ${t.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(t.notes)}</div>` : ""}
           </div>`).join("");
       }
@@ -395,7 +406,7 @@
       const links = Array.isArray(guestGateData.registryLinks) ? guestGateData.registryLinks : [];
       if (linksEl) {
         linksEl.innerHTML = links.length ? `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px;">` + links.map(l =>
-          `<a href="${esc(l.url)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:16px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;">${esc(l.name)}</a>`
+          `<a href="${esc(safeUrl(l.url))}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:16px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;">${esc(l.name)}</a>`
         ).join("") + `</div>` : "";
       }
 
@@ -419,7 +430,7 @@
           ${r.photoUrl ? `<img src="${esc(r.photoUrl)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;margin-bottom:10px;">` : `<div style="width:100%;aspect-ratio:1/1;background:var(--cream);margin-bottom:10px;"></div>`}
           <div style="font-size:14px;color:var(--charcoal);">${esc(r.name||"")}</div>
           ${r.price ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${formatMoney(r.price)}</div>` : ""}
-          ${r.link ? `<a href="${esc(r.link)}" target="_blank" style="margin-top:10px;display:inline-block;background:var(--charcoal);color:var(--warm-white);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;text-decoration:none;">Contribute</a>` : ""}
+          ${r.link ? `<a href="${esc(safeUrl(r.link))}" target="_blank" style="margin-top:10px;display:inline-block;background:var(--charcoal);color:var(--warm-white);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;text-decoration:none;">Contribute</a>` : ""}
           ${r.notes ? `<div style="font-size:11px;color:var(--mid-gray);margin-top:8px;font-style:italic;">${esc(r.notes)}</div>` : ""}
         </div>`).join("") + `</div>`;
     };
@@ -437,7 +448,7 @@
       const box = document.getElementById(boxId);
       if (!box) return;
       if (url) {
-        box.style.backgroundImage = `url('${url.replace(/'/g,"")}')`;
+        box.style.backgroundImage = `url('${cssUrlValue(url)}')`;
         box.classList.add("has-photo");
         box.innerHTML = `<span class="photo-upload-label">Change Photo</span>`;
       } else {
@@ -804,7 +815,7 @@
           <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:8px 0 10px;">Share This Link</h3>
           <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:12px;">This is the link to give your guests — put it on your invitations, website, or text it directly. It takes them straight to their own guest page, where they can see the details and RSVP.</p>
           <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;word-break:break-all;">
-            <a href="${esc(url)}" target="_blank" style="color:var(--gold-dark);">${esc(url)}</a>
+            <a href="${esc(safeUrl(url))}" target="_blank" style="color:var(--gold-dark);">${esc(url)}</a>
           </p>
           <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy Link';},1500);" style="margin-top:10px;background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;cursor:pointer;border-radius:1px;">Copy Link</button>`;
       }
@@ -904,7 +915,7 @@
       const grid = document.getElementById("resources-grid");
       if (!grid) return;
       if (!items.length) { grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">No resources have been added yet.</p>'; return; }
-      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(r.linkUrl)}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
+      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(safeUrl(r.linkUrl))}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
     }
     // ── VENDOR MEETINGS (PLANNING TOOL) ──────────────────────────
     let vendorMeetingsCache = [];
@@ -1319,7 +1330,7 @@
         renderPhotoBox("gp-propertyMap-box", gpc.propertyMapUrl || "", "+ Add Property Map");
         const previewBg = document.getElementById("gp-home-preview-bg");
         if (previewBg && gpc.coverPhotoUrl) {
-          previewBg.style.backgroundImage = `url('${gpc.coverPhotoUrl.replace(/'/g,"")}')`;
+          previewBg.style.backgroundImage = `url('${cssUrlValue(gpc.coverPhotoUrl)}')`;
           previewBg.style.backgroundSize = "contain";
           previewBg.style.backgroundRepeat = "no-repeat";
           previewBg.style.backgroundPosition = "center";
@@ -1390,7 +1401,7 @@
               <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${p.distance ? esc(p.distance) : ""}</div>
               ${p.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${esc(p.address)}</div>` : ""}
               ${p.phone ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(p.phone)}</div>` : ""}
-              ${p.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(p.link)}" target="_blank" style="color:var(--gold-dark);">${esc(p.link)}</a></div>` : ""}
+              ${p.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(safeUrl(p.link))}" target="_blank" style="color:var(--gold-dark);">${esc(p.link)}</a></div>` : ""}
               ${p.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(p.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
@@ -1495,7 +1506,7 @@
               <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${t.distance ? esc(t.distance) : ""}</div>
               ${t.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
               ${t.phone ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(t.phone)}</div>` : ""}
-              ${t.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">${esc(t.link)}</a></div>` : ""}
+              ${t.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(safeUrl(t.link))}" target="_blank" style="color:var(--gold-dark);">${esc(t.link)}</a></div>` : ""}
               ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(t.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
@@ -1668,7 +1679,7 @@
               <div>
                 <div style="font-size:15px;color:var(--charcoal);">${esc(r.name||"Untitled")}</div>
                 ${r.price ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${formatMoney(r.price)}</div>` : ""}
-                ${r.link ? `<div style="font-size:12px;margin-top:4px;"><a href="${esc(r.link)}" target="_blank" style="color:var(--gold-dark);">${esc(r.link)}</a></div>` : ""}
+                ${r.link ? `<div style="font-size:12px;margin-top:4px;"><a href="${esc(safeUrl(r.link))}" target="_blank" style="color:var(--gold-dark);">${esc(r.link)}</a></div>` : ""}
                 ${r.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(r.notes)}</div>` : ""}
               </div>
             </div>
@@ -1993,23 +2004,38 @@
         const snap = await getDocs(q);
         if (snap.empty) return;
         const submissions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // rsvpSubmissions accepts unauthenticated writes (allow create: if true --
+        // there's no account to check, by design, for a no-login guest flow), so
+        // nothing here can assume any field is the right type. A single malformed
+        // doc (e.g. guestName submitted as a number instead of a string) used to
+        // throw mid-loop and abort BEFORE the cleanup delete below ran, which left
+        // that same poisoned doc to fail the same way on every future login,
+        // silently blocking every other real submission for that couple
+        // indefinitely. Coercing every field with String(...) and isolating each
+        // submission in its own try/catch means one bad doc can only ever cost
+        // itself, never the rest of the batch.
+        const RSVP_FIELD_MAX_LEN = 500;
+        const rsvpStr = (v, max) => String(v == null ? "" : v).trim().slice(0, max || RSVP_FIELD_MAX_LEN);
         submissions.forEach(r => {
-          const rsvpFields = {
-            rsvpStatus: r.rsvpStatus || "Pending",
-            plusOneName: r.plusOneName || "",
-            mealChoice: r.mealChoice || "",
-            plusOneMealChoice: r.plusOneMealChoice || "",
-            allergies: r.allergies || "",
-            plusOneAllergies: r.plusOneAllergies || ""
-          };
-          const idx = guestListCache.findIndex(g => (g.guestName||"").trim().toLowerCase() === (r.guestName||"").trim().toLowerCase());
-          if (idx > -1) {
-            const existing = guestListCache[idx];
-            guestListCache[idx] = { ...existing, ...rsvpFields, plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName };
-          } else {
-            guestListCache.push({
-              id: Date.now().toString() + Math.floor(Math.random()*1000),
-              guestName: r.guestName,
+          try {
+            const guestName = rsvpStr(r.guestName, 200);
+            if (!guestName) return;
+            const rsvpFields = {
+              rsvpStatus: rsvpStr(r.rsvpStatus, 50) || "Pending",
+              plusOneName: rsvpStr(r.plusOneName, 200),
+              mealChoice: rsvpStr(r.mealChoice, 200),
+              plusOneMealChoice: rsvpStr(r.plusOneMealChoice, 200),
+              allergies: rsvpStr(r.allergies),
+              plusOneAllergies: rsvpStr(r.plusOneAllergies)
+            };
+            const idx = guestListCache.findIndex(g => (g.guestName||"").trim().toLowerCase() === guestName.toLowerCase());
+            if (idx > -1) {
+              const existing = guestListCache[idx];
+              guestListCache[idx] = { ...existing, ...rsvpFields, plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName };
+            } else {
+              guestListCache.push({
+              id: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10),
+              guestName,
               address: "",
               plusOneAllowed: !!rsvpFields.plusOneName,
               tableNumber: "",
@@ -2017,6 +2043,9 @@
               children: [],
               ...rsvpFields
             });
+            }
+          } catch (perSubmissionErr) {
+            console.error("Skipping malformed RSVP submission " + r.id + ":", perSubmissionErr);
           }
         });
         await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
@@ -2342,7 +2371,7 @@
           ]);
         }
       });
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -2362,7 +2391,7 @@
         ["Guest Name", "Address", "Plus One Name", "RSVP Status", "Meal Choice", "Allergies", "Table Number", "Notes"],
         ["Jane Smith", "123 Main St, Columbus, OH 43215", "John Smith", "Attending", "Chicken", "Peanut allergy", "5", ""]
       ];
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -2478,8 +2507,15 @@
 
     window.confirmGuestImport = async function() {
       if (!currentUser || !pendingGuestImportRows.length) return;
-      const newEntries = pendingGuestImportRows.map(g => ({
-        id: Date.now().toString() + Math.floor(Math.random()*10000),
+      const importBatchStamp = Date.now().toString(36);
+      const newEntries = pendingGuestImportRows.map((g, i) => ({
+        // Index guarantees uniqueness within this import batch even when
+        // Date.now() ties across synchronous map() iterations (previously
+        // just a 0-9999 random suffix, which for a 100+ row import had a
+        // real chance of colliding -- a collision meant editing/deleting one
+        // imported guest silently affected the wrong one, since every guest
+        // action looks the row up by this id).
+        id: importBatchStamp + "-" + i + "-" + Math.random().toString(36).slice(2, 8),
         guestName: g.guestName,
         address: g.address,
         plusOneAllowed: g.plusOneAllowed,
@@ -2927,7 +2963,7 @@
       sorted.forEach(t => {
         rows.push([t.time ? formatMeetingTime(t.time) : "", t.activity || "", t.location || "", t.notes || ""]);
       });
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -3178,7 +3214,7 @@
             <div style="flex:1;min-width:220px;">
               <div style="font-size:15px;color:var(--charcoal);">${esc(idea.title||"Untitled Idea")}${idea.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(idea.category)}</span>` : ""}</div>
               ${idea.description ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;">${esc(idea.description)}</div>` : ""}
-              ${idea.link ? `<div style="font-size:12px;margin-top:6px;"><a href="${esc(idea.link)}" target="_blank" style="color:var(--gold-dark);">${esc(idea.link)}</a></div>` : ""}
+              ${idea.link ? `<div style="font-size:12px;margin-top:6px;"><a href="${esc(safeUrl(idea.link))}" target="_blank" style="color:var(--gold-dark);">${esc(idea.link)}</a></div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
               <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editIdea('${idea.id}')">Edit</button>
@@ -3405,8 +3441,17 @@
           venueRentalEndTime: data.venueRentalEndTime || "",
           vendorArrivalWindow: data.vendorArrivalWindow || "",
           timelineItems: Array.isArray(data.timelineItems) ? data.timelineItems : [],
-          guestCount: guestList.reduce((sum, g) => g.rsvpStatus === "Attending" ? sum + 1 + (g.plusOneAllowed && g.plusOneName ? 1 : 0) : sum, 0)
+          // Must match renderGuestList's own partySize formula (1 + plus-one +
+          // children) -- this used to only count 1 + (plusOneAllowed && plusOneName),
+          // silently dropping every attending child from the count the caterer
+          // actually plans food quantities against.
+          guestCount: guestList.reduce((sum, g) => {
+            if (g.rsvpStatus !== "Attending") return sum;
+            const kids = childPartyCounts(g.children);
+            return sum + 1 + (g.plusOneAllowed ? 1 : 0) + kids.total;
+          }, 0)
         });
+        await syncVendorGuestRoster(uid);
       } catch(e) { console.error("Vendor venue info sync failed:", e); }
     }
 
@@ -3789,7 +3834,7 @@
           total, paid, (total-paid), lo.notes||""
         ]);
       });
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -3913,6 +3958,28 @@
     // generated, never raw free text), but hardening this here closes off
     // that whole class of injection for any future code that does.
     function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+
+    // esc() only HTML-entity-escapes -- it doesn't stop a couple-entered link
+    // (Places to Stay, Things to Do, Registry, Ideas, etc.) from carrying a
+    // javascript:/data:/vbscript:/file: scheme, several of which mirror
+    // straight into the world-readable, unauthenticated publicCouples doc via
+    // syncPublicProfile and render as a real <a href> on the guest page.
+    // Strips whitespace/control characters first, since those can be used to
+    // sneak a scheme past a naive prefix check (e.g. "java\tscript:").
+    function safeUrl(u) {
+      const s = String(u || "").trim();
+      if (!s) return "";
+      const stripped = s.replace(/[\x00-\x20]+/g, "");
+      return /^(javascript|data|vbscript|file):/i.test(stripped) ? "#" : s;
+    }
+
+    // A couple-entered photo URL gets interpolated straight into an inline
+    // `url('...')` CSS value. Stripping just the single quote (the original
+    // guard) still leaves parentheses/backslashes able to break out of the
+    // url(...) context and inject arbitrary CSS -- no script execution is
+    // reachable this way in modern browsers, but it's not a validated value
+    // either. Strips every character that could break out of `url('...')`.
+    function cssUrlValue(u) { return String(u || "").replace(/['"()\\]/g, ""); }
 
     window.openCouple = async function(uid) {
       const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -5183,6 +5250,19 @@
 
     window.addVendorHubSlot = async function(categoryKey) {
       const cat = vendorCategoryDef(categoryKey);
+      // "fixed" categories (Caterer/Bar, DJ/Band, Photographer/Videographer,
+      // Hair/Makeup, Shuttle Service) declare mode:"fixed" specifically
+      // because exactly one of them feeds unambiguous cross-references on
+      // other categories' pages (e.g. DJ's Cake Cutting answer shown on the
+      // Caterer tab) -- a second slot of the same fixed category left that
+      // lookup silently picking an arbitrary one of the duplicates with no
+      // indication a second slot existed. This button previously had no
+      // mode check at all, so it was offered (and worked) on every category
+      // page regardless of mode.
+      if (cat.mode !== "repeatable") {
+        alert(`${cat.label} doesn't support additional vendors -- other categories' pages read a single answer from this one, so a second slot would make that lookup ambiguous. If you genuinely need a second ${cat.label} vendor, use the Other category instead.`);
+        return;
+      }
       let label;
       if (categoryKey === "other") {
         label = prompt("What kind of vendor is this? (e.g. Officiant, Rentals, Photo Booth)");
@@ -5326,30 +5406,43 @@
     }
 
     function renderVendorLogisticsForm() {
+      // Field ids use a "vlogf-" prefix (not the "vf-" the pre-existing
+      // Vendor Meetings planning tool uses) -- they used to collide on
+      // vf-vendorName specifically. Both forms happened to never be in the
+      // DOM at once (onAuthStateChanged returns early for a vendor session),
+      // so it never actually misbehaved, but it was one accidental reorder
+      // away from document.getElementById resolving to the wrong form.
       const s = vendorSlotData;
       document.getElementById("vendor-logistics-form").innerHTML = `
         <div class="form-grid">
-          <div class="form-group"><label class="form-label">Company Name</label><input class="form-input" id="vf-vendorName" value="${esc(s.vendorName||"")}"></div>
-          <div class="form-group"><label class="form-label">Contact Name</label><input class="form-input" id="vf-contactName" value="${esc(s.contactName||"")}"></div>
-          <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="vf-phone" value="${esc(s.phone||"")}"></div>
-          <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="vf-email" value="${esc(s.email||"")}"></div>
-          <div class="form-group"><label class="form-label">Website</label><input class="form-input" id="vf-website" value="${esc(s.website||"")}"></div>
-          <div class="form-group"><label class="form-label">Arrival Time</label><input class="form-input" id="vf-arrivalTime" value="${esc(s.arrivalTime||"")}" placeholder="e.g. 2:00 PM"></div>
-          <div class="form-group"><label class="form-label">Exit Time</label><input class="form-input" id="vf-exitTime" value="${esc(s.exitTime||"")}" placeholder="e.g. 10:30 PM"></div>
+          <div class="form-group"><label class="form-label">Company Name</label><input class="form-input" id="vlogf-vendorName" value="${esc(s.vendorName||"")}"></div>
+          <div class="form-group"><label class="form-label">Contact Name</label><input class="form-input" id="vlogf-contactName" value="${esc(s.contactName||"")}"></div>
+          <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="vlogf-phone" value="${esc(s.phone||"")}"></div>
+          <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="vlogf-email" value="${esc(s.email||"")}"></div>
+          <div class="form-group"><label class="form-label">Website</label><input class="form-input" id="vlogf-website" value="${esc(s.website||"")}"></div>
+          <div class="form-group"><label class="form-label">Arrival Time</label><input class="form-input" id="vlogf-arrivalTime" value="${esc(s.arrivalTime||"")}" placeholder="e.g. 2:00 PM"></div>
+          <div class="form-group"><label class="form-label">Exit Time</label><input class="form-input" id="vlogf-exitTime" value="${esc(s.exitTime||"")}" placeholder="e.g. 10:30 PM"></div>
         </div>
         <label class="form-label" style="display:block;margin:16px 0 8px;">Social Handle(s)</label>
         ${vendorSocialHandlesFieldHTML(vendorSlotId_, s.socialHandles)}
-        <div class="form-save-row" style="margin-top:16px;"><button class="btn-save" onclick="window.saveVendorLogistics()">Save</button><span class="autosave-indicator" id="vf-save-indicator">Saved</span></div>`;
+        <div class="form-save-row" style="margin-top:16px;"><button class="btn-save" onclick="window.saveVendorLogistics()">Save</button><span class="autosave-indicator" id="vlogf-save-indicator">Saved</span></div>`;
     }
 
     window.saveVendorLogistics = async function() {
       const fields = ["vendorName","contactName","phone","email","website","arrivalTime","exitTime"];
       const update = {};
-      fields.forEach(f => { update[f] = document.getElementById("vf-"+f).value.trim(); });
+      fields.forEach(f => { update[f] = document.getElementById("vlogf-"+f).value.trim(); });
+      // verifyVendorPin truncates the company name it compares against to 200
+      // chars (COMPANY_NAME_MAX_LEN) before matching -- if vendorName were ever
+      // saved longer than that, no future PIN attempt could ever match it again
+      // (the stored value would never equal the always-truncated typed value),
+      // permanently locking the vendor out of their own gate with no
+      // self-service fix. Capping it here keeps the two in sync.
+      update.vendorName = update.vendorName.slice(0, 200);
       update.socialHandles = readVendorSocialHandlesFromDOM(vendorSlotId_);
       try {
         await saveVendorSlotUpdate(update, vendorSlotLabel_ || "Vendor");
-        const ind = document.getElementById("vf-save-indicator");
+        const ind = document.getElementById("vlogf-save-indicator");
         if (ind) { ind.style.opacity = "1"; setTimeout(()=>{ind.style.opacity="0";},1500); }
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
@@ -5564,12 +5657,15 @@
     // Caterer/Bar and Photographer/Videographer (firestore.rules restricts
     // this doc specifically; every other vendor category has no access to
     // per-guest detail, only the aggregate guestCount mirrored separately
-    // into publicCouples). Deliberately NOT added to the already-public
-    // publicCouples doc -- that's world-readable with no auth, and
-    // allergy/attendee detail shouldn't be. Re-synced every time the couple
-    // visits Vendor Access, so it's not stale for long, but it is NOT a live
-    // listener -- a guest-list edit won't appear in an already-open vendor
-    // tab until that vendor reloads.
+    // into vendorSharedData/venueInfo, see syncVendorVenueInfo). Deliberately
+    // NOT added to the already-public publicCouples doc -- that's
+    // world-readable with no auth, and allergy/attendee detail shouldn't be.
+    // Called from inside syncVendorVenueInfo (itself called from inside
+    // syncPublicProfile), so every existing guestList write -- saveGuest,
+    // deleteGuest, confirmGuestImport, autoMergeRSVPSubmissions -- re-syncs
+    // this roster automatically, not just a Vendor Access page visit. Still
+    // NOT a live listener, though -- a guest-list edit won't appear in an
+    // already-open vendor tab until that vendor reloads.
     async function syncVendorGuestRoster(coupleUid) {
       try {
         const rows = guestListCache.map(g => ({
@@ -7002,16 +7098,30 @@
     async function persistSlotNotes(idPrefix, newArr) {
       const ctx = slotNotesContext[idPrefix];
       if (!ctx) return;
-      const lastEditedAt = new Date().toISOString();
-      await updateDoc(doc(db, "vendorSlots", ctx.slotId), { notes: newArr, lastEditedBy: ctx.viewerLabel, lastEditedAt });
-      ctx.onSaved(newArr);
+      let savedArr = newArr, lastEditedAt = new Date().toISOString(), lastEditedBy = ctx.viewerLabel;
+      if (ctx.viewerKey.startsWith("vendor:")) {
+        // A vendor can no longer write "notes" directly (firestore.rules no
+        // longer allows it) -- the Cloud Function enforces "only the
+        // original author may edit/delete their own note" server-side,
+        // which a declarative rule can't express per-array-entry. It
+        // returns the authoritative saved array (with server-assigned
+        // authorKey/timestamps for anything it accepted).
+        const save = httpsCallable(functions, "saveVendorSlotNotes");
+        const res = await save({ slotId: ctx.slotId, notes: newArr });
+        savedArr = res.data.notes;
+        lastEditedAt = res.data.lastEditedAt;
+        lastEditedBy = res.data.lastEditedBy;
+      } else {
+        await updateDoc(doc(db, "vendorSlots", ctx.slotId), { notes: newArr, lastEditedBy, lastEditedAt });
+      }
+      ctx.onSaved(savedArr);
       renderSlotNotes(idPrefix);
       // Keep the vendor's own tab-level "last edited by/at" stamp in sync when
       // a note-list change happens on their own page (this write already
       // bumps that stamp in Firestore -- the couple-hub card doesn't display
       // it, so only the vendor-view local cache needs refreshing here).
       if (isVendorViewMode && ctx.slotId === vendorSlotId_ && vendorSlotData) {
-        vendorSlotData.lastEditedBy = ctx.viewerLabel;
+        vendorSlotData.lastEditedBy = lastEditedBy;
         vendorSlotData.lastEditedAt = lastEditedAt;
         renderVendorStatusAndStamp();
       }
@@ -9627,9 +9737,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
-    <div id="vendorcat-cards-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
-    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('caterer')">+ Add Another Caterer/Bar Vendor</button>
-    <div class="form-section-block" style="margin-top:40px;">
+    <div id="vendorcat-cards-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -9654,9 +9762,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
-    <div id="vendorcat-cards-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
-    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('dj')">+ Add Another DJ/Band Vendor</button>
-    <div class="form-section-block" style="margin-top:40px;">
+    <div id="vendorcat-cards-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -9681,9 +9787,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
-    <div id="vendorcat-cards-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
-    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('photo')">+ Add Another Photographer/Videographer Vendor</button>
-    <div class="form-section-block" style="margin-top:40px;">
+    <div id="vendorcat-cards-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -9745,9 +9849,7 @@
         <span class="autosave-indicator" id="roster-save-indicator-hairmakeup">Saved</span>
       </div>
     </div>
-    <div id="vendorcat-cards-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
-    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('hairmakeup')">+ Add Another Hair/Makeup Vendor</button>
-    <div class="form-section-block" style="margin-top:40px;">
+    <div id="vendorcat-cards-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
@@ -9772,9 +9874,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
-    <div id="vendorcat-cards-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
-    <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('shuttle')">+ Add Another Shuttle Service Vendor</button>
-    <div class="form-section-block" style="margin-top:40px;">
+    <div id="vendorcat-cards-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
       <div id="vendorcat-social-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>

@@ -183,17 +183,61 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
       );
     }
 
-    // PIN was correct. Company name is checked here, not folded into the
+    // PIN was correct. Company name is checked here, not folded into the PIN
     // transaction above -- a name mismatch/typo shouldn't burn any of the
-    // PIN's 5-attempt budget, since the name was never the actual secret.
+    // PIN's own 5-attempt budget, since the name was never the actual secret.
+    // It gets its own SEPARATE lockout counter instead (nameFailedAttempts/
+    // nameLockedUntil), for a real reason: once the PIN transaction above
+    // resets failedAttempts to 0 on a correct PIN, the PIN's own lockout can
+    // no longer trigger on this call. Without an independent counter here,
+    // anyone who obtained the correct PIN through any means (shared
+    // insecurely, shoulder-surfed, guessed) would get UNLIMITED company-name
+    // guesses with zero lockout risk -- the two-factor gate would silently
+    // degrade to a single factor. The only throttle left would be the blunt
+    // per-IP cap above, trivially defeated by rotating source IP.
     // slotData.vendorName can in principle be any type a client or admin
     // ever wrote (Firestore doesn't enforce a schema) -- coerce with
     // String(...) rather than assuming it's already a string, so a stray
     // non-string value here can't throw and turn into an opaque "internal".
     const storedName = String(outcome.slotData.vendorName || "").trim();
     if (storedName) {
-      if (normalizeCompanyName(storedName) !== normalizeCompanyName(companyNameRaw)) {
+      const nameOutcome = await db.runTransaction(async (tx) => {
+        const secretsSnap = await tx.get(secretsRef);
+        if (!secretsSnap.exists) return { status: "not_found" };
+        const secrets = secretsSnap.data();
+        const now = admin.firestore.Timestamp.now();
+
+        if (secrets.nameLockedUntil && secrets.nameLockedUntil.toMillis() > now.toMillis()) {
+          const minutesLeft = Math.ceil((secrets.nameLockedUntil.toMillis() - now.toMillis()) / 60000);
+          return { status: "locked", minutesLeft };
+        }
+
+        if (normalizeCompanyName(storedName) !== normalizeCompanyName(companyNameRaw)) {
+          const nameFailedAttempts = (secrets.nameFailedAttempts || 0) + 1;
+          if (nameFailedAttempts >= MAX_ATTEMPTS) {
+            tx.update(secretsRef, {
+              nameFailedAttempts: 0,
+              nameLockedUntil: admin.firestore.Timestamp.fromMillis(now.toMillis() + LOCK_MINUTES * 60000),
+            });
+            return { status: "locked", minutesLeft: LOCK_MINUTES };
+          }
+          tx.update(secretsRef, { nameFailedAttempts });
+          return { status: "wrong" };
+        }
+
+        tx.update(secretsRef, { nameFailedAttempts: 0, nameLockedUntil: admin.firestore.FieldValue.delete() });
+        return { status: "ok" };
+      });
+
+      if (nameOutcome.status === "wrong" || nameOutcome.status === "not_found") {
         throw new HttpsError("permission-denied", "That company name doesn't match our records for this link. Please double check with your couple.");
+      }
+      if (nameOutcome.status === "locked") {
+        const unit = nameOutcome.minutesLeft === 1 ? "minute" : "minutes";
+        throw new HttpsError(
+          "resource-exhausted",
+          `Too many incorrect company name attempts. Try again in ${nameOutcome.minutesLeft} ${unit}.`
+        );
       }
     } else {
       // Nobody's claimed a company name for this slot yet -- whatever this
@@ -230,5 +274,108 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
     if (err instanceof HttpsError) throw err;
     logger.error("verifyVendorPin: uncaught error", { slotId, message: err && err.message, stack: err && err.stack });
     throw new HttpsError("internal", "Something went wrong verifying your PIN. Please try again in a moment.");
+  }
+});
+
+/**
+ * Server-enforced "edit/delete restricted to original author" for a vendor
+ * slot's notes list.
+ *
+ * The client's persistSlotNotes() always sends the WHOLE intended notes
+ * array (add/edit/delete are all expressed as "here's the new array"), and
+ * firestore.rules only ever checked that the *field* being touched was
+ * "notes" -- never which individual entries within it changed. That let any
+ * party with write access to the field rewrite or delete someone else's
+ * note via a raw Firestore call, completely bypassing the edit/delete
+ * buttons the UI hides for notes authored by someone else, which was the
+ * ONLY thing actually enforcing authorship.
+ *
+ * This function is reachable only by a verified vendor (firestore.rules no
+ * longer allows a vendor to write "notes" directly -- see the vendorSlots
+ * update rule). The owning couple and admin are unaffected: they already
+ * have full document-level rights via firestore.rules and don't go through
+ * this function at all.
+ *
+ * It diffs the submitted array against what's actually stored (via the
+ * Admin SDK, so it sees the real current state, not whatever the client
+ * happened to have cached) and requires that every entry added, edited, or
+ * removed relative to that stored state carries this caller's own
+ * authorKey. Firestore itself doesn't offer a good way to express
+ * per-array-element authorship checks in the declarative rules language, so
+ * that authorization lives here instead, in ordinary server code.
+ */
+exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }, async (request) => {
+  let slotId = "(unparsed)";
+  try {
+    slotId = String((request.data && request.data.slotId) || "").trim();
+    const newNotes = request.data && request.data.notes;
+
+    if (!SLOT_ID_RE.test(slotId)) {
+      throw new HttpsError("invalid-argument", "Invalid vendor.");
+    }
+    if (!request.auth || request.auth.token.vendorSlotId !== slotId) {
+      throw new HttpsError("permission-denied", "Not authorized for this vendor.");
+    }
+    if (!Array.isArray(newNotes) || newNotes.length > 500) {
+      throw new HttpsError("invalid-argument", "Invalid notes payload.");
+    }
+
+    const authorKey = `vendor:${slotId}`;
+    const slotRef = db.collection("vendorSlots").doc(slotId);
+    const slotSnap = await slotRef.get();
+    if (!slotSnap.exists) throw new HttpsError("not-found", "Vendor not found.");
+    const slotData = slotSnap.data();
+    const oldNotes = Array.isArray(slotData.notes) ? slotData.notes : [];
+    const oldById = new Map(oldNotes.filter((n) => n && typeof n.id === "string").map((n) => [n.id, n]));
+
+    const cleanNotes = [];
+    const seenIds = new Set();
+    for (const n of newNotes) {
+      if (!n || typeof n !== "object" || typeof n.id !== "string" || seenIds.has(n.id)) {
+        throw new HttpsError("invalid-argument", "Malformed notes payload.");
+      }
+      seenIds.add(n.id);
+      const old = oldById.get(n.id);
+      const text = String(n.text || "").slice(0, 5000);
+      if (old) {
+        // Existing note -- only its own author may change its text.
+        const changed = text !== String(old.text || "");
+        if (changed && old.authorKey !== authorKey) {
+          throw new HttpsError("permission-denied", "You can only edit your own notes.");
+        }
+        cleanNotes.push({
+          id: n.id,
+          text,
+          authorKey: old.authorKey,
+          author: old.author,
+          lastEditedAt: changed ? new Date().toISOString() : old.lastEditedAt,
+        });
+      } else {
+        // Brand-new note -- must be attributed to the caller, not forged as
+        // someone else's.
+        cleanNotes.push({
+          id: n.id.slice(0, 100),
+          text,
+          authorKey,
+          author: String(n.author || "").slice(0, 200),
+          lastEditedAt: new Date().toISOString(),
+        });
+      }
+    }
+    // Anything in the stored array but missing from the submitted one was
+    // removed -- only its own author may remove it.
+    for (const [id, old] of oldById) {
+      if (!seenIds.has(id) && old.authorKey !== authorKey) {
+        throw new HttpsError("permission-denied", "You can only delete your own notes.");
+      }
+    }
+
+    const lastEditedAt = new Date().toISOString();
+    await slotRef.update({ notes: cleanNotes, lastEditedBy: slotData.vendorName || "Vendor", lastEditedAt });
+    return { notes: cleanNotes, lastEditedBy: slotData.vendorName || "Vendor", lastEditedAt };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    logger.error("saveVendorSlotNotes: uncaught error", { slotId, message: err && err.message, stack: err && err.stack });
+    throw new HttpsError("internal", "Couldn't save notes. Please try again.");
   }
 });

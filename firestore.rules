@@ -31,8 +31,35 @@ service cloud.firestore {
         get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.slug == slug
       );
     }
+    // Guests have no account, so this necessarily accepts writes from
+    // anyone -- there's no auth to check. It used to accept literally any
+    // shape at all, which meant a submitted field of the wrong type (e.g.
+    // guestName as a number instead of a string) could reach
+    // autoMergeRSVPSubmissions on the couple's side and throw mid-merge,
+    // silently jamming every other pending RSVP for that couple
+    // indefinitely (the client now defends against that too, but this
+    // closes it at the source instead of only downstream). Restricting to
+    // exactly the fields the real RSVP form sends, as bounded-length
+    // strings, doesn't change anything for a legitimate submission -- it
+    // only rejects malformed/oversized payloads a script could otherwise
+    // throw at this collection directly.
+    function isValidRsvpSubmission() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['coupleSlug','guestName','rsvpStatus','plusOneName','mealChoice','plusOneMealChoice','allergies','plusOneAllergies','submittedAt','status']) &&
+        d.coupleSlug is string && d.coupleSlug.size() > 0 && d.coupleSlug.size() <= 200 &&
+        d.guestName is string && d.guestName.size() > 0 && d.guestName.size() <= 200 &&
+        d.rsvpStatus is string && d.rsvpStatus.size() <= 50 &&
+        d.plusOneName is string && d.plusOneName.size() <= 200 &&
+        d.mealChoice is string && d.mealChoice.size() <= 200 &&
+        d.plusOneMealChoice is string && d.plusOneMealChoice.size() <= 200 &&
+        d.allergies is string && d.allergies.size() <= 500 &&
+        d.plusOneAllergies is string && d.plusOneAllergies.size() <= 500 &&
+        d.submittedAt is string && d.submittedAt.size() <= 40 &&
+        d.status is string && d.status.size() <= 50;
+    }
+
     match /rsvpSubmissions/{submissionId} {
-      allow create: if true;
+      allow create: if isValidRsvpSubmission();
       allow read, delete: if request.auth != null && (
         isAdmin() ||
         resource.data.coupleSlug == get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.slug
@@ -79,9 +106,16 @@ service cloud.firestore {
     // the venueInfo doc below, gated by isVerifiedVendorForCouple -- any
     // vendor of this event, not just caterer/photo) but not who's coming.
     function isVerifiedVendorForCoupleInCategory(coupleUid, categories) {
-      let vs = get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId));
+      // Auth must be checked BEFORE the `get()` below, not after -- a `let`
+      // binding evaluates unconditionally, so putting `get()` inside one runs
+      // it even for a fully unauthenticated request, unlike a plain
+      // short-circuited `&&` expression (see isVerifiedVendorForCouple above,
+      // which gets this right). Firestore denies on a rule-evaluation error
+      // either way, so this never opened an actual hole -- just noisier
+      // permission-denied evaluation than necessary for anonymous requests.
       return request.auth != null && request.auth.token.vendorSlotId != null &&
-        vs.data.coupleUid == coupleUid && vs.data.category in categories;
+        get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == coupleUid &&
+        get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.category in categories;
     }
 
     // Public-safe vendor tab data (company info, logistics, meal request,
@@ -104,11 +138,20 @@ service cloud.firestore {
       // Couple/admin can change anything; a verified vendor can only touch
       // their own operational fields -- never coupleUid, coupleSlug, or
       // category/slotLabel (which identify/rename the slot itself).
+      // 'notes' is deliberately NOT in this list (unlike every other field
+      // here) -- a vendor writing it directly could rewrite or delete
+      // another party's individual note, since this rule only checks WHICH
+      // FIELD changed, not which entries within the notes array did. That
+      // per-entry "only the original author may edit/delete their own note"
+      // check needs real logic, not declarative rules, so a vendor's notes
+      // writes go through the saveVendorSlotNotes Cloud Function instead
+      // (Admin SDK, bypasses this rule, enforces authorship itself). The
+      // owning couple and admin keep unrestricted direct access, unchanged.
       allow update: if isOwningCouple(resource.data.coupleUid) || isAdmin() ||
         (isVerifiedVendorFor(slotId) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
            'vendorName', 'contactName', 'phone', 'email', 'website', 'socialHandles',
-           'arrivalTime', 'exitTime', 'mealRequest', 'responses', 'notes',
+           'arrivalTime', 'exitTime', 'mealRequest', 'responses',
            'status', 'lastEditedBy', 'lastEditedAt'
          ]));
 
@@ -153,9 +196,20 @@ service cloud.firestore {
       // restricted to a notes-only document either way.
       allow create: if isOwningCouple(uid) || isAdmin() ||
         (vendorBelongsToThisCouple() && request.resource.data.keys().hasOnly(['notes']));
+      // The vendor path is append-only: the array must strictly grow, and
+      // every note already stored must still be present unchanged. The
+      // client UI only ever appends here (addTimelineNote -- there's no
+      // edit/delete for shared-timeline notes at all), so this costs no
+      // real functionality, and it closes off a vendor rewriting or
+      // deleting another party's note via a raw Firestore call, which
+      // affectedKeys().hasOnly(['notes']) alone never restricted (it only
+      // checked WHICH FIELD changed, not which entries within it did).
+      // Couple/admin are unrestricted, same as every other collection here.
       allow update: if isOwningCouple(uid) || isAdmin() ||
         (vendorBelongsToThisCouple() &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['notes']));
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['notes']) &&
+         request.resource.data.notes.size() > resource.data.notes.size() &&
+         request.resource.data.notes.hasAll(resource.data.notes));
     }
 
     // Named, cross-tab data under couples/{uid}/vendorSharedData/{docId}.
