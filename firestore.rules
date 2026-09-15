@@ -138,15 +138,20 @@ service cloud.firestore {
       // Couple/admin can change anything; a verified vendor can only touch
       // their own operational fields -- never coupleUid, coupleSlug, or
       // category/slotLabel (which identify/rename the slot itself).
-      // 'notes' is deliberately NOT in this list (unlike every other field
-      // here) -- a vendor writing it directly could rewrite or delete
-      // another party's individual note, since this rule only checks WHICH
-      // FIELD changed, not which entries within the notes array did. That
-      // per-entry "only the original author may edit/delete their own note"
-      // check needs real logic, not declarative rules, so a vendor's notes
-      // writes go through the saveVendorSlotNotes Cloud Function instead
-      // (Admin SDK, bypasses this rule, enforces authorship itself). The
-      // owning couple and admin keep unrestricted direct access, unchanged.
+      // 'notes' and 'barNotes' are deliberately NOT in this list (unlike
+      // every other field here) -- a vendor writing either directly could
+      // rewrite or delete another party's individual note, since this rule
+      // only checks WHICH FIELD changed, not which entries within a notes
+      // array did. That per-entry "only the original author may edit/delete
+      // their own note" check needs real logic, not declarative rules, so a
+      // vendor's writes to either go through the saveVendorSlotNotes Cloud
+      // Function instead (Admin SDK, bypasses this rule, enforces
+      // authorship itself). Both live as top-level fields, siblings of
+      // `responses`, specifically so they CAN be excluded here -- a
+      // per-category notes area nested inside `responses` would still be
+      // covered by responses' own broad grant below and defeat the point.
+      // The owning couple and admin keep unrestricted direct access to both,
+      // unchanged.
       allow update: if isOwningCouple(resource.data.coupleUid) || isAdmin() ||
         (isVerifiedVendorFor(slotId) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly([

@@ -303,15 +303,30 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
  * authorKey. Firestore itself doesn't offer a good way to express
  * per-array-element authorship checks in the declarative rules language, so
  * that authorization lives here instead, in ordinary server code.
+ *
+ * `field` selects WHICH top-level array field on the slot doc this call
+ * touches -- "notes" (the main Notes area, every category) or "barNotes"
+ * (Caterer/Bar's Bar Notes). Deliberately an allowlist of top-level fields
+ * only, not an arbitrary path: both live as siblings of `responses`
+ * specifically so firestore.rules can exclude them from the vendor's
+ * broadly-writable `responses` field and force every write through this
+ * authorship check -- a path like "responses.barNotes" would still be
+ * covered by responses' own broad vendor-write grant and defeat the point.
  */
+const NOTE_FIELD_ALLOWLIST = ["notes", "barNotes"];
+
 exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }, async (request) => {
   let slotId = "(unparsed)";
   try {
     slotId = String((request.data && request.data.slotId) || "").trim();
     const newNotes = request.data && request.data.notes;
+    const field = String((request.data && request.data.field) || "notes").trim();
 
     if (!SLOT_ID_RE.test(slotId)) {
       throw new HttpsError("invalid-argument", "Invalid vendor.");
+    }
+    if (!NOTE_FIELD_ALLOWLIST.includes(field)) {
+      throw new HttpsError("invalid-argument", "Invalid notes field.");
     }
     if (!request.auth || request.auth.token.vendorSlotId !== slotId) {
       throw new HttpsError("permission-denied", "Not authorized for this vendor.");
@@ -325,7 +340,7 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
     const slotSnap = await slotRef.get();
     if (!slotSnap.exists) throw new HttpsError("not-found", "Vendor not found.");
     const slotData = slotSnap.data();
-    const oldNotes = Array.isArray(slotData.notes) ? slotData.notes : [];
+    const oldNotes = Array.isArray(slotData[field]) ? slotData[field] : [];
     const oldById = new Map(oldNotes.filter((n) => n && typeof n.id === "string").map((n) => [n.id, n]));
 
     const cleanNotes = [];
@@ -371,7 +386,7 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
     }
 
     const lastEditedAt = new Date().toISOString();
-    await slotRef.update({ notes: cleanNotes, lastEditedBy: slotData.vendorName || "Vendor", lastEditedAt });
+    await slotRef.update({ [field]: cleanNotes, lastEditedBy: slotData.vendorName || "Vendor", lastEditedAt });
     return { notes: cleanNotes, lastEditedBy: slotData.vendorName || "Vendor", lastEditedAt };
   } catch (err) {
     if (err instanceof HttpsError) throw err;
