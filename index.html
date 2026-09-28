@@ -814,11 +814,13 @@
       { id:"linen-showroom", title:"Linen Showroom", description:"Browse and design your custom linen color palette. Username: The 75 · Password: Events", linkUrl:"https://www.linenshowroom.com", buttonLabel:"Visit Linenshowroom.com" },
       { id:"venue-layout", title:"Venue Layout", description:"Explore floor plan options for your ceremony and reception. Use Prismm to visualize your setup and send to your coordinator.", linkUrl:"https://venue.prismm.com/?extluid=88ec036c-d361-46bc-9f31-e4fb97d5fc1f", buttonLabel:"View Floor Plans" },
       { id:"contact-coordinator", title:"Contact Your Coordinator", description:"Have a question between meetings? Reach out to your lead coordinator or venue manager directly. We are always here.", linkUrl:"https://theseventyfive.hbportal.co/app/", buttonLabel:"Open Client Portal" },
-      { id:"pricing-guide", title:"Pricing Guide", description:"Our current package pricing by season and day of week, plus everything included in every Seventy Five wedding.", linkUrl:"assets/docs/Pricing_Guide.pdf", buttonLabel:"View Pricing" },
       { id:"micro-wedding", title:"Micro-Wedding", description:"An intimate, full-service wedding experience for smaller guest counts — full details on what's included.", linkUrl:"assets/docs/Micro_Wedding.pdf", buttonLabel:"Learn More" },
       { id:"decor-catalog", title:"Décor Catalog", description:"Browse our full décor closet — tableware, glassware, candles, stands, and styling recommendations available to you.", linkUrl:"assets/docs/Decor_Catalog.pdf", buttonLabel:"View Décor Catalog" },
       { id:"venue-policies", title:"Venue Policies & Guest Guidelines", description:"Important policies covering guest conduct, décor setup, fire safety, and more — please share with your wedding party and vendors.", linkUrl:"assets/docs/Venue_Policies_Guest_Guidelines.pdf", buttonLabel:"View Policies" }
     ];
+
+    // Pricing Guide was retired; strip it from any copy still stored in settings/resources.
+    const withoutRetiredResources = items => items.filter(r => r.id !== "pricing-guide" && !/Pricing_Guide\.pdf/i.test(r.linkUrl || ""));
 
     async function loadResources() {
       const grid = document.getElementById("resources-grid");
@@ -827,7 +829,7 @@
         const snap = await getDoc(doc(db, "settings", "resources"));
         let items;
         if (snap.exists() && Array.isArray(snap.data().items) && snap.data().items.length) {
-          items = snap.data().items;
+          items = withoutRetiredResources(snap.data().items);
         } else {
           items = DEFAULT_RESOURCES;
           await setDoc(doc(db, "settings", "resources"), { items });
@@ -4613,7 +4615,7 @@
       try {
         const snap = await getDoc(doc(db, "settings", "resources"));
         const items = (snap.exists() && Array.isArray(snap.data().items) && snap.data().items.length) ? snap.data().items : DEFAULT_RESOURCES;
-        resourceEditCache = items.map(r => ({ ...r, _rowId: "row" + (resourceRowSeq++) }));
+        resourceEditCache = withoutRetiredResources(items).map(r => ({ ...r, _rowId: "row" + (resourceRowSeq++) }));
       } catch(e) {
         resourceEditCache = DEFAULT_RESOURCES.map(r => ({ ...r, _rowId: "row" + (resourceRowSeq++) }));
       }
