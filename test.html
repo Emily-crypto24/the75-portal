@@ -4693,7 +4693,7 @@
           else if (k==="status") v = c.status||"active";
           else if (k==="createdAt") v = c.createdAt||"";
           else { const [,mk,fk] = k.match(/^(meeting[123])__(.+)$/)||[,"",""]; v = String((c[mk]||{})[fk]??""); }
-          return `"${String(v).replace(/"/g,'""')}"`;
+          return `"${csvSafeCell(v).replace(/"/g,'""')}"`;
         });
         rows.push(row.join(","));
       });
