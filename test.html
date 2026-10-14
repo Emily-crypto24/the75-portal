@@ -4278,6 +4278,7 @@
       return base || "";
     }
     const DOF_SECTIONS = [
+      {key:"lc", label:"LC Checklist", tasks:[]},
       {key:"morning", label:"Morning Arrival", tasks:[]},
       {key:"preceremony", label:"Pre-Ceremony", tasks:["Introduce Lead Closer to Bride & Groom & their Parents, say goodbyes","VENDOR HUDDLE","Final walk of ceremony pad, staircase, & patio; finishing touches","Leaf blow where needed","Check bathrooms are cleaned and stocked","Check all place settings are complete","Make sure personal belongings are moved from GS to BS"]},
       {key:"ceremony", label:"Ceremony", tasks:["Block driveway","Final preparation of cocktail room and paver patio","Move couples decor & vendor equipment into groom suite","Wipe down ADA toilet, restock TP & paper towels — open to public, lock from groom suite","Lock exterior and interior doors of bridal suite and groom suite","Prepare a tray of waters to take to B&G and family for pictures","Light candles in cocktail area","Set out corn hole, jenga, ring toss","Unblock driveway"]},
@@ -4293,6 +4294,7 @@
       dofCurrentUid = uid;
       dofSectionIdx = 0;
       await dofLoad(uid);
+      dofStartLive(uid);
     };
 
     window.refreshDayOfDisplay = async function() {
@@ -4301,6 +4303,7 @@
 
     window.closeDayOfDisplay = function() {
       document.getElementById("dayof-modal").style.display = "none";
+      dofStopLive();
       dofCurrentUid = null; dofCurrentData = null;
     };
 
@@ -4329,7 +4332,11 @@
 
     function dofRenderTabs() {
       const wrap = document.getElementById("dof-tabs");
-      wrap.innerHTML = DOF_SECTIONS.map((s,i) => `<button class="dof-tab ${i===dofSectionIdx?"active":""}" onclick="window.dofSetSection(${i})">${s.label}</button>`).join("");
+      wrap.innerHTML = DOF_SECTIONS.map((s,i) => {
+        let label = s.label;
+        if (s.key === "lc" && dofCurrentData) { const p = lcProgress(); label += ` <span class="dof-lc-count">${p.done}/${p.total}</span>`; }
+        return `<button class="dof-tab ${i===dofSectionIdx?"active":""}" onclick="window.dofSetSection(${i})">${label}</button>`;
+      }).join("");
     }
 
     window.dofSetSection = function(idx) {
@@ -4429,6 +4436,7 @@
 
     function dofRenderSection() {
       const s = DOF_SECTIONS[dofSectionIdx];
+      if (s.key === "lc") { lcRender(); return; }
       const m1 = dofCurrentData.meeting1 || {}, m2 = dofCurrentData.meeting2 || {}, m3 = dofCurrentData.meeting3 || {};
       let fieldsHTML = "";
       if (s.key === "morning") {
@@ -4495,6 +4503,223 @@
     window.dofToggleTask = function(sIdx, tIdx) {
       const el = document.getElementById(`dof-task-${sIdx}-${tIdx}`);
       if (el) el.classList.toggle("checked");
+    };
+
+    // ===== LC Day-Of Checklist (TV display tab) =====
+    // Mirrors the "LC Day-Of Checklist" in the handbook. Times are anchored to
+    // R = rental start time and T = ceremony time. Each check saves to
+    // couples/{uid}.dayOf.lcChecklist.{itemId} = {at, by}, and the display
+    // listens live, so a check made on the office iPad shows on the TV.
+    // anchor: "R" or "T"; off: minutes relative to the anchor (deadline).
+    // variant: "prior" = only when day-prior setup happened, "noprior" = only when it didn't.
+    const LC_CHECKLIST = [
+      {group:"Opening", items:[
+        {id:"o_clockin", text:"Arrive and clock in on Homebase", anchor:"R", off:-30},
+        {id:"o_lights", text:"Lights on; all doors unlocked", anchor:"R", off:-30},
+        {id:"o_walk", text:"Walk indoors and outdoors: remaining trash picked up, spot sweep, every item in its place", anchor:"R", off:0},
+        {id:"o_audit", text:"Opening audit: missed closing items written on the handoff sheet by checklist section and line (items not on the checklist submitted as add requests)", anchor:"R", off:0}
+      ]},
+      {group:"Setup", items:[
+        {id:"s_finish", text:"Finishing touches on tables", anchor:"T", off:-120, variant:"prior"},
+        {id:"s_linens", text:"Linens on every table: correct colors, wrinkle free, centered", anchor:"T", off:-120, variant:"noprior"},
+        {id:"s_decor", text:"All décor placed to the exact quantities on the slides and planning notes", anchor:"T", off:-120, variant:"noprior"},
+        {id:"s_tables", text:"Every table meets the Table Setting Standard", anchor:"T", off:-120},
+        {id:"s_ceremony", text:"Ceremony space set to Prismm", anchor:"T", off:-120}
+      ]},
+      {group:"Vendors (as each one arrives)", items:[
+        {id:"v_cards", text:"Every vendor given a thank-you card and the venue information card", anchor:"T", off:-90},
+        {id:"v_area", text:"Every vendor directed to their assigned load-in and setup area", anchor:"T", off:-90},
+        {id:"v_huddle", text:"Every vendor told the vendor huddle time", anchor:"T", off:-90},
+        {id:"v_bar", text:"Bar inventory taken with the bartender before the first drink", anchor:null, note:"Before first drink"},
+        {id:"v_closing", text:"Closing team checked in; arrival list (outdoor or indoor) and any additions given", anchor:null, note:"On their arrival"}
+      ]},
+      {group:"Final Two Hours", items:[
+        {id:"f_brief", text:"AC brief and huddle ready: timeline current, today's changes written down", anchor:"T", off:-90},
+        {id:"f_vendorcheck", text:"Checked in with every vendor; reminded of huddle time", anchor:"T", off:-90},
+        {id:"f_huddle", text:"Vendor huddle run with the AC (LC and AC both sign off)", anchor:"T", off:-90},
+        {id:"f_intro", text:"AC introduced to family point people (and couple if not in photos)", anchor:null, note:"Right after huddle"},
+        {id:"f_rain", text:"Rain call made: one setup only; team and vendors told", anchor:"T", off:-60},
+        {id:"f_ceremony", text:"Ceremony directed", anchor:"T", off:0},
+        {id:"f_handoff", text:"LC → AC handoff in the office: nine items covered, both signed with time", anchor:null, note:"After recessional"},
+        {id:"f_clockout", text:"Clocked out at scheduled end time", anchor:null, note:"Scheduled end"}
+      ]}
+    ];
+
+    let dofUnsub = null, lcTick = null;
+
+    async function dofStartLive(uid) {
+      dofStopLive();
+      try {
+        const { doc: dc, onSnapshot: os } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        dofUnsub = os(dc(db,"couples",uid), snap => {
+          if (!snap.exists() || uid !== dofCurrentUid || !dofCurrentData) return;
+          const fresh = snap.data().dayOf || {};
+          if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+          ["lcChecklist","dayPriorSetup","rentalStart","uniqueNotes"].forEach(k => {
+            if (fresh[k] === undefined) delete dofCurrentData.dayOf[k]; else dofCurrentData.dayOf[k] = fresh[k];
+          });
+          dofRenderTabs();
+          dofRenderNotes();
+          if (DOF_SECTIONS[dofSectionIdx].key === "lc") lcRender();
+          dofSyncStamp();
+        });
+      } catch(e) { console.error("Live sync failed", e); }
+      // Re-draw once a minute so past-due items turn red without a refresh.
+      lcTick = setInterval(() => { if (dofCurrentData && DOF_SECTIONS[dofSectionIdx].key === "lc") lcRender(); }, 60000);
+    }
+
+    function dofStopLive() {
+      if (dofUnsub) { dofUnsub(); dofUnsub = null; }
+      if (lcTick) { clearInterval(lcTick); lcTick = null; }
+    }
+
+    // "4:30 PM", "4:30pm", "4 PM", "16:30" -> minutes after midnight (null if unreadable).
+    // A bare "4:30" with no AM/PM is read as afternoon for hours 1-7.
+    function lcParseClock(str) {
+      if (!str) return null;
+      const m = String(str).trim().toLowerCase().match(/^(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?/);
+      if (!m) return null;
+      let h = Number(m[1]); const min = Number(m[2]||0);
+      if (h > 23 || min > 59) return null;
+      if (m[3]) { const pm = m[3][0] === "p"; if (h === 12) h = pm ? 12 : 0; else if (pm) h += 12; }
+      else if (h >= 1 && h <= 7) h += 12;
+      return h*60 + min;
+    }
+    function lcFmtClock(mins) {
+      mins = ((mins % 1440) + 1440) % 1440;
+      let h = Math.floor(mins/60); const m = mins%60; const ap = h >= 12 ? "PM" : "AM";
+      h = h % 12; if (h === 0) h = 12;
+      return `${h}:${String(m).padStart(2,"0")} ${ap}`;
+    }
+    function lcWeekday() {
+      const raw = (dofCurrentData.meeting1||{}).weddingDate;
+      return raw ? new Date(raw+"T12:00:00").getDay() : null;
+    }
+    function lcDayPrior() {
+      const v = (dofCurrentData.dayOf||{}).dayPriorSetup;
+      if (typeof v === "boolean") return v;
+      return lcWeekday() === 5; // default: Friday weddings get a day-prior setup
+    }
+    function lcRentalStart() {
+      const v = (dofCurrentData.dayOf||{}).rentalStart;
+      if (v) return { text: v, isDefault: false };
+      return { text: lcWeekday() === 0 ? "10:00 AM" : "8:00 AM", isDefault: true };
+    }
+    function lcActiveItems() {
+      const prior = lcDayPrior();
+      return LC_CHECKLIST.map(g => ({ group: g.group, items: g.items.filter(it => !it.variant || (it.variant === "prior") === prior) }));
+    }
+    function lcProgress() {
+      const done = (dofCurrentData.dayOf||{}).lcChecklist || {};
+      let total = 0, n = 0;
+      lcActiveItems().forEach(g => g.items.forEach(it => { total++; if (done[it.id]) n++; }));
+      return { done: n, total };
+    }
+    function lcIsWeddingToday() {
+      const raw = (dofCurrentData.meeting1||{}).weddingDate;
+      if (!raw) return false;
+      const t = new Date();
+      const today = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,"0")}-${String(t.getDate()).padStart(2,"0")}`;
+      return raw === today;
+    }
+
+    function lcRender() {
+      const main = document.getElementById("dof-main");
+      if (!main || !dofCurrentData) return;
+      const done = (dofCurrentData.dayOf||{}).lcChecklist || {};
+      const R = lcParseClock(lcRentalStart().text);
+      const T = lcParseClock((dofCurrentData.meeting1||{}).ceremonyTime);
+      const now = new Date(); const nowMins = now.getHours()*60 + now.getMinutes();
+      const today = lcIsWeddingToday();
+      const prior = lcDayPrior();
+      const rs = lcRentalStart();
+      const p = lcProgress();
+
+      const deadlineFor = it => {
+        if (!it.anchor) return { label: it.note || "", mins: null };
+        const base = it.anchor === "R" ? R : T;
+        const rel = `${it.anchor}${it.off === 0 ? "" : (it.off < 0 ? " − " : " + ") + Math.floor(Math.abs(it.off)/60) + ":" + String(Math.abs(it.off)%60).padStart(2,"0")}`;
+        if (base === null) return { label: `By ${rel}`, mins: null };
+        return { label: `By ${lcFmtClock(base + it.off)}`, mins: base + it.off };
+      };
+
+      const groupsHTML = lcActiveItems().map(g => `
+        <div class="dof-tasks-title">${esc(g.group)}</div>
+        ${g.items.map(it => {
+          const rec = done[it.id];
+          const dl = deadlineFor(it);
+          const late = !rec && today && dl.mins !== null && nowMins > dl.mins;
+          const stamp = rec ? `&#10003; ${esc(new Date(rec.at).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}))}${rec.by ? " · " + esc(rec.by) : ""}` : "";
+          return `<label class="dof-lc-item ${rec?"checked":""} ${late?"late":""}">
+            <input type="checkbox" ${rec?"checked":""} onchange="window.lcToggle('${it.id}', this.checked)">
+            <span class="dof-lc-text">${esc(it.text)}</span>
+            <span class="dof-lc-when">${rec ? stamp : (late ? "Past due · " : "") + esc(dl.label)}</span>
+          </label>`;
+        }).join("")}`).join("");
+
+      main.innerHTML = `
+        <div class="dof-section-title">LC Checklist <span class="dof-lc-progress">${p.done} of ${p.total} done</span></div>
+        <div class="dof-lc-settings">
+          <div class="dof-field">
+            <div class="dof-field-label">Rental Start (R)</div>
+            <div class="dof-field-val dof-editable" onclick="window.lcEditRentalStart()">${esc(rs.text)}${rs.isDefault ? ' <span class="dof-lc-default">default · tap to change</span>' : ""}</div>
+          </div>
+          <div class="dof-field">
+            <div class="dof-field-label">Ceremony (T)</div>
+            <div class="dof-field-val ${T===null?"empty":""}">${T===null ? "Not set — add ceremony time in Meeting 1" : esc(lcFmtClock(T))}</div>
+          </div>
+          <div class="dof-field">
+            <div class="dof-field-label">Day-Prior Setup Done?</div>
+            <div class="dof-lc-toggle">
+              <button class="${prior?"on":""}" onclick="window.lcSetDayPrior(true)">Yes</button>
+              <button class="${!prior?"on":""}" onclick="window.lcSetDayPrior(false)">No</button>
+            </div>
+          </div>
+        </div>
+        <p class="dof-lc-rule">If a step isn't done by its time, tell the Venue Manager.</p>
+        ${groupsHTML}`;
+    }
+
+    async function lcSave(path, value) {
+      try {
+        const { doc: dc, updateDoc: ud, deleteField: df } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        await ud(dc(db,"couples",dofCurrentUid), { [path]: value === undefined ? df() : value });
+        dofSyncStamp();
+      } catch(e) { alert("Couldn't save: " + e.message); }
+    }
+
+    window.lcToggle = async function(id, checked) {
+      if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+      if (!dofCurrentData.dayOf.lcChecklist) dofCurrentData.dayOf.lcChecklist = {};
+      let rec;
+      if (checked) {
+        const by = currentUser ? (currentUser.displayName ? currentUser.displayName.split(" ")[0] : (currentUser.email||"").split("@")[0]) : "";
+        rec = { at: new Date().toISOString(), by };
+        dofCurrentData.dayOf.lcChecklist[id] = rec;
+      } else {
+        delete dofCurrentData.dayOf.lcChecklist[id];
+      }
+      lcRender(); dofRenderTabs();
+      await lcSave(`dayOf.lcChecklist.${id}`, rec);
+    };
+
+    window.lcSetDayPrior = async function(val) {
+      if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+      dofCurrentData.dayOf.dayPriorSetup = val;
+      lcRender(); dofRenderTabs();
+      await lcSave("dayOf.dayPriorSetup", val);
+    };
+
+    window.lcEditRentalStart = async function() {
+      const cur = lcRentalStart();
+      const val = prompt("Rental start time for this wedding (e.g. 8:00 AM, or 7:00 AM if they added an hour). Leave blank to use the default.", cur.isDefault ? "" : cur.text);
+      if (val === null) return;
+      const clean = val.trim();
+      if (clean && lcParseClock(clean) === null) { alert("Couldn't read that time. Try something like 8:00 AM."); return; }
+      if (!dofCurrentData.dayOf) dofCurrentData.dayOf = {};
+      if (clean) dofCurrentData.dayOf.rentalStart = clean; else delete dofCurrentData.dayOf.rentalStart;
+      lcRender();
+      await lcSave("dayOf.rentalStart", clean || undefined);
     };
 
     // ===== Event Closeout Sheet =====
@@ -7680,7 +7905,22 @@
     .dof-task{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:14px;color:rgba(253,250,246,0.9);}
     .dof-task input{width:16px;height:16px;accent-color:var(--gold);}
     .dof-task.checked{color:rgba(253,250,246,0.4);text-decoration:line-through;}
-    @media (max-width:900px){.dof-rail{width:230px;}.dof-grid{grid-template-columns:1fr;}}
+    .dof-lc-count{display:inline-block;margin-left:6px;font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(184,150,90,0.2);color:var(--gold-light);letter-spacing:0;}
+    .dof-lc-progress{font-family:var(--font-body);font-size:13px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-light);margin-left:14px;vertical-align:middle;}
+    .dof-lc-settings{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px 32px;margin-bottom:10px;}
+    .dof-lc-default{font-size:11px;color:rgba(253,250,246,0.4);font-style:italic;margin-left:6px;}
+    .dof-lc-toggle{display:flex;gap:6px;margin-top:2px;}
+    .dof-lc-toggle button{flex:1;padding:8px 0;background:transparent;border:1px solid rgba(253,250,246,0.25);color:rgba(253,250,246,0.7);font-size:12px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;border-radius:2px;}
+    .dof-lc-toggle button.on{background:var(--gold-dark);border-color:var(--gold-dark);color:var(--warm-white);}
+    .dof-lc-rule{font-size:12px;color:rgba(253,250,246,0.55);font-style:italic;margin:8px 0 0;}
+    .dof-lc-item{display:grid;grid-template-columns:28px 1fr auto;align-items:center;gap:12px;padding:12px 10px;margin:0 -10px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:15px;color:rgba(253,250,246,0.92);cursor:pointer;border-radius:3px;}
+    .dof-lc-item input{width:24px;height:24px;accent-color:var(--gold);cursor:pointer;}
+    .dof-lc-when{font-size:12px;color:var(--gold-light);white-space:nowrap;text-align:right;}
+    .dof-lc-item.checked .dof-lc-text{color:rgba(253,250,246,0.4);text-decoration:line-through;}
+    .dof-lc-item.checked .dof-lc-when{color:rgba(253,250,246,0.5);}
+    .dof-lc-item.late{background:rgba(200,80,70,0.14);}
+    .dof-lc-item.late .dof-lc-when{color:#e8a39b;font-weight:600;}
+    @media (max-width:900px){.dof-rail{width:230px;}.dof-grid{grid-template-columns:1fr;}.dof-lc-settings{grid-template-columns:1fr;}.dof-lc-when{white-space:normal;}}
 
     /* ===== Event Closeout Sheet ===== */
     #closeout-modal{display:none;position:fixed;inset:0;z-index:600;background:#525659;flex-direction:column;}
