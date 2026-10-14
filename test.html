@@ -3927,7 +3927,7 @@
             <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
           </div>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openDayOfDisplay('${c.id}')">&#128250; Day-Of TV Display</button>
-          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:#3a3a3a;" onclick="window.openCloseoutSheet('${c.id}')">&#128424;&#65039; Event Closeout Sheet</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:#3a3a3a;" onclick="window.openCloseoutSheet('${c.id}')">&#128424;&#65039; Shift Handoff &amp; Closeout</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
           <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
           <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
@@ -4768,132 +4768,214 @@
       return `<div class="cls-field"><label>${esc(labelText)}</label><div class="cls-static-big">${val ? esc(val) : "&nbsp;"}</div></div>`;
     }
 
+    // ===== Shift Handoff & Event Closeout (matches the handbook's paper form) =====
+    // Sections 1-2 pre-fill from the couple's planning data but stay editable.
+    // Everything typed saves to couples/{uid}.closeoutSheet.{key} on blur.
+    function clsGet(key, prefill) {
+      const cs = clsCurrentData.closeoutSheet || {};
+      return (cs[key] !== undefined && cs[key] !== "") ? cs[key] : (prefill || "");
+    }
+    function clsIn(key, prefill, width) {
+      return `<input class="cls-input cls-inline" style="${width?`width:${width};`:""}" type="text" value="${esc(clsGet(key, prefill))}" onblur="window.clsSaveField('${key}',this.value)">`;
+    }
+    function clsLabeled(labelText, key, prefill) {
+      return `<div class="cls-field"><label>${esc(labelText)}</label>${clsIn(key, prefill)}</div>`;
+    }
+    function clsBox(labelText, key, rows, prefill) {
+      const val = clsGet(key, prefill);
+      const need = Math.max(rows, (val.match(/\n/g)||[]).length + 1);
+      return `<div class="cls-box"><div class="cls-box-label">${esc(labelText)}</div><textarea class="cls-lined" rows="${need}" oninput="this.rows=Math.max(${rows},this.value.split('\\n').length)" onblur="window.clsSaveField('${key}',this.value)">${esc(val)}</textarea></div>`;
+    }
+    function clsTick(labelText, key) {
+      const checked = (clsCurrentData.closeoutSheet||{})[key] ? "checked" : "";
+      return `<label class="cls-tick"><input type="checkbox" ${checked} onchange="window.clsSaveField('${key}',this.checked)"> <span>${labelText}</span></label>`;
+    }
+    // Tap to cycle: unset (prints "Y / N") -> Yes -> No -> unset.
+    function clsYN(key, labels) {
+      const opts = labels || ["Yes","No"];
+      const v = (clsCurrentData.closeoutSheet||{})[key] || "";
+      return `<span class="cls-yn ${v?"set":""}" onclick="window.clsCycle('${key}', this, ${JSON.stringify(opts).replace(/"/g,"&quot;")})">${v ? esc(v) : esc(opts.join(" / "))}</span>`;
+    }
+    window.clsCycle = function(key, el, opts) {
+      const cur = (clsCurrentData.closeoutSheet||{})[key] || "";
+      const order = ["", ...opts];
+      const next = order[(order.indexOf(cur) + 1) % order.length];
+      el.textContent = next || opts.join(" / ");
+      el.classList.toggle("set", !!next);
+      window.clsSaveField(key, next);
+    };
+    function clsSig(labelA, keyA, labelB, keyB) {
+      return `<div class="cls-sig-row">
+        <div><div class="cls-sig-line">${clsIn(keyA,"")}</div><div class="cls-sig-label">${labelA}</div></div>
+        <div><div class="cls-sig-line">${clsIn(keyB,"")}</div><div class="cls-sig-label">${labelB}</div></div>
+      </div>`;
+    }
+
     function clsRender() {
       const d = clsCurrentData;
       const m1 = d.meeting1 || {}, m2 = d.meeting2 || {}, m3 = d.meeting3 || {};
+      const dayOf = d.dayOf || {};
       const names = m1.coupleNames || d.displayName || "Couple";
       const rawDate = m1.weddingDate;
-      const wDate = rawDate ? new Date(rawDate+"T12:00:00").toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"}) : "";
-      const addOns = [m1.addOns, m2.addOns].filter(Boolean).join(" · ");
+      const dt = rawDate ? new Date(rawDate+"T12:00:00") : null;
+      const wDate = dt ? dt.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}) : "";
+      const wDay = dt ? dt.toLocaleDateString("en-US",{weekday:"long"}) : "";
       const lc = d.leadCoordinator || {};
-      document.getElementById("cls-title").textContent = "Closeout — " + names;
+      const rentalStart = dayOf.rentalStart || (dt ? (dt.getDay() === 0 ? "10:00 AM" : "8:00 AM") : "");
+      const cerLoc = (m1.cer_outdoor_pad || m1.cer_outdoor_other) ? "Outdoor" : ((m1.cer_indoor_main || m1.cer_indoor_other) ? "Indoor" : "");
+      const rainRec = (dayOf.lcChecklist || {}).f_rain;
+      const rainTime = rainRec ? new Date(rainRec.at).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : "";
+      document.getElementById("cls-title").textContent = "Shift Handoff & Closeout — " + names;
 
-      const vendorCats = [
-        {label:"Caterer", prefix:"cat", confirm:m3.catererName},
-        {label:"Florist", prefix:"flor", confirm:m3.floristConfirm},
-        {label:"DJ / Band", prefix:"dj", confirm:m3.djBandConfirm},
-        {label:"Photographer/Videographer", prefix:"photo", confirm:m3.photoConfirm},
-        {label:"Cake / Dessert", prefix:"cake", confirm:m3.dessertsCake},
-        {label:"Transportation", prefix:"trans", confirm:""}
-      ];
-      const vendorRows = vendorCats.map(v => {
-        const name = dofVendorFor(m1, v.prefix, v.confirm);
-        return `<tr><td style="font-weight:600;">${esc(v.label)}</td><td>${name ? esc(name) : "—"}</td><td></td><td></td></tr>`;
-      }).join("");
+      const pointRows = [["Bride's side","pp1"],["Groom's side","pp2"],["Other","pp3"],["Other","pp4"]].map(([lbl,k]) =>
+        `<tr><td class="cls-rowlabel">${lbl}</td><td>${clsIn(k+"Name","")}</td><td>${clsIn(k+"Phone","")}</td><td>${clsIn(k+"Relation","")}</td></tr>`).join("");
+      const planningPeople = [m2.financePerson && `Finance person: ${m2.financePerson}`, m2.matronOfHonor && `Matron of honor: ${m2.matronOfHonor}`, m2.bestMan && `Best man: ${m2.bestMan}`].filter(Boolean).join(" · ");
+
+      const delegations = [
+        ["Leftover food","delFood",m2.foodHome],["Cake / desserts","delCake",m2.cakeHome],["Alcohol","delAlcohol",m2.alcoholHome],
+        ["Gifts and cards","delGifts",dayOf.giftsDelegation],["Florals","delFlorals",dayOf.floralsDelegation],["Couple's décor and rentals","delDecor",m2.decorHome]
+      ].map(([lbl,k,pre]) => `<tr><td class="cls-rowlabel">${lbl}</td><td>${clsIn(k, pre)}</td></tr>`).join("");
+
+      const vendors = [
+        {lbl:"Caterer", k:"vCat", pre:dofVendorFor(m1,"cat",m3.catererName), extra:`Facility fee paid: ${clsYN("vCatFee")}`, last:`Caterer closeout: ${clsYN("vCatClose")}`},
+        {lbl:"Bar", k:"vBar", pre:"", last:`Bar closeout: ${clsYN("vBarClose")}`},
+        {lbl:"DJ / band", k:"vDj", pre:dofVendorFor(m1,"dj",m3.djBandConfirm)},
+        {lbl:"Photo / video", k:"vPhoto", pre:dofVendorFor(m1,"photo",m3.photoConfirm)},
+        {lbl:"Florals", k:"vFlor", pre:dofVendorFor(m1,"flor",m3.floristConfirm)},
+        {lbl:"Cake / desserts", k:"vCake", pre:dofVendorFor(m1,"cake",m3.dessertsCake)},
+        {lbl:"Rentals", k:"vRent", pre:"", last:`Pickup: ${clsIn("vRentPickup","","70px")}`},
+        {lbl:"Other:", k:"vOther", pre:""}
+      ].map(v => `<tr>
+          <td class="cls-rowlabel">${v.lbl}${v.pre?`<div class="cls-sub-note">${esc(v.pre)}</div>`:""}${v.extra?`<div class="cls-sub-note">${v.extra}</div>`:""}</td>
+          <td>${clsIn(v.k+"Point","")}</td><td>${clsIn(v.k+"Arrived","")}</td><td>${clsYN(v.k+"OnTime",["Y","N"])}</td>
+          <td>${clsYN(v.k+"Policy",["Y","N"])} ${clsIn(v.k+"PolicyNote","")}</td><td>${v.last||""}</td></tr>`).join("");
+
+      const staffRows = [1,2,3,4].map(i => `<tr><td>${clsIn("st"+i+"Name","")}</td><td>${clsYN("st"+i+"Late",["Excused","Unexcused"])}</td><td>${clsYN("st"+i+"Early",["Y","N"])}</td><td>${clsYN("st"+i+"Ncns",["Y","N"])}</td></tr>`).join("");
 
       document.getElementById("closeout-sheet").innerHTML = `
-        <div class="cls-h1">The Seventy Five &mdash; Event Closeout Sheet</div>
-        <div class="cls-sub">Rockbridge, Ohio &middot; Hocking Hills</div>
+        <div class="cls-h1">Shift Handoff &amp; Event Closeout</div>
+        <div class="cls-sub">The Seventy Five &middot; Every field gets an answer or "N/A" &middot; Completed form goes in the VM mailbox at close</div>
 
         <div class="cls-section">
-          <div class="cls-section-title">Event Overview</div>
-          <div class="cls-row">
-            ${clsStatic("Wedding Couple", names)}
-            ${clsStatic("Wedding Day &amp; Date", wDate)}
-          </div>
-          <div class="cls-row3">
-            ${clsStatic("Guest Count", m1.guestCount)}
-            ${clsStatic("Guest Arrival Time", m1.guestArrival || m3.guestArrival)}
-            ${clsStatic("Ceremony Start", m1.ceremonyTime)}
-          </div>
-          <div class="cls-row">
-            ${clsStatic("Reception Start", m3.receptionStart || m1.receptionTime)}
-          </div>
-          ${clsStaticBig("Add-Ons (outside contracted price)", addOns)}
-        </div>
-
-        <div class="cls-section">
-          <div class="cls-section-title">Team</div>
-          <div class="cls-row">
-            ${clsStatic("Lead Coordinator", lc.name)}
-            ${clsField("Assistant Coordinator &amp; Team", "assistantCoordinator", false)}
-          </div>
+          <div class="cls-section-title">1. Event Information (VM, from the slides, before day-prior setup)</div>
+          <div class="cls-row3">${clsLabeled("Event","s1Event",names)}${clsLabeled("Date","s1Date",wDate)}${clsLabeled("Day","s1Day",wDay)}</div>
+          <div class="cls-row4">${clsLabeled("Rental start","s1RentalStart",rentalStart)}${clsLabeled("Rental end","s1RentalEnd",d.venueRentalEndTime)}${clsLabeled("Ceremony","s1Ceremony",m1.ceremonyTime)}${clsLabeled("Reception","s1Reception",m3.receptionStart||m1.receptionTime)}</div>
+          <div class="cls-row4">${clsLabeled("Guest count","s1Guests",m3.finalGuestCount||m1.guestCount)}${clsLabeled("Guest arrival","s1Arrival",m1.guestArrival||m3.guestArrival)}${clsLabeled("Ceremony location (Indoor / Outdoor)","s1CerLoc",cerLoc)}${clsLabeled("Rain plan","s1Rain",m3.rainPlanFinal)}</div>
+          <div class="cls-row">${clsLabeled("Planner (if any)","s1Planner",m1.weddingPlanner)}<div></div></div>
+          ${clsBox("Special ceremony touches (unity, cultural, unique details)","s1Touches",3,m1.traditionsCeremony||m1.mustHaveTraditions)}
+          <table class="cls-table"><thead><tr><th style="width:40%">Role</th><th>Name</th></tr></thead><tbody>
+            <tr><td class="cls-rowlabel">Lead Coordinator (opener)</td><td>${clsIn("s1LC",lc.name)}</td></tr>
+            <tr><td class="cls-rowlabel">Assistant Coordinator (Lead Closer)</td><td>${clsIn("assistantCoordinator",d.leadCloser)}</td></tr>
+            <tr><td class="cls-rowlabel">Team Member 1</td><td>${clsIn("s1TM1","")}</td></tr>
+            <tr><td class="cls-rowlabel">Team Member 2</td><td>${clsIn("s1TM2","")}</td></tr>
+            <tr><td class="cls-rowlabel">Team Member 3</td><td>${clsIn("s1TM3","")}</td></tr>
+          </tbody></table>
+          <table class="cls-table"><thead><tr><th style="width:22%">Point people</th><th>Name</th><th style="width:20%">Phone</th><th style="width:26%">Relation</th></tr></thead><tbody>${pointRows}</tbody></table>
+          ${planningPeople ? `<div class="cls-sub-note no-print">From planning: ${esc(planningPeople)}</div>` : ""}
         </div>
 
         <div class="cls-section">
-          <div class="cls-section-title">Deposits</div>
-          <div class="cls-row">
-            ${clsCheck("Security Deposit Collected", "securityDepositCollected")}
-            ${clsCheck("Caterer Deposit Collected (w/ itemized invoice)", "catererDepositCollected")}
-          </div>
+          <div class="cls-section-title">2. Closing Delegations (VM, from the slides)</div>
+          <div class="cls-note">Every line names one person. These are handed off before the client leaves.</div>
+          <table class="cls-table"><thead><tr><th style="width:40%">Item</th><th>Taken home by</th></tr></thead><tbody>${delegations}</tbody></table>
         </div>
 
         <div class="cls-section">
-          <div class="cls-section-title">Vendors</div>
-          <table class="cls-vendor-table">
-            <thead><tr><th>Category</th><th>Vendor</th><th>Review / Notes</th><th>Social Tags</th></tr></thead>
-            <tbody>${vendorRows}</tbody>
-          </table>
+          <div class="cls-section-title">3. Opening (LC)</div>
+          ${clsTick("Next-day readiness note from the prior close read","s3ReadinessRead")}
+          <div class="cls-note"><b>Opening audit:</b> missed closing items, by checklist section and line (example: "Guest Restrooms — Mirrors cleaned")</div>
+          ${clsBox("Section and line","s3Audit",5)}
+          ${clsBox("Not on the checklist; requesting to add","s3AddRequest",2)}
+          <div class="cls-note"><b>Changes today vs. the slides:</b></div>
+          ${clsBox("Layout / setup","s3Layout",2)}
+          ${clsBox("Vendor timeline","s3VendorTimeline",2)}
+          ${clsBox("Couple / planner notes","s3Couple",2)}
+          ${clsBox("Décor / add-ons","s3Decor",2)}
+          <div class="cls-note"><b>Rain call</b> (60 min before ceremony): ${clsYN("s3RainCall",["Indoor","Outdoor"])} &nbsp; Time made: ${clsIn("s3RainTime",rainTime,"90px")}</div>
         </div>
 
         <div class="cls-section">
-          ${clsField("Vendor Notes (special callouts or issues)", "vendorNotes", true)}
-        </div>
-        <div class="cls-section">
-          <div class="cls-row">
-            ${clsField("Damaged Items", "damagedItems", true)}
-            ${clsField("Client Left Behind / Missing Something", "clientMissingItems", true)}
+          <div class="cls-section-title">4. LC &rarr; AC Handoff (after recessional, in the office)</div>
+          <div class="cls-ticks">
+            ${clsTick("Remaining timeline and today's changes covered","h1")}
+            ${clsTick("Couple: status, requests made today, anything promised","h2")}
+            ${clsTick("Point people pointed out in person","h3")}
+            ${clsTick("Vendors on site, issues so far, pickup times","h4")}
+            ${clsTick("75 décor vs. couple décor, and where couple décor goes at close","h5")}
+            ${clsTick("Delegations in Section 2 confirmed","h6")}
+            ${clsTick("Open items covered","h7")}
+            ${clsTick("Watch list covered","h8")}
+            <label class="cls-tick"><input type="checkbox" ${(d.closeoutSheet||{}).h9?"checked":""} onchange="window.clsSaveField('h9',this.checked)"> <span>Security deposit collected: ${clsYN("securityDepositCollected")}</span></label>
+            ${clsTick("AC read back the delegations and open items","h10")}
           </div>
+          ${clsBox("Timeline changes","h4Timeline",2)}
+          ${clsBox("Couple requests and promises","h4Couple",2)}
+          ${clsBox("Vendors on site, issues, pickup times","h4Vendors",3)}
+          ${clsBox("Open items (unfinished, broken, waiting)","h4Open",3)}
+          ${clsBox("Watch list (guests or family situations)","h4Watch",2)}
+          ${clsSig("LC signature","h4LcSig","Time","h4LcTime")}
+          ${clsSig("AC signature","h4AcSig","Time","h4AcTime")}
+          <div class="cls-note">LC clock-out time: ${clsIn("h4LcOut","","90px")} &nbsp; (2-hour phone window ends at: ${clsIn("h4PhoneEnd","","90px")})</div>
         </div>
 
         <div class="cls-section">
-          <div class="cls-section-title">Shift Handoff</div>
-          <div class="cls-sig-row">
-            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Opening Lead Signature</div></div>
-            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Time Departed</div></div>
-          </div>
-          <div class="cls-sig-row" style="margin-top:14px;">
-            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Closing Lead Signature (arrival)</div></div>
-            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Time Arrived</div></div>
-          </div>
+          <div class="cls-section-title">5. Vendor Log (AC)</div>
+          <div class="cls-note">Log policy issues here; do not confront the vendor. Jess follows up by Wednesday.</div>
+          <table class="cls-table cls-vendor"><thead><tr><th style="width:20%">Vendor</th><th style="width:16%">Point person</th><th style="width:10%">Arrived</th><th style="width:8%">On time?</th><th>Followed 75 policy? (if no, what happened)</th><th style="width:17%">Closeout signed / pickup time</th></tr></thead><tbody>${vendors}</tbody></table>
         </div>
 
         <div class="cls-section">
-          ${clsField("Staff Late or Issues", "staffIssues", true)}
-        </div>
-        <div class="cls-section">
-          <div class="cls-row">
-            ${clsField("Special Comments from Guests", "guestComments", true)}
-            ${clsField("Client Feedback / Complaints", "clientFeedback", true)}
-          </div>
-        </div>
-        <div class="cls-section">
-          ${clsField("Maintenance Issues", "maintenanceIssues", true)}
+          <div class="cls-section-title">6. Incidents (first-hand only)</div>
+          <div class="cls-note">Injury or medical, guest behavior, property damage, safety concern, or anything escalated past the lead. Facts only, first and last names. Police or EMS: names and badge numbers.</div>
+          ${clsTick("No incidents tonight","s6None")}
+          ${clsBox("What happened, when, who was involved, how it was handled","s6Incident",6)}
+          <div class="cls-note">Reported by (must have witnessed it): ${clsIn("s6Reporter","","220px")}</div>
         </div>
 
         <div class="cls-section">
-          <div class="cls-section-title">Exit &amp; Closeout Checklist</div>
-          <div class="cls-row">
-            ${clsField("Guest Exit Time", "guestExitTime", false)}
-            ${clsField("Staff Exit Time", "staffExitTime", false)}
-          </div>
-          <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
-            ${clsCheck("Venue fully reset & cleaned", "venueReset")}
-            ${clsCheck("All doors locked and lights off", "doorsLocked")}
-            ${clsCheck("All staff SOP has been checked and approved", "staffSOPChecked")}
-            ${clsCheck("Building key returned back to lock box on external container", "keyReturned")}
-          </div>
+          <div class="cls-section-title">7. Event Closeout (AC)</div>
+          <div class="cls-note"><b>Inventory</b></div>
+          ${clsBox("Missing or damaged items","damagedItems",3)}
+          ${clsBox("Bar shortages or inventory issues","s7Bar",2)}
+          ${clsBox("Items left behind by guests or vendors (to the labeled box in the basement)","clientMissingItems",2)}
+          <div class="cls-note"><b>Staff</b></div>
+          <table class="cls-table"><thead><tr><th>Team member</th><th style="width:22%">Late (excused / unexcused)</th><th style="width:14%">Left early</th><th style="width:16%">No call / no show</th></tr></thead><tbody>${staffRows}</tbody></table>
+          ${clsBox("Shoutouts or concerns","staffIssues",3)}
+          <div class="cls-note"><b>Feedback</b></div>
+          ${clsBox("From the couple or planner","clientFeedback",3)}
+          ${clsBox("Guest compliments, complaints, or escalations","guestComments",3)}
+          <div class="cls-note"><b>Follow-up needed</b></div>
+          ${clsBox("Facility / maintenance","maintenanceIssues",3)}
+          ${clsBox("Policy, setup, or logistics","s7Policy",3)}
         </div>
 
         <div class="cls-section">
-          <div class="cls-sig-row">
-            <div><div class="cls-sig-line">&nbsp;</div><div class="cls-sig-label">Closing Lead Signature</div></div>
-            <div></div>
+          <div class="cls-section-title">8. Next-Day Readiness (AC)</div>
+          <div class="cls-note">Ceremony chairs:</div>
+          <div class="cls-ticks">
+            ${clsTick("Reset to the next event's Prismm layout (another outdoor ceremony this weekend)","s8Reset")}
+            ${clsTick("Stacked cushion-down and tarped (last event of the weekend)","s8Stacked")}
+            <label class="cls-tick"><input type="checkbox" ${(d.closeoutSheet||{}).s8Rain?"checked":""} onchange="window.clsSaveField('s8Rain',this.checked)"> <span>Left out for rain, approved by Jess at: ${clsIn("s8RainTime","","90px")}</span></label>
           </div>
+          ${clsBox("Anything set, not set, or set differently from the next event's Prismm (including anything VM approved)","s8Diff",3)}
         </div>
 
         <div class="cls-section">
-          ${clsField("Special Notes for Closing Shift", "specialNotesClosing", true)}
+          <div class="cls-section-title">9. Final Wrap-Up (AC)</div>
+          <div class="cls-note">Guest exit time: ${clsIn("guestExitTime","","90px")} &nbsp; Staff exit time: ${clsIn("staffExitTime","","90px")}</div>
+          <div class="cls-ticks">
+            ${clsTick("All delegations handed off (Section 2)","w1")}
+            ${clsTick("Client left with all décor; no alcohol, food, or personal property left overnight","w2")}
+            ${clsTick("Every closing checklist section initialed by the team member and the AC after the walkthrough","w3")}
+            ${clsTick("Team released and clocked out after the walkthrough","w4")}
+            ${clsTick("All doors locked","doorsLocked")}
+            ${clsTick("All outdoor lighting off, including sidewalk lights","w6")}
+            ${clsTick("Building key returned to the lock box on the external container","keyReturned")}
+            ${clsTick("All event paperwork in the VM mailbox","w8")}
+            ${clsTick("AC last person on the property","w9")}
+          </div>
+          ${clsSig("AC signature","w9AcSig","Time","w9AcTime")}
+          ${clsBox("Notes for the next shift","specialNotesClosing",4)}
         </div>
       `;
     }
@@ -7951,7 +8033,26 @@
     .cls-sig-row{display:grid;grid-template-columns:2fr 1fr;gap:20px;margin-top:10px;}
     .cls-sig-line{border-bottom:1px solid #333;min-height:22px;}
     .cls-sig-label{font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:#888;margin-top:3px;}
+    .cls-row4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px 16px;margin-bottom:6px;}
+    .cls-inline{display:inline-block;width:100%;}
+    .cls-note{font-size:11.5px;color:#333;margin:8px 0 4px;line-height:1.5;}
+    .cls-sub-note{font-size:10px;color:#777;margin-top:2px;}
+    .cls-table{width:100%;border-collapse:collapse;font-size:11px;margin:8px 0;}
+    .cls-table th{text-align:left;font-size:9px;text-transform:uppercase;letter-spacing:0.04em;color:#666;border:1px solid #bbb;padding:4px 6px;background:#f6f3ee;}
+    .cls-table td{border:1px solid #bbb;padding:3px 6px;vertical-align:top;height:24px;}
+    .cls-table td .cls-input{border-bottom:none;}
+    .cls-rowlabel{font-weight:600;}
+    .cls-box{margin:6px 0;border:1px solid #bbb;}
+    .cls-box-label{font-size:9px;text-transform:uppercase;letter-spacing:0.04em;color:#666;background:#f6f3ee;padding:4px 6px;border-bottom:1px solid #bbb;}
+    .cls-lined{display:block;width:100%;box-sizing:border-box;border:none;outline:none;resize:none;overflow:hidden;font-family:var(--font-body);font-size:12px;line-height:24px;padding:0 6px;background-color:transparent;background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 23px,#cfcfcf 23px,#cfcfcf 24px);background-attachment:local;}
+    .cls-ticks{display:flex;flex-direction:column;gap:4px;margin:6px 0;}
+    .cls-tick{display:flex;align-items:flex-start;gap:6px;font-size:12px;line-height:1.4;}
+    .cls-tick input{margin-top:2px;}
+    .cls-yn{display:inline-block;cursor:pointer;padding:0 4px;border-bottom:1px dashed #999;color:#666;white-space:nowrap;}
+    .cls-yn.set{color:#1a1a1a;font-weight:600;border-bottom-style:solid;}
     @media print {
+      .cls-lined{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+      .cls-box,.cls-table{page-break-inside:avoid;}
       body *{visibility:hidden;}
       #closeout-modal, #closeout-modal *{visibility:visible;}
       #closeout-modal{position:absolute;inset:0;background:#fff;}
@@ -10904,7 +11005,7 @@
   <!-- Event Closeout Sheet -->
   <div id="closeout-modal">
     <div class="cls-topbar">
-      <h2 id="cls-title">Event Closeout Sheet</h2>
+      <h2 id="cls-title">Shift Handoff &amp; Closeout</h2>
       <div class="cls-topbar-btns">
         <button class="cls-btn secondary" onclick="window.closeCloseoutSheet()">Close</button>
         <button class="cls-btn" onclick="window.print()">&#128424;&#65039; Print / Save as PDF</button>
