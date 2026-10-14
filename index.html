@@ -45,12 +45,20 @@
     const db = getFirestore(app);
     const provider = new GoogleAuthProvider();
 
-    const ADMIN_EMAILS = ["emily@theboxhop.com","jess@theseventyfivevenue.com","events@theseventyfivevenue.com"];
-    const ADMIN_DOMAIN = "@theseventyfivevenue.com";
-    const isAdmin = (email) => {
-      const e = (email||"").toLowerCase();
-      return ADMIN_EMAILS.includes(e) || e.endsWith(ADMIN_DOMAIN);
-    };
+    // Must match firestore.rules' isAdmin() email list exactly. The client used to
+    // check a shorter list plus a "@theseventyfivevenue.com" wildcard, so a real
+    // server-side admin outside both (seth@theboxhop.com) was treated as a couple
+    // on first sign-in and had his auth account deleted when couple-doc creation
+    // failed, and any staff-looking address skipped the public signup-code check.
+    const ADMIN_EMAILS = [
+      "jess@theseventyfivevenue.com",
+      "emily@theboxhop.com",
+      "emilyt@theseventyfivevenue.com",
+      "seth@theboxhop.com",
+      "kara@theseventyfivevenue.com",
+      "events@theseventyfivevenue.com"
+    ];
+    const isAdmin = (email) => ADMIN_EMAILS.includes((email||"").toLowerCase());
 
     let currentUser = null;
     let pendingCoupleNames = "";
@@ -153,7 +161,7 @@
       if (data.coverPhotoUrl) {
         const heroBg = document.querySelector("#guest-content .hero-bg");
         if (heroBg) {
-          heroBg.style.backgroundImage = `url('${data.coverPhotoUrl.replace(/'/g,"")}')`;
+          heroBg.style.backgroundImage = `url('${cssUrlValue(data.coverPhotoUrl)}')`;
           heroBg.style.backgroundSize = "contain";
           heroBg.style.backgroundRepeat = "no-repeat";
           heroBg.style.backgroundPosition = "center";
@@ -190,7 +198,7 @@
       const venueButtonsRow = (address, mapUrl) => {
         let html = '<div style="margin-top:24px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap;">';
         if (mapUrl) {
-          html += `<a href="${esc(mapUrl)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Map of The Seventy Five</a>`;
+          html += `<a href="${esc(safeUrl(mapUrl))}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;border-radius:1px;text-align:center;">Map of The Seventy Five</a>`;
         } else {
           html += `<span style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:18px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-align:center;opacity:0.6;cursor:default;">Map of The Seventy Five</span>`;
         }
@@ -264,7 +272,7 @@
             ${p.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.distance)}</div>` : ""}
             ${p.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(p.address)}</div>` : ""}
             ${p.phone ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:2px;">${esc(p.phone)}</div>` : ""}
-            ${p.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(p.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
+            ${p.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(safeUrl(p.link))}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
             ${p.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(p.notes)}</div>` : ""}
           </div>`;
         const sectionTitle = label => `<h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:36px 0 16px;">${label}</h3>`;
@@ -307,7 +315,7 @@
             ${t.distance ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.distance)}</div>` : ""}
             ${t.address ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
             ${t.phone ? `<div style="font-size:13px;color:var(--mid-gray);margin-top:2px;">${esc(t.phone)}</div>` : ""}
-            ${t.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
+            ${t.link ? `<div style="font-size:13px;margin-top:4px;"><a href="${esc(safeUrl(t.link))}" target="_blank" style="color:var(--gold-dark);">Visit Website &rarr;</a></div>` : ""}
             ${t.notes ? `<div style="font-size:13px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(t.notes)}</div>` : ""}
           </div>`).join("");
       }
@@ -342,7 +350,7 @@
       const links = Array.isArray(guestGateData.registryLinks) ? guestGateData.registryLinks : [];
       if (linksEl) {
         linksEl.innerHTML = links.length ? `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px;">` + links.map(l =>
-          `<a href="${esc(l.url)}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:16px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;">${esc(l.name)}</a>`
+          `<a href="${esc(safeUrl(l.url))}" target="_blank" style="display:inline-block;background:var(--charcoal);color:var(--warm-white);padding:16px 30px;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;text-decoration:none;">${esc(l.name)}</a>`
         ).join("") + `</div>` : "";
       }
 
@@ -366,7 +374,7 @@
           ${r.photoUrl ? `<img src="${esc(r.photoUrl)}" style="width:100%;aspect-ratio:1/1;object-fit:cover;margin-bottom:10px;">` : `<div style="width:100%;aspect-ratio:1/1;background:var(--cream);margin-bottom:10px;"></div>`}
           <div style="font-size:14px;color:var(--charcoal);">${esc(r.name||"")}</div>
           ${r.price ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${formatMoney(r.price)}</div>` : ""}
-          ${r.link ? `<a href="${esc(r.link)}" target="_blank" style="margin-top:10px;display:inline-block;background:var(--charcoal);color:var(--warm-white);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;text-decoration:none;">Contribute</a>` : ""}
+          ${r.link ? `<a href="${esc(safeUrl(r.link))}" target="_blank" style="margin-top:10px;display:inline-block;background:var(--charcoal);color:var(--warm-white);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;text-decoration:none;">Contribute</a>` : ""}
           ${r.notes ? `<div style="font-size:11px;color:var(--mid-gray);margin-top:8px;font-style:italic;">${esc(r.notes)}</div>` : ""}
         </div>`).join("") + `</div>`;
     };
@@ -384,7 +392,7 @@
       const box = document.getElementById(boxId);
       if (!box) return;
       if (url) {
-        box.style.backgroundImage = `url('${url.replace(/'/g,"")}')`;
+        box.style.backgroundImage = `url('${cssUrlValue(url)}')`;
         box.classList.add("has-photo");
         box.innerHTML = `<span class="photo-upload-label">Change Photo</span>`;
       } else {
@@ -742,7 +750,7 @@
           <h3 style="font-family:var(--font-heading);font-size:22px;font-weight:300;color:var(--charcoal);margin:8px 0 10px;">Share This Link</h3>
           <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:12px;">This is the link to give your guests — put it on your invitations, website, or text it directly. It takes them straight to their own guest page, where they can see the details and RSVP.</p>
           <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;word-break:break-all;">
-            <a href="${esc(url)}" target="_blank" style="color:var(--gold-dark);">${esc(url)}</a>
+            <a href="${esc(safeUrl(url))}" target="_blank" style="color:var(--gold-dark);">${esc(url)}</a>
           </p>
           <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy Link';},1500);" style="margin-top:10px;background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;cursor:pointer;border-radius:1px;">Copy Link</button>`;
       }
@@ -844,7 +852,7 @@
       const grid = document.getElementById("resources-grid");
       if (!grid) return;
       if (!items.length) { grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">No resources have been added yet.</p>'; return; }
-      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(r.linkUrl)}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${r.description}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
+      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(safeUrl(r.linkUrl))}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${r.description}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
     }
     // ── VENDOR MEETINGS (PLANNING TOOL) ──────────────────────────
     let vendorMeetingsCache = [];
@@ -1259,7 +1267,7 @@
         renderPhotoBox("gp-propertyMap-box", gpc.propertyMapUrl || "", "+ Add Property Map");
         const previewBg = document.getElementById("gp-home-preview-bg");
         if (previewBg && gpc.coverPhotoUrl) {
-          previewBg.style.backgroundImage = `url('${gpc.coverPhotoUrl.replace(/'/g,"")}')`;
+          previewBg.style.backgroundImage = `url('${cssUrlValue(gpc.coverPhotoUrl)}')`;
           previewBg.style.backgroundSize = "contain";
           previewBg.style.backgroundRepeat = "no-repeat";
           previewBg.style.backgroundPosition = "center";
@@ -1330,7 +1338,7 @@
               <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${p.distance ? esc(p.distance) : ""}</div>
               ${p.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${esc(p.address)}</div>` : ""}
               ${p.phone ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(p.phone)}</div>` : ""}
-              ${p.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(p.link)}" target="_blank" style="color:var(--gold-dark);">${esc(p.link)}</a></div>` : ""}
+              ${p.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(safeUrl(p.link))}" target="_blank" style="color:var(--gold-dark);">${esc(p.link)}</a></div>` : ""}
               ${p.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(p.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
@@ -1435,7 +1443,7 @@
               <div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${t.distance ? esc(t.distance) : ""}</div>
               ${t.address ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${esc(t.address)}</div>` : ""}
               ${t.phone ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:2px;">${esc(t.phone)}</div>` : ""}
-              ${t.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(t.link)}" target="_blank" style="color:var(--gold-dark);">${esc(t.link)}</a></div>` : ""}
+              ${t.link ? `<div style="font-size:12px;margin-top:2px;"><a href="${esc(safeUrl(t.link))}" target="_blank" style="color:var(--gold-dark);">${esc(t.link)}</a></div>` : ""}
               ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(t.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
@@ -1608,7 +1616,7 @@
               <div>
                 <div style="font-size:15px;color:var(--charcoal);">${esc(r.name||"Untitled")}</div>
                 ${r.price ? `<div style="font-size:12px;color:var(--mid-gray);margin-top:4px;">${formatMoney(r.price)}</div>` : ""}
-                ${r.link ? `<div style="font-size:12px;margin-top:4px;"><a href="${esc(r.link)}" target="_blank" style="color:var(--gold-dark);">${esc(r.link)}</a></div>` : ""}
+                ${r.link ? `<div style="font-size:12px;margin-top:4px;"><a href="${esc(safeUrl(r.link))}" target="_blank" style="color:var(--gold-dark);">${esc(r.link)}</a></div>` : ""}
                 ${r.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(r.notes)}</div>` : ""}
               </div>
             </div>
@@ -1933,30 +1941,45 @@
         const snap = await getDocs(q);
         if (snap.empty) return;
         const submissions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // rsvpSubmissions is writable by anyone (guests have no account), so no
+        // field can be assumed to be a string. One doc with e.g. a numeric
+        // guestName used to throw here (.trim() on a number), aborting the loop
+        // before the cleanup delete below -- the same doc then failed identically
+        // on every future login, silently blocking every other RSVP for this
+        // couple. Coerce each field and isolate each submission so a bad one
+        // only ever costs itself.
+        const RSVP_FIELD_MAX_LEN = 500;
+        const rsvpStr = (v, max) => String(v == null ? "" : v).trim().slice(0, max || RSVP_FIELD_MAX_LEN);
         submissions.forEach(r => {
-          const rsvpFields = {
-            rsvpStatus: r.rsvpStatus || "Pending",
-            plusOneName: r.plusOneName || "",
-            mealChoice: r.mealChoice || "",
-            plusOneMealChoice: r.plusOneMealChoice || "",
-            allergies: r.allergies || "",
-            plusOneAllergies: r.plusOneAllergies || ""
-          };
-          const idx = guestListCache.findIndex(g => (g.guestName||"").trim().toLowerCase() === (r.guestName||"").trim().toLowerCase());
-          if (idx > -1) {
-            const existing = guestListCache[idx];
-            guestListCache[idx] = { ...existing, ...rsvpFields, plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName };
-          } else {
-            guestListCache.push({
-              id: Date.now().toString() + Math.floor(Math.random()*1000),
-              guestName: r.guestName,
-              address: "",
-              plusOneAllowed: !!rsvpFields.plusOneName,
-              tableNumber: "",
-              notes: "Added from a guest RSVP submission",
-              children: [],
-              ...rsvpFields
-            });
+          try {
+            const guestName = rsvpStr(r.guestName, 200);
+            if (!guestName) return;
+            const rsvpFields = {
+              rsvpStatus: rsvpStr(r.rsvpStatus, 50) || "Pending",
+              plusOneName: rsvpStr(r.plusOneName, 200),
+              mealChoice: rsvpStr(r.mealChoice, 200),
+              plusOneMealChoice: rsvpStr(r.plusOneMealChoice, 200),
+              allergies: rsvpStr(r.allergies),
+              plusOneAllergies: rsvpStr(r.plusOneAllergies)
+            };
+            const idx = guestListCache.findIndex(g => (g.guestName||"").trim().toLowerCase() === guestName.toLowerCase());
+            if (idx > -1) {
+              const existing = guestListCache[idx];
+              guestListCache[idx] = { ...existing, ...rsvpFields, plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName };
+            } else {
+              guestListCache.push({
+                id: Date.now().toString() + Math.floor(Math.random()*1000),
+                guestName,
+                address: "",
+                plusOneAllowed: !!rsvpFields.plusOneName,
+                tableNumber: "",
+                notes: "Added from a guest RSVP submission",
+                children: [],
+                ...rsvpFields
+              });
+            }
+          } catch (perSubmissionErr) {
+            console.error("Skipping malformed RSVP submission " + r.id + ":", perSubmissionErr);
           }
         });
         await updateDoc(doc(db, "couples", currentUser.uid), { guestList: guestListCache });
@@ -2279,7 +2302,7 @@
           ]);
         }
       });
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -2299,7 +2322,7 @@
         ["Guest Name", "Address", "Plus One Name", "RSVP Status", "Meal Choice", "Allergies", "Table Number", "Notes"],
         ["Jane Smith", "123 Main St, Columbus, OH 43215", "John Smith", "Attending", "Chicken", "Peanut allergy", "5", ""]
       ];
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -2862,7 +2885,7 @@
       sorted.forEach(t => {
         rows.push([t.time ? formatMeetingTime(t.time) : "", t.activity || "", t.location || "", t.notes || ""]);
       });
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -3111,7 +3134,7 @@
             <div style="flex:1;min-width:220px;">
               <div style="font-size:15px;color:var(--charcoal);">${esc(idea.title||"Untitled Idea")}${idea.category ? ` <span style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold-dark);margin-left:6px;">${esc(idea.category)}</span>` : ""}</div>
               ${idea.description ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;">${esc(idea.description)}</div>` : ""}
-              ${idea.link ? `<div style="font-size:12px;margin-top:6px;"><a href="${esc(idea.link)}" target="_blank" style="color:var(--gold-dark);">${esc(idea.link)}</a></div>` : ""}
+              ${idea.link ? `<div style="font-size:12px;margin-top:6px;"><a href="${esc(safeUrl(idea.link))}" target="_blank" style="color:var(--gold-dark);">${esc(idea.link)}</a></div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
               <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editIdea('${idea.id}')">Edit</button>
@@ -3696,7 +3719,7 @@
           total, paid, (total-paid), lo.notes||""
         ]);
       });
-      const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+      const csv = rows.map(r => r.map(cell => `"${csvSafeCell(cell).replace(/"/g,'""')}"`).join(",")).join("\r\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -3814,6 +3837,32 @@
     }
 
     function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+    // esc() only HTML-escapes -- it doesn't stop a couple-entered link (Places to
+    // Stay, Things to Do, Registry, Ideas) from carrying a javascript:/data:/
+    // vbscript:/file: scheme, several of which mirror into the world-readable
+    // publicCouples doc and render as a real <a href> on the guest page. Strips
+    // whitespace/control characters first, since those can sneak a scheme past a
+    // naive prefix check (e.g. "java\tscript:").
+    function safeUrl(u) {
+      const s = String(u || "").trim();
+      if (!s) return "";
+      const stripped = s.replace(/[\x00-\x20]+/g, "");
+      return /^(javascript|data|vbscript|file):/i.test(stripped) ? "#" : s;
+    }
+
+    // A couple-entered photo URL is interpolated into an inline url('...') CSS
+    // value; stripping only the single quote still left parentheses/backslashes
+    // able to break out of the url(...) context. Strips every such character.
+    function cssUrlValue(u) { return String(u || "").replace(/['"()\\]/g, ""); }
+
+    // Neutralizes CSV/formula injection: a cell starting with =, +, -, @, tab, or
+    // CR is run as a formula by Excel/Sheets when the export is opened. Prefixing
+    // a single quote forces literal text while staying human-readable.
+    function csvSafeCell(value) {
+      const s = String(value);
+      return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+    }
 
     window.openCouple = async function(uid) {
       const { getDoc: gd, doc: dc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -4437,7 +4486,7 @@
           else if (k==="status") v = c.status||"active";
           else if (k==="createdAt") v = c.createdAt||"";
           else { const [,mk,fk] = k.match(/^(meeting[123])__(.+)$/)||[,"",""]; v = String((c[mk]||{})[fk]??""); }
-          return `"${String(v).replace(/"/g,'""')}"`;
+          return `"${csvSafeCell(v).replace(/"/g,'""')}"`;
         });
         rows.push(row.join(","));
       });
