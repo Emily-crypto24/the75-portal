@@ -38,10 +38,12 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const logger = require("firebase-functions/logger");
-const admin = require("firebase-admin");
+const { initializeApp } = require("firebase-admin/app");
+const { getAuth } = require("firebase-admin/auth");
+const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 
-admin.initializeApp();
-const db = admin.firestore();
+initializeApp();
+const db = getFirestore();
 
 setGlobalOptions({ maxInstances: 10 });
 
@@ -88,7 +90,7 @@ async function checkIpRateLimit(ip) {
         return true;
       }
       if (data.count >= IP_RATE_LIMIT_MAX) return false;
-      tx.update(ref, { count: admin.firestore.FieldValue.increment(1) });
+      tx.update(ref, { count: FieldValue.increment(1) });
       return true;
     });
   } catch (e) {
@@ -136,7 +138,7 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
       }
 
       const secrets = secretsSnap.data();
-      const now = admin.firestore.Timestamp.now();
+      const now = Timestamp.now();
 
       if (secrets.lockedUntil && secrets.lockedUntil.toMillis() > now.toMillis()) {
         const minutesLeft = Math.ceil((secrets.lockedUntil.toMillis() - now.toMillis()) / 60000);
@@ -148,7 +150,7 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
         if (failedAttempts >= MAX_ATTEMPTS) {
           tx.update(secretsRef, {
             failedAttempts: 0,
-            lockedUntil: admin.firestore.Timestamp.fromMillis(now.toMillis() + LOCK_MINUTES * 60000),
+            lockedUntil: Timestamp.fromMillis(now.toMillis() + LOCK_MINUTES * 60000),
           });
           return { status: "locked", minutesLeft: LOCK_MINUTES };
         }
@@ -156,7 +158,7 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
         return { status: "wrong" };
       }
 
-      tx.update(secretsRef, { failedAttempts: 0, lockedUntil: admin.firestore.FieldValue.delete() });
+      tx.update(secretsRef, { failedAttempts: 0, lockedUntil: FieldValue.delete() });
       return { status: "ok", slotData: slotSnap.data() };
     });
 
@@ -205,7 +207,7 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
         const secretsSnap = await tx.get(secretsRef);
         if (!secretsSnap.exists) return { status: "not_found" };
         const secrets = secretsSnap.data();
-        const now = admin.firestore.Timestamp.now();
+        const now = Timestamp.now();
 
         if (secrets.nameLockedUntil && secrets.nameLockedUntil.toMillis() > now.toMillis()) {
           const minutesLeft = Math.ceil((secrets.nameLockedUntil.toMillis() - now.toMillis()) / 60000);
@@ -217,7 +219,7 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
           if (nameFailedAttempts >= MAX_ATTEMPTS) {
             tx.update(secretsRef, {
               nameFailedAttempts: 0,
-              nameLockedUntil: admin.firestore.Timestamp.fromMillis(now.toMillis() + LOCK_MINUTES * 60000),
+              nameLockedUntil: Timestamp.fromMillis(now.toMillis() + LOCK_MINUTES * 60000),
             });
             return { status: "locked", minutesLeft: LOCK_MINUTES };
           }
@@ -225,7 +227,7 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
           return { status: "wrong" };
         }
 
-        tx.update(secretsRef, { nameFailedAttempts: 0, nameLockedUntil: admin.firestore.FieldValue.delete() });
+        tx.update(secretsRef, { nameFailedAttempts: 0, nameLockedUntil: FieldValue.delete() });
         return { status: "ok" };
       });
 
@@ -253,7 +255,7 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
     }
 
     const uid = `vendor_${slotId}`;
-    const token = await admin.auth().createCustomToken(uid, { vendorSlotId: slotId });
+    const token = await getAuth().createCustomToken(uid, { vendorSlotId: slotId });
 
     logger.info("verifyVendorPin: success", { slotId });
 
@@ -358,13 +360,23 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
         if (changed && old.authorKey !== authorKey) {
           throw new HttpsError("permission-denied", "You can only edit your own notes.");
         }
-        cleanNotes.push({
+        const kept = {
           id: n.id,
           text,
           authorKey: old.authorKey,
           author: old.author,
           lastEditedAt: changed ? new Date().toISOString() : old.lastEditedAt,
-        });
+        };
+        // Venue staff can correct anyone's note; their name rides along on
+        // lastEditedBy. Carry it through a save that didn't touch this note,
+        // otherwise a vendor saving a DIFFERENT note would silently erase it
+        // and the stamp would credit the original author with the staff
+        // edit. When the author edits their own note again they are the
+        // latest editor, so the staff stamp is dropped.
+        if (!changed && typeof old.lastEditedBy === "string" && old.lastEditedBy) {
+          kept.lastEditedBy = old.lastEditedBy.slice(0, 200);
+        }
+        cleanNotes.push(kept);
       } else {
         // Brand-new note -- must be attributed to the caller, not forged as
         // someone else's.
