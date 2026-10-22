@@ -63,8 +63,21 @@ const ALLOWED_ORIGINS = [
   "https://planning.theseventyfivevenue.com",
 ];
 
+// Compared on BOTH sides (the stored name and what the vendor typed), so the
+// two only need to agree after this, not be typed identically. Case is
+// ignored; runs of any whitespace (including non-breaking spaces and tabs)
+// collapse to one space; any apostrophe lookalike (curly quotes from a phone
+// keyboard or a pasted document, prime, backtick, acute accent) counts as a
+// straight apostrophe, so "Hudson's Edge" matches however it was typed.
+// NFC makes an accented letter typed as one character equal to the same
+// letter typed as base + combining mark.
 function normalizeCompanyName(s) {
-  return String(s || "").trim().toLowerCase();
+  return String(s || "")
+    .normalize("NFC")
+    .replace(/[\u2018\u2019\u201B\u02BC\u2032\u0060\u00B4]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 const IP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
