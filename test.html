@@ -147,6 +147,14 @@
     ];
 
     function randomVendorPin() { return String(Math.floor(1000 + Math.random() * 9000)); }
+    // Written next to every PIN create/regenerate. firestore.rules and the vendor
+    // functions only honour a vendor session whose token carries the slot's
+    // CURRENT sessionEpoch, so a new one signs out everyone logged in with the
+    // old PIN. (The rules also refuse a PIN change that doesn't change it.)
+    function randomSessionEpoch() {
+      const b = crypto.getRandomValues(new Uint8Array(18));
+      return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_");
+    }
 
     function vendorSlotId(coupleSlug, categoryKey, slotKey) {
       const base = `${coupleSlug || "event"}_${categoryKey}`;
@@ -4027,7 +4035,7 @@
     window.adminRegenerateVendorPin = async function(slotId, uid) {
       if (!confirm("Regenerate this vendor's PIN? Their old PIN will stop working immediately.")) return;
       try {
-        await updateDoc(doc(db, "vendorSlotSecrets", slotId), { accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null });
+        await updateDoc(doc(db, "vendorSlotSecrets", slotId), { accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null, sessionEpoch: randomSessionEpoch() });
         window.openCouple(uid);
       } catch(e) { alert("Couldn't regenerate PIN: " + e.message); }
     };
@@ -5279,7 +5287,7 @@
         barNotes: [],
         lastEditedBy: "", lastEditedAt: ""
       };
-      const secretsData = { coupleUid, accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null };
+      const secretsData = { coupleUid, accessPin: randomVendorPin(), failedAttempts: 0, lockedUntil: null, sessionEpoch: randomSessionEpoch() };
       await setDoc(doc(db, "vendorSlots", slotId), slotData);
       await setDoc(doc(db, "vendorSlotSecrets", slotId), secretsData);
       return { slotId, slotData, secretsData };
@@ -5621,7 +5629,7 @@
       if (!confirm("Regenerate this vendor's PIN? Their old PIN will stop working immediately, and you'll need to share the new one with them.")) return;
       try {
         const newPin = randomVendorPin();
-        await updateDoc(doc(db, "vendorSlotSecrets", slotId), { accessPin: newPin, failedAttempts: 0, lockedUntil: null });
+        await updateDoc(doc(db, "vendorSlotSecrets", slotId), { accessPin: newPin, failedAttempts: 0, lockedUntil: null, sessionEpoch: randomSessionEpoch() });
         const entry = vendorHubSlots.find(e => e.slotId === slotId);
         if (entry) entry.secrets.accessPin = newPin;
         renderVendorHub();
