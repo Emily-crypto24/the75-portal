@@ -35,6 +35,7 @@
  *     fully close).
  */
 
+const crypto = require("crypto");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const logger = require("firebase-functions/logger");
@@ -79,6 +80,34 @@ function normalizeCompanyName(s) {
     .trim()
     .toLowerCase();
 }
+
+// ── Vendor portal on/off switch + pilot list ───────────────────────────
+// settings/vendorPortal = { enabled: true|false, pilotCoupleSlugs: [..] }.
+// Any signed-in user can read settings/*, so it holds only the switch and
+// public couple slugs. The SAME rule is enforced in firestore.rules
+// (vendorPortalOpenFor) -- keep the two in step:
+//   * missing doc, or `enabled` anything but boolean true => closed
+//   * pilotCoupleSlugs absent/null  => open to every couple
+//   * pilotCoupleSlugs a list       => open ONLY to couples in it (empty = nobody)
+//   * pilotCoupleSlugs not a list   => closed
+async function getVendorPortalSettings() {
+  const snap = await db.collection("settings").doc("vendorPortal").get();
+  return snap.exists ? snap.data() : null;
+}
+function portalEnabled(settings) {
+  return !!settings && settings.enabled === true;
+}
+function portalOpenForCouple(settings, coupleSlug) {
+  if (!portalEnabled(settings)) return false;
+  const pilot = settings.pilotCoupleSlugs;
+  if (pilot === undefined || pilot === null) return true;
+  return Array.isArray(pilot) && typeof coupleSlug === "string" && pilot.includes(coupleSlug);
+}
+// `details.reason` lets the page tell these apart from a plain failure.
+const portalClosedError = () =>
+  new HttpsError("failed-precondition", "Vendor pages aren't open yet. Please check back soon.", { reason: "portal-closed" });
+const sessionResetError = () =>
+  new HttpsError("unauthenticated", "Your access was reset. Please enter your PIN again.", { reason: "session-reset" });
 
 const IP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const IP_RATE_LIMIT_MAX = 20; // total calls per IP per window, across every slotId
@@ -131,6 +160,11 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
       throw new HttpsError("invalid-argument", "PIN must be 4 digits.");
     }
 
+    // Switch off => refuse before touching any counter, and say the same thing
+    // for every slotId, so this reveals nothing about which links exist.
+    const portalSettings = await getVendorPortalSettings();
+    if (!portalEnabled(portalSettings)) throw portalClosedError();
+
     const ip = request.rawRequest && request.rawRequest.ip;
     const withinIpLimit = await checkIpRateLimit(ip);
     if (!withinIpLimit) {
@@ -171,8 +205,20 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
         return { status: "wrong" };
       }
 
-      tx.update(secretsRef, { failedAttempts: 0, lockedUntil: FieldValue.delete() });
-      return { status: "ok", slotData: slotSnap.data() };
+      // sessionEpoch: a random value stored here and copied into the vendor's
+      // token. firestore.rules and saveVendorSlotNotes only honour a token
+      // whose epoch still equals this one, so the couple regenerating the PIN
+      // (which writes a new epoch) or deleting the slot signs out every vendor
+      // already logged in. Slots created before epochs existed get theirs on
+      // their next successful login -- no backfill needed.
+      const update = { failedAttempts: 0, lockedUntil: FieldValue.delete() };
+      let sessionEpoch = secrets.sessionEpoch;
+      if (typeof sessionEpoch !== "string" || !sessionEpoch) {
+        sessionEpoch = crypto.randomBytes(18).toString("base64url");
+        update.sessionEpoch = sessionEpoch;
+      }
+      tx.update(secretsRef, update);
+      return { status: "ok", slotData: slotSnap.data(), sessionEpoch };
     });
 
     logger.info("verifyVendorPin: transaction outcome", { slotId, status: outcome.status });
@@ -267,8 +313,13 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
       }
     }
 
+    // Pilot list: checked only now, after the PIN and company name are proven,
+    // so an out-of-pilot slot can't be told apart from an unknown one by
+    // someone who doesn't already hold its PIN.
+    if (!portalOpenForCouple(portalSettings, outcome.slotData.coupleSlug)) throw portalClosedError();
+
     const uid = `vendor_${slotId}`;
-    const token = await getAuth().createCustomToken(uid, { vendorSlotId: slotId });
+    const token = await getAuth().createCustomToken(uid, { vendorSlotId: slotId, sessionEpoch: outcome.sessionEpoch });
 
     logger.info("verifyVendorPin: success", { slotId });
 
@@ -352,9 +403,20 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
 
     const authorKey = `vendor:${slotId}`;
     const slotRef = db.collection("vendorSlots").doc(slotId);
-    const slotSnap = await slotRef.get();
+    const [slotSnap, secretsSnap, portalSettings] = await Promise.all([
+      slotRef.get(),
+      db.collection("vendorSlotSecrets").doc(slotId).get(),
+      getVendorPortalSettings(),
+    ]);
     if (!slotSnap.exists) throw new HttpsError("not-found", "Vendor not found.");
     const slotData = slotSnap.data();
+    if (!portalOpenForCouple(portalSettings, slotData.coupleSlug)) throw portalClosedError();
+    // Same session check firestore.rules applies: the token's epoch must still
+    // be the one stored for this slot (see verifyVendorPin).
+    const storedEpoch = secretsSnap.exists ? secretsSnap.data().sessionEpoch : null;
+    if (typeof storedEpoch !== "string" || !storedEpoch || request.auth.token.sessionEpoch !== storedEpoch) {
+      throw sessionResetError();
+    }
     const oldNotes = Array.isArray(slotData[field]) ? slotData[field] : [];
     const oldById = new Map(oldNotes.filter((n) => n && typeof n.id === "string").map((n) => [n.id, n]));
 
