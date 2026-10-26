@@ -81,8 +81,47 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == coupleUid;
     }
 
+    // ── Vendor portal on/off switch + pilot list ─────────────────────────
+    // settings/vendorPortal = { enabled: true|false, pilotCoupleSlugs: [..] }.
+    // Any signed-in user can read settings/*, so this doc must never hold
+    // anything sensitive -- only the switch and public couple slugs.
+    //   * missing doc, or `enabled` anything other than boolean true => CLOSED
+    //   * `pilotCoupleSlugs` absent or null                          => open to every couple
+    //   * `pilotCoupleSlugs` a list                                  => open ONLY to couples in it
+    //     (so an empty list means nobody -- clearing it by accident fails closed)
+    //   * `pilotCoupleSlugs` present but not a list                  => CLOSED
+    // Only ever evaluated for a vendor session; couples and admin never depend
+    // on it. get() on a missing doc is an evaluation error, which denies.
+    function vendorPortalOpenFor(coupleSlug) {
+      let s = get(/databases/$(database)/documents/settings/vendorPortal).data;
+      return s.get('enabled', false) == true &&
+        (s.get('pilotCoupleSlugs', null) == null ||
+         (s.pilotCoupleSlugs is list && coupleSlug in s.pilotCoupleSlugs));
+    }
+
+    // A vendor session is only good while ALL of these hold, checked on every
+    // request (so revoking takes effect immediately, not when the token
+    // expires):
+    //   1. its token's sessionEpoch equals the one stored on the slot's
+    //      secrets doc. verifyVendorPin mints the epoch into the token (and
+    //      creates it on a slot's first login); a couple regenerating the PIN
+    //      writes a new one (enforced on vendorSlotSecrets below); deleting the
+    //      slot deletes the doc, so the get() fails and the session is dead.
+    //      A token with no epoch (every session issued before epochs existed)
+    //      and a slot with no epoch yet never match -- the vendor just enters
+    //      their PIN once, which mints one.
+    //   2. the portal switch / pilot list above is open for this slot's couple.
+    function validVendorSession(slotId) {
+      let secrets = get(/databases/$(database)/documents/vendorSlotSecrets/$(slotId)).data;
+      let slot = get(/databases/$(database)/documents/vendorSlots/$(slotId)).data;
+      return secrets.get('sessionEpoch', '') != '' &&
+        secrets.sessionEpoch == request.auth.token.get('sessionEpoch', null) &&
+        vendorPortalOpenFor(slot.get('coupleSlug', null));
+    }
+
     function isVerifiedVendorFor(slotId) {
-      return request.auth != null && request.auth.token.vendorSlotId == slotId;
+      return request.auth != null && request.auth.token.get('vendorSlotId', null) == slotId &&
+        validVendorSession(slotId);
     }
 
     // True for a verified vendor identity whose OWN slot belongs to the same
@@ -94,7 +133,8 @@ service cloud.firestore {
     // Photographer, etc.) -- never write access, and never another event's
     // vendors.
     function isVerifiedVendorForCouple(coupleUid) {
-      return request.auth != null && request.auth.token.vendorSlotId != null &&
+      return request.auth != null && request.auth.token.get('vendorSlotId', null) != null &&
+        validVendorSession(request.auth.token.vendorSlotId) &&
         get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == coupleUid;
     }
 
@@ -113,7 +153,8 @@ service cloud.firestore {
       // which gets this right). Firestore denies on a rule-evaluation error
       // either way, so this never opened an actual hole -- just noisier
       // permission-denied evaluation than necessary for anonymous requests.
-      return request.auth != null && request.auth.token.vendorSlotId != null &&
+      return request.auth != null && request.auth.token.get('vendorSlotId', null) != null &&
+        validVendorSession(request.auth.token.vendorSlotId) &&
         get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == coupleUid &&
         get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.category in categories;
     }
@@ -171,7 +212,17 @@ service cloud.firestore {
     // by design, so the PIN itself is never sent to any vendor's client.
     match /vendorSlotSecrets/{slotId} {
       // Same null-resource guard as vendorSlots above.
-      allow read, update: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
+      allow read: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
+      // A couple changing the PIN MUST also change sessionEpoch in the same
+      // write -- that is what signs out every vendor already logged in with
+      // the old PIN (see validVendorSession). Enforced here so a client that
+      // forgets to rotate it can't silently leave old sessions alive. Writes
+      // that leave the PIN alone (e.g. clearing the lockout) are unaffected,
+      // and a couple can never reassign the doc to another couple.
+      allow update: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid) &&
+        request.resource.data.coupleUid == resource.data.coupleUid &&
+        (request.resource.data.get('accessPin', null) == resource.data.get('accessPin', null) ||
+         request.resource.data.get('sessionEpoch', null) != resource.data.get('sessionEpoch', null)));
       allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
       // Deleted alongside vendorSlots when the couple removes a vendor --
       // without this the PIN doc would survive deletion, still functional
@@ -189,8 +240,7 @@ service cloud.firestore {
     // without any broader access to the couple's private document.
     match /couples/{uid}/sharedTimeline/{itemId} {
       function vendorBelongsToThisCouple() {
-        return request.auth != null && request.auth.token.vendorSlotId != null &&
-          get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == uid;
+        return isVerifiedVendorForCouple(uid);
       }
 
       allow read: if isOwningCouple(uid) || isAdmin() || vendorBelongsToThisCouple();
