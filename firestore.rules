@@ -13,14 +13,35 @@ service cloud.firestore {
           'events@theseventyfivevenue.com'
         ];
     }
+    // A couple's public-page slug is set once -- at signup, or by the one-time
+    // backfill for accounts that predate slugs -- and then stays fixed (admin can
+    // still change it). It can only be set to a slug that has no public page yet.
+    function slugAvailable(slug) {
+      return slug is string && slug.size() > 0 && slug.size() <= 200 &&
+        !exists(/databases/$(database)/documents/publicCouples/$(slug));
+    }
+    function slugOkOnCreate() {
+      let s = request.resource.data.get('slug', '');
+      return s == '' || slugAvailable(s);
+    }
+    function slugOkOnUpdate() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['slug']) ||
+        (resource.data.get('slug', '') == '' && slugAvailable(request.resource.data.slug));
+    }
     match /couples/{userId} {
-      allow read, update, delete: if request.auth != null && request.auth.uid == userId;
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId && slugOkOnUpdate();
+      // Only a signup creates a couple doc; a vendor session (custom token) never does.
       allow create: if request.auth != null && request.auth.uid == userId &&
-        request.resource.data.signupCode == get(/databases/$(database)/documents/settings/signupCode).data.code;
+        request.auth.token.get('vendorSlotId', null) == null &&
+        request.resource.data.signupCode == get(/databases/$(database)/documents/settings/signupCode).data.code &&
+        slugOkOnCreate();
       allow read, write: if isAdmin();
     }
     match /settings/{document} {
-      allow read: if request.auth != null;
+      // The signup code is readable by admin only. A signup is still checked
+      // against it by the rule above, which does not need client read access.
+      allow read: if request.auth != null && document != 'signupCode';
       allow write: if isAdmin();
     }
     match /publicCouples/{slug} {
