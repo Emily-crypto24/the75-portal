@@ -14,6 +14,7 @@ Run:
     RULES_MODE=new firebase emulators:exec --only firestore --project demo-the75-rules \
       "cd rules-tests && node --test --test-reporter=spec rules.test.js"
 
+* Run `rules.test.js` and `account-access.test.js` in separate `emulators:exec` runs, never in one `node --test` call: both reset the same emulator, so running them together makes tests fail at random.
 * Section A replays the write/read paths the live `index.html` uses (couple saves, signup, RSVP
   submissions, publicCouples, admin saves, settings, linen orders).
 * Section B is the existing vendor-portal behaviour. A and B must pass on the old AND new rules.

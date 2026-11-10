@@ -119,7 +119,7 @@ describe("A. live-site paths", () => {
   });
   test("publicCouples: couple writes only their own slug (index.html:664, 3315)", async () => {
     await assertSucceeds(setDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), { names: "Sam & Alex 2" }));
-    await assertFails(setDoc(doc(couple("coupleA"), "publicCouples/jo-pat"), { names: "hijack" }));
+    await assertFails(setDoc(doc(couple("coupleA"), "publicCouples/jo-pat"), { names: "other" }));
     await assertFails(setDoc(doc(guest(), "publicCouples/sam-alex"), { names: "x" }));
     await assertSucceeds(setDoc(doc(admin(), "publicCouples/jo-pat"), { names: "admin" }));
   });
