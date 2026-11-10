@@ -67,6 +67,29 @@
     const isAdmin = (email) => ADMIN_EMAILS.includes((email||"").toLowerCase());
 
     let currentUser = null;
+
+    // ── LOAD GUARD ───────────────────────────────────────────────
+    // Every planning tool saves by writing its whole list back to the couple's
+    // doc, so a save made before that list has loaded (or after its load
+    // failed) would overwrite everything already stored with just the new
+    // entry. Each tool's saves are blocked until its own load succeeds.
+    const LOAD_KEYS = ["forms","vendorMeetings","finance","guestList","bach","rehearsal","timeline","ideas","notes"];
+    const loadState = {};
+    function startLoading() { LOAD_KEYS.forEach(k => { loadState[k] = "loading"; }); renderLoadErrorBanner(); }
+    function markLoaded(key) { loadState[key] = "ok"; }
+    function markLoadFailed(key) { if (key in loadState) loadState[key] = "failed"; renderLoadErrorBanner(); }
+    function isLoaded(key) { return loadState[key] === "ok"; }
+    function canSave(key) {
+      if (isLoaded(key)) return true;
+      alert(loadState[key] === "failed"
+        ? "We couldn't load your saved information for this section, so saving is paused to protect what's already there. Please refresh the page and try again."
+        : "Your saved information is still loading. Please wait a moment and try again.");
+      return false;
+    }
+    function renderLoadErrorBanner() {
+      const el = document.getElementById("load-error-banner");
+      if (el) el.style.display = LOAD_KEYS.some(k => loadState[k] === "failed") ? "flex" : "none";
+    }
     let pendingCoupleNames = "";
     let pendingWeddingDate = "";
     let pendingSlugBase = "";
@@ -747,19 +770,27 @@
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
-          await loadAllForms(user.uid);
-          updateAllProgress();
-          renderWeddingCountdown();
-          await loadResources();
-          await loadVendorMeetings(user.uid);
-          await loadFinanceEntries(user.uid);
-          await loadGuestList(user.uid);
-          await loadBachParties(user.uid);
-          await loadRehearsalDinner(user.uid);
-          await loadTimelineItems(user.uid);
-          await loadIdeaBoard(user.uid);
-          await loadNotesTool(user.uid);
-          await window.loadVendorHub(user.uid, currentCoupleSlug);
+          // One failed step must not skip every step after it (that used to leave
+          // later tools, e.g. the timeline, showing an empty list that the next
+          // save would then write over the real data).
+          startLoading();
+          const loadSteps = [
+            ["forms", async () => { await loadAllForms(user.uid); updateAllProgress(); renderWeddingCountdown(); }],
+            ["resources", () => loadResources()],
+            ["vendorMeetings", () => loadVendorMeetings(user.uid)],
+            ["finance", () => loadFinanceEntries(user.uid)],
+            ["guestList", () => loadGuestList(user.uid)],
+            ["bach", () => loadBachParties(user.uid)],
+            ["rehearsal", () => loadRehearsalDinner(user.uid)],
+            ["timeline", () => loadTimelineItems(user.uid)],
+            ["ideas", () => loadIdeaBoard(user.uid)],
+            ["notes", () => loadNotesTool(user.uid)],
+            ["vendorHub", () => window.loadVendorHub(user.uid, currentCoupleSlug)],
+          ];
+          for (const [key, run] of loadSteps) {
+            try { await run(); }
+            catch(e) { console.error(`Loading ${key} failed:`, e); if (loadState[key] === "loading") markLoadFailed(key); }
+          }
         }
       } else {
         currentUser = null;
@@ -798,6 +829,7 @@
           });
         });
       });
+      markLoaded("forms");
       renderLeadCoordinator(data.leadCoordinator);
 
       let slug = data.slug;
@@ -941,7 +973,8 @@
         const snap = await getDoc(doc(db, "couples", uid));
         const data = snap.exists() ? snap.data() : {};
         vendorMeetingsCache = Array.isArray(data.vendorMeetings) ? data.vendorMeetings : [];
-      } catch(e) { vendorMeetingsCache = []; }
+        markLoaded("vendorMeetings");
+      } catch(e) { markLoadFailed("vendorMeetings"); vendorMeetingsCache = []; }
       window.resetVendorForm();
       renderVendorMeetings();
     }
@@ -1063,6 +1096,7 @@
 
     window.saveVendorMeeting = async function() {
       if (!currentUser) return;
+      if (!canSave("vendorMeetings")) return;
       const vendorName = document.getElementById("vf-vendorName").value.trim();
       if (!vendorName) { alert("Please enter a vendor name."); return; }
       const formatEl = document.querySelector('input[name="vf-format"]:checked');
@@ -1098,6 +1132,7 @@
 
     window.toggleVendorDone = async function(id) {
       if (!currentUser) return;
+      if (!canSave("vendorMeetings")) return;
       const idx = vendorMeetingsCache.findIndex(x => x.id === id);
       if (idx === -1) return;
       vendorMeetingsCache[idx].done = !vendorMeetingsCache[idx].done;
@@ -1109,6 +1144,7 @@
 
     window.deleteVendorMeeting = async function(id) {
       if (!currentUser) return;
+      if (!canSave("vendorMeetings")) return;
       if (!confirm("Remove this vendor meeting?")) return;
       vendorMeetingsCache = vendorMeetingsCache.filter(x => x.id !== id);
       try {
@@ -1126,7 +1162,8 @@
         const snap = await getDoc(doc(db, "couples", uid));
         const data = snap.exists() ? snap.data() : {};
         financeEntriesCache = Array.isArray(data.financeEntries) ? data.financeEntries : [];
-      } catch(e) { financeEntriesCache = []; }
+        markLoaded("finance");
+      } catch(e) { markLoadFailed("finance"); financeEntriesCache = []; }
       populateVendorDatalist();
       window.resetFinanceForm();
       renderFinanceEntries();
@@ -1225,6 +1262,7 @@
 
     window.saveFinanceEntry = async function() {
       if (!currentUser) return;
+      if (!canSave("finance")) return;
       const vendorName = document.getElementById("fin-vendorName").value.trim();
       if (!vendorName) { alert("Please enter a vendor or expense name."); return; }
       const entry = {
@@ -1251,6 +1289,7 @@
 
     window.markFinancePaidInFull = async function(id) {
       if (!currentUser) return;
+      if (!canSave("finance")) return;
       const idx = financeEntriesCache.findIndex(x => x.id === id);
       if (idx === -1) return;
       financeEntriesCache[idx].amountPaidBeforeFull = financeEntriesCache[idx].amountPaid || 0;
@@ -1263,6 +1302,7 @@
 
     window.undoFinancePaidInFull = async function(id) {
       if (!currentUser) return;
+      if (!canSave("finance")) return;
       const idx = financeEntriesCache.findIndex(x => x.id === id);
       if (idx === -1) return;
       const restored = financeEntriesCache[idx].amountPaidBeforeFull;
@@ -1276,6 +1316,7 @@
 
     window.deleteFinanceEntry = async function(id) {
       if (!currentUser) return;
+      if (!canSave("finance")) return;
       if (!confirm("Remove this entry?")) return;
       financeEntriesCache = financeEntriesCache.filter(x => x.id !== id);
       try {
@@ -1359,7 +1400,8 @@
         thingsToDoCache = (Array.isArray(data.thingsToDo) && data.thingsToDo.length) ? data.thingsToDo : DEFAULT_THINGS_TO_DO;
         registryItemsCache = Array.isArray(data.registryItems) ? data.registryItems : [];
         registryLinksCache = Array.isArray(data.registryLinks) ? data.registryLinks : [];
-      } catch(e) { guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; thingsToDoCache = []; registryItemsCache = []; registryLinksCache = []; }
+        markLoaded("guestList");
+      } catch(e) { markLoadFailed("guestList"); guestListCache = []; guestListSettings = { dinnerStyle: "Buffet", mealOptions: [] }; blockedGuestsCache = []; placesToStayCache = []; itineraryItemsCache = []; weddingPartyCache = []; faqsCache = []; thingsToDoCache = []; registryItemsCache = []; registryLinksCache = []; }
       renderGuestListSettingsUI();
       renderBlockedGuests();
       window.resetGuestForm();
@@ -1385,6 +1427,7 @@
 
     window.saveGuestPortalContent = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const guestPortalContent = {
         coverPhotoUrl: document.getElementById("gp-coverPhotoUrl").value.trim(),
         dressCode: document.getElementById("gp-dressCode").value.trim(),
@@ -1459,6 +1502,7 @@
 
     window.savePlaceToStay = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const name = document.getElementById("pts-name").value.trim();
       if (!name) { alert("Please enter a property name."); return; }
       const entry = {
@@ -1487,6 +1531,7 @@
 
     window.deletePlaceToStay = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       if (!confirm("Remove this place to stay?")) return;
       placesToStayCache = placesToStayCache.filter(x => x.id !== id);
       try {
@@ -1564,6 +1609,7 @@
 
     window.saveThingToDo = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const name = document.getElementById("ttd-name").value.trim();
       if (!name) { alert("Please enter an activity name."); return; }
       const entry = {
@@ -1592,6 +1638,7 @@
 
     window.deleteThingToDo = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       if (!confirm("Remove this activity?")) return;
       thingsToDoCache = thingsToDoCache.filter(x => x.id !== id);
       try {
@@ -1650,6 +1697,7 @@
 
     window.saveRegistryLink = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const name = document.getElementById("rl-name").value.trim();
       const url = document.getElementById("rl-url").value.trim();
       if (!name || !url) { alert("Please enter both a store name and a link."); return; }
@@ -1670,6 +1718,7 @@
 
     window.deleteRegistryLink = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       if (!confirm("Remove this registry link?")) return;
       registryLinksCache = registryLinksCache.filter(x => x.id !== id);
       try {
@@ -1738,6 +1787,7 @@
 
     window.saveRegistryItem = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const name = document.getElementById("reg-name").value.trim();
       if (!name) { alert("Please enter a name."); return; }
       const entry = {
@@ -1764,6 +1814,7 @@
 
     window.deleteRegistryItem = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       if (!confirm("Remove this item?")) return;
       registryItemsCache = registryItemsCache.filter(x => x.id !== id);
       try {
@@ -1820,6 +1871,7 @@
 
     window.saveItineraryItem = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const title = document.getElementById("it-title").value.trim();
       if (!title) { alert("Please enter an event name."); return; }
       const entry = {
@@ -1844,6 +1896,7 @@
 
     window.deleteItineraryItem = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       itineraryItemsCache = itineraryItemsCache.filter(x => x.id !== id);
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { itineraryItems: itineraryItemsCache });
@@ -1900,6 +1953,7 @@
 
     window.saveWeddingPartyMember = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const name = document.getElementById("wp-name").value.trim();
       if (!name) { alert("Please enter a name."); return; }
       const entry = {
@@ -1924,6 +1978,7 @@
 
     window.deleteWeddingPartyMember = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       weddingPartyCache = weddingPartyCache.filter(x => x.id !== id);
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { weddingParty: weddingPartyCache });
@@ -1981,6 +2036,7 @@
 
     window.saveFAQ = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const question = document.getElementById("faq-question").value.trim();
       if (!question) { alert("Please enter a question."); return; }
       const entry = {
@@ -2004,6 +2060,7 @@
 
     window.deleteFAQ = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       faqsCache = faqsCache.filter(x => x.id !== id);
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { faqs: faqsCache });
@@ -2013,7 +2070,7 @@
     };
 
     async function autoMergeRSVPSubmissions() {
-      if (!currentUser || !currentCoupleSlug) return;
+      if (!currentUser || !currentCoupleSlug || !isLoaded("guestList")) return;
       try {
         const q = query(collection(db, "rsvpSubmissions"), where("coupleSlug", "==", currentCoupleSlug));
         const snap = await getDocs(q);
@@ -2087,6 +2144,7 @@
 
     window.addBlockedGuest = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const input = document.getElementById("blocked-guest-newName");
       const name = input.value.trim();
       if (!name) return;
@@ -2102,6 +2160,7 @@
 
     window.removeBlockedGuest = async function(name) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       blockedGuestsCache = blockedGuestsCache.filter(n => n !== name);
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { blockedGuestNames: blockedGuestsCache });
@@ -2143,6 +2202,7 @@
 
     window.saveGuestListSettings = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const selected = document.querySelector('input[name="gl-dinnerStyle"]:checked');
       const dinnerStyle = selected ? selected.value : "Buffet";
       const mealOptions = Array.from(document.querySelectorAll(".gl-meal-option-input")).map(el => el.value.trim()).filter(Boolean);
@@ -2322,6 +2382,7 @@
 
     window.saveGuest = async function() {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       const guestName = document.getElementById("gl-guestName").value.trim();
       if (!guestName) { alert("Please enter a guest name."); return; }
       const entry = {
@@ -2356,6 +2417,7 @@
 
     window.deleteGuest = async function(id) {
       if (!currentUser) return;
+      if (!canSave("guestList")) return;
       if (!confirm("Remove this guest?")) return;
       guestListCache = guestListCache.filter(x => x.id !== id);
       try {
@@ -2522,6 +2584,7 @@
 
     window.confirmGuestImport = async function() {
       if (!currentUser || !pendingGuestImportRows.length) return;
+      if (!canSave("guestList")) return;
       const importBatchStamp = Date.now().toString(36);
       const newEntries = pendingGuestImportRows.map((g, i) => ({
         // Index guarantees uniqueness within this import batch even when
@@ -2566,7 +2629,8 @@
         const snap = await getDoc(doc(db, "couples", uid));
         const data = snap.exists() ? snap.data() : {};
         bachPartiesCache = Array.isArray(data.bachParties) ? data.bachParties : [];
-      } catch(e) { bachPartiesCache = []; }
+        markLoaded("bach");
+      } catch(e) { markLoadFailed("bach"); bachPartiesCache = []; }
       window.resetBachPartyForm();
       renderBachParties();
     }
@@ -2650,6 +2714,7 @@
 
     window.saveBachParty = async function() {
       if (!currentUser) return;
+      if (!canSave("bach")) return;
       const eventName = document.getElementById("bp-eventName").value.trim();
       if (!eventName) { alert("Please enter an event name."); return; }
       const attendees = Array.from(document.querySelectorAll(".bp-attendee-row")).map(row => ({
@@ -2688,6 +2753,7 @@
 
     window.deleteBachParty = async function(id) {
       if (!currentUser) return;
+      if (!canSave("bach")) return;
       if (!confirm("Remove this party event?")) return;
       bachPartiesCache = bachPartiesCache.filter(x => x.id !== id);
       try {
@@ -2740,7 +2806,8 @@
         if (data.rehearsalDinner && typeof data.rehearsalDinner === "object") {
           rd = { venueName:"", address:"", date:"", time:"", guests: [], notes:"", ...data.rehearsalDinner };
         }
-      } catch(e) {}
+        markLoaded("rehearsal");
+      } catch(e) { markLoadFailed("rehearsal"); }
       document.getElementById("rd-venueName").value = rd.venueName || "";
       document.getElementById("rd-address").value = rd.address || "";
       document.getElementById("rd-date").value = rd.date || "";
@@ -2840,6 +2907,7 @@
 
     window.saveRehearsalDinner = async function() {
       if (!currentUser) return;
+      if (!canSave("rehearsal")) return;
       const guests = Array.from(document.querySelectorAll(".rd-guest-row")).map(row => ({
         name: row.querySelector(".rd-guest-name").value.trim(),
         rsvpStatus: row.querySelector(".rd-guest-status").value,
@@ -2878,7 +2946,8 @@
         const snap = await getDoc(doc(db, "couples", uid));
         const data = snap.exists() ? snap.data() : {};
         timelineItemsCache = Array.isArray(data.timelineItems) ? data.timelineItems : [];
-      } catch(e) { timelineItemsCache = []; }
+        markLoaded("timeline");
+      } catch(e) { markLoadFailed("timeline"); timelineItemsCache = []; }
       window.resetTimelineForm();
       renderTimelineItems();
     }
@@ -2937,6 +3006,7 @@
 
     window.saveTimelineItem = async function() {
       if (!currentUser) return;
+      if (!canSave("timeline")) return;
       const activity = document.getElementById("tl-activity").value.trim();
       if (!activity) { alert("Please enter an event or activity."); return; }
       const entry = {
@@ -2962,6 +3032,7 @@
 
     window.deleteTimelineItem = async function(id) {
       if (!currentUser) return;
+      if (!canSave("timeline")) return;
       if (!confirm("Remove this timeline item?")) return;
       timelineItemsCache = timelineItemsCache.filter(x => x.id !== id);
       try {
@@ -3110,7 +3181,8 @@
         const data = snap.exists() ? snap.data() : {};
         ideaItemsCache = Array.isArray(data.ideaItems) ? data.ideaItems : [];
         checklistItemsCache = Array.isArray(data.checklistItems) ? data.checklistItems : [];
-      } catch(e) { ideaItemsCache = []; checklistItemsCache = []; }
+        markLoaded("ideas");
+      } catch(e) { markLoadFailed("ideas"); ideaItemsCache = []; checklistItemsCache = []; }
       window.resetIdeaForm();
       renderIdeas();
       renderChecklist();
@@ -3125,7 +3197,8 @@
         const snap = await getDoc(doc(db, "couples", uid));
         const data = snap.exists() ? snap.data() : {};
         notesToolCache = Array.isArray(data.notesTool) ? data.notesTool : [];
-      } catch(e) { notesToolCache = []; }
+        markLoaded("notes");
+      } catch(e) { markLoadFailed("notes"); notesToolCache = []; }
       window.resetNoteForm();
       renderNotesTool();
     }
@@ -3183,6 +3256,7 @@
 
     window.saveNote = async function() {
       if (!currentUser) return;
+      if (!canSave("notes")) return;
       const title = document.getElementById("pn-title").value.trim();
       const content = document.getElementById("pn-content").value.trim();
       if (!title && !content) { alert("Please enter a title or some note content."); return; }
@@ -3207,6 +3281,7 @@
 
     window.deleteNote = async function(id) {
       if (!currentUser) return;
+      if (!canSave("notes")) return;
       if (!confirm("Delete this note?")) return;
       notesToolCache = notesToolCache.filter(x => x.id !== id);
       try {
@@ -3266,6 +3341,7 @@
 
     window.saveIdea = async function() {
       if (!currentUser) return;
+      if (!canSave("ideas")) return;
       const title = document.getElementById("idea-title").value.trim();
       if (!title) { alert("Please enter a title."); return; }
       const entry = {
@@ -3290,6 +3366,7 @@
 
     window.deleteIdea = async function(id) {
       if (!currentUser) return;
+      if (!canSave("ideas")) return;
       if (!confirm("Remove this idea?")) return;
       ideaItemsCache = ideaItemsCache.filter(x => x.id !== id);
       try {
@@ -3344,6 +3421,7 @@
 
     window.addChecklistItem = async function() {
       if (!currentUser) return;
+      if (!canSave("ideas")) return;
       const input = document.getElementById("checklist-newItem");
       const text = input.value.trim();
       if (!text) return;
@@ -3366,6 +3444,7 @@
 
     window.updateChecklistItem = async function(id, field, value) {
       if (!currentUser) return;
+      if (!canSave("ideas")) return;
       const idx = checklistItemsCache.findIndex(x => x.id === id);
       if (idx === -1) return;
       checklistItemsCache[idx][field] = (field === "quantity" || field === "price") ? (parseFloat(value) || 0) : value;
@@ -3377,6 +3456,7 @@
 
     window.deleteChecklistItem = async function(id) {
       if (!currentUser) return;
+      if (!canSave("ideas")) return;
       checklistItemsCache = checklistItemsCache.filter(x => x.id !== id);
       try {
         await updateDoc(doc(db, "couples", currentUser.uid), { checklistItems: checklistItemsCache });
@@ -3472,6 +3552,7 @@
 
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
+      if (!isLoaded("forms")) { showSaveIndicator(meeting, "error"); return; }
       const key = `${meeting}.${field}`;
       clearTimeout(autoSaveTimers[key]);
       autoSaveTimers[key] = setTimeout(async () => {
@@ -3489,6 +3570,7 @@
     // ── MANUAL SAVE ─────────────────────────────────────────────
     window.saveSection = async function(meeting) {
       if (!currentUser) return;
+      if (!canSave("forms")) return;
       const btn = document.getElementById(`save-btn-${meeting}`);
       btn.textContent = "Saving…";
       btn.disabled = true;
@@ -3507,7 +3589,11 @@
         updateProgress(meeting);
         if (meeting === "meeting1") syncPublicProfile(currentUser.uid);
         setTimeout(() => { btn.textContent = "Save Progress"; btn.style.background = ""; btn.disabled = false; }, 10000);
-      } catch(e) { btn.textContent = "Save Progress"; btn.disabled = false; }
+      } catch(e) {
+        console.error("Save Progress failed:", e);
+        btn.textContent = "Save Progress"; btn.disabled = false;
+        alert("Couldn't save your progress: " + e.message + "\nPlease check your connection and try again.");
+      }
     };
 
     // ── PROGRESS ────────────────────────────────────────────────
@@ -8329,6 +8415,10 @@
 
 <!-- ══════════════════ PORTAL ROOT ══════════════════ -->
 <div id="portal-root" style="display:none;">
+<div id="load-error-banner" style="display:none;position:fixed;top:72px;left:0;right:0;z-index:99;background:#c0392b;color:#fff;padding:10px 16px;font-size:13px;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;text-align:center;">
+  <span>Some of your saved information couldn't be loaded. Please refresh the page before making changes so nothing you've entered gets overwritten.</span>
+  <button onclick="location.reload()" style="background:#fff;color:#c0392b;border:none;padding:6px 14px;font-size:12px;cursor:pointer;">Refresh</button>
+</div>
 
 <!-- NAV -->
 <nav id="main-nav">
