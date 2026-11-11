@@ -743,7 +743,13 @@
           document.getElementById("admin-root").style.display = "none";
           document.getElementById("portal-root").style.display = "block";
           const userRef = doc(db, "couples", user.uid);
-          const snap = await getDoc(userRef);
+          // Guards go on before the first read, so if Firestore can't be reached at
+          // all (e.g. an outage) every tool shows the "saving is paused" state
+          // instead of looking like it is still loading.
+          startLoading();
+          let snap;
+          try { snap = await getDoc(userRef); }
+          catch(e) { console.error("Couldn't open your account:", e); LOAD_KEYS.forEach(k => markLoadFailed(k)); return; }
           if (!snap.exists()) {
             const slug = await resolveUniqueSlug(pendingSlugBase);
             try {
@@ -773,7 +779,6 @@
           // One failed step must not skip every step after it (that used to leave
           // later tools, e.g. the timeline, showing an empty list that the next
           // save would then write over the real data).
-          startLoading();
           const loadSteps = [
             ["forms", async () => { await loadAllForms(user.uid); updateAllProgress(); renderWeddingCountdown(); }],
             ["resources", () => loadResources()],
