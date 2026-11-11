@@ -94,6 +94,10 @@
     let pendingWeddingDate = "";
     let pendingSlugBase = "";
     let pendingSignupCode = "";
+    // Email of the sign-up attempt in progress, if any. The page may only roll back
+    // (delete) an account that THIS attempt just created; any other account that
+    // has no couple record is signed out, never deleted.
+    let signupAttemptEmail = null;
 
     function firstNameSlug(fullName) {
       const first = (fullName || "").trim().split(/\s+/)[0] || "";
@@ -751,18 +755,41 @@
           try { snap = await getDoc(userRef); }
           catch(e) { console.error("Couldn't open your account:", e); LOAD_KEYS.forEach(k => markLoadFailed(k)); return; }
           if (!snap.exists()) {
+            // Was this account just created by the sign-up form (same email, made in the
+            // last few minutes)? Only then may it use the code and names typed there.
+            // Any other account with no record (an older account, a first-time Google
+            // sign-in, a staff address) gets no code, so it cannot be turned into a
+            // couple account by values left over from someone else's sign-up.
+            const createdAtMs = Date.parse((user.metadata && user.metadata.creationTime) || "");
+            const ownAttempt = !!signupAttemptEmail
+              && (user.email || "").toLowerCase() === signupAttemptEmail
+              && Number.isFinite(createdAtMs) && (Date.now() - createdAtMs) < 10 * 60 * 1000;
+            signupAttemptEmail = null;
+            if (!ownAttempt) { pendingSignupCode = ""; pendingCoupleNames = ""; pendingWeddingDate = ""; pendingSlugBase = ""; }
             const slug = await resolveUniqueSlug(pendingSlugBase);
             try {
               await setDoc(userRef, { uid: user.uid, email: user.email, displayName: user.displayName||"", createdAt: new Date().toISOString(), status: "active", notes: [], slug, signupCode: pendingSignupCode || "", blockedGuestNames: [], meeting1:{ coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "" }, meeting2:{}, meeting3:{}, vendorMeetings: [], financeEntries: [], guestList: [], bachParties: [], rehearsalDinner: { venueName:"", address:"", date:"", time:"", guests: [], notes:"" }, timelineItems: [], ideaItems: [], checklistItems: [], leadCoordinator: { name:"", email:"", phone:"" }, placesToStay: [], itineraryItems: [], weddingParty: [], faqs: [], thingsToDo: [], registryItems: [], registryLinks: [], notesTool: [] });
             } catch (e) {
-              // Signup code was missing/incorrect (rejected by Firestore rules), or some
-              // other write failure. Roll back the just-created auth account so the person
-              // can cleanly retry with the correct code instead of being stuck in limbo.
+              // The couple record was refused. Only an account created by THIS sign-up
+              // attempt is rolled back (deleted), so the person can retry cleanly. Any
+              // other account -- an older one with no record, a first-time Google
+              // sign-in, a staff address -- is only signed out, never deleted.
+              console.error("Couldn't create the couple record:", e);
               document.getElementById("admin-root").style.display = "none";
               document.getElementById("portal-root").style.display = "none";
               document.getElementById("login-screen").style.display = "flex";
-              showSignupError("That signup code doesn't look right. Please double check the code from your coordinator's email and try again.");
-              try { await user.delete(); } catch (delErr) { await signOut(auth); }
+              resetAuthButtons();
+              if (ownAttempt) {
+                showSignupError(e && e.code === "permission-denied"
+                  ? "That signup code doesn't look right. Please double check the code from your coordinator's email and try again."
+                  : "We couldn't finish creating your account. Please try again in a moment.");
+                try { await user.delete(); } catch (delErr) { await signOut(auth); }
+              } else {
+                showLoginError(e && e.code === "permission-denied"
+                  ? "We couldn't find a planning account for this email. If you're new here, use New Account below with your signup code, or contact your coordinator."
+                  : "We couldn't open your account right now. Please try again in a moment.");
+                await signOut(auth);
+              }
               return;
             }
             try {
@@ -773,6 +800,7 @@
                 photoUrl: "", dressCode: "", guestItinerary: "", parkingNotes: "", propertyMapUrl: "", placesToStay: []
               });
             } catch(e) {}
+            pendingSignupCode = ""; pendingCoupleNames = ""; pendingWeddingDate = ""; pendingSlugBase = "";
           }
           const nameEl = document.getElementById("nav-user-name");
           if (nameEl) nameEl.textContent = user.displayName ? user.displayName.split(" ")[0] : user.email.split("@")[0];
@@ -3641,6 +3669,7 @@
 
     // ── AUTH FUNCTIONS ──────────────────────────────────────────
     window.signInWithGoogle = async function() {
+      signupAttemptEmail = null;
       const btn = document.getElementById("btn-google");
       btn.textContent = "Signing in…"; btn.disabled = true;
       try { await signInWithPopup(auth, provider); }
@@ -3648,6 +3677,7 @@
     };
 
     window.signInWithEmail = async function() {
+      signupAttemptEmail = null;
       const email = document.getElementById("login-email").value.trim();
       const password = document.getElementById("login-password").value;
       const btn = document.getElementById("btn-email");
@@ -3676,8 +3706,10 @@
       pendingSlugBase = firstNameSlug(partner1) + "and" + firstNameSlug(partner2);
       pendingSignupCode = code;
       btn.textContent = "Creating Account…"; btn.disabled = true;
+      signupAttemptEmail = email.toLowerCase();
       try { await createUserWithEmailAndPassword(auth, email, password); }
       catch(e) {
+        signupAttemptEmail = null;
         if (e.code === "auth/email-already-in-use") {
           showSignupError("That email already has an account — sign in above instead.");
         } else if (e.code === "auth/weak-password") {
@@ -3710,6 +3742,13 @@
       }
       if (link) { link.textContent = "Forgot password?"; }
     };
+
+    function resetAuthButtons() {
+      [["btn-signup", "Create Account"], ["btn-email", "Sign In"], ["btn-google", "Continue with Google"]].forEach(([id, label]) => {
+        const b = document.getElementById(id);
+        if (b) { b.textContent = label; b.disabled = false; }
+      });
+    }
 
     function showLoginError(msg, isSuccess) {
       const el = document.getElementById("login-error");
