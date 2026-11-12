@@ -1025,6 +1025,17 @@
       h = h % 12; if (h === 0) h = 12;
       return `${h}:${String(min).padStart(2,"0")} ${ampm}`;
     }
+    // Display-only 12-hour version of a stored "HH:MM" (24-hour) time. Anything
+    // that is not exactly HH:MM (free text such as "2:00 PM" or "around 5") is
+    // returned unchanged, so stored values are never altered or misread.
+    function display12h(t) {
+      const raw = (t === null || t === undefined) ? "" : String(t);
+      const m = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(raw.trim());
+      if (!m) return raw;
+      const h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+      if (h > 23 || mi > 59) return raw;
+      return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h >= 12 ? "PM" : "AM"}`;
+    }
 
     function renderVendorMeetings() {
       const wrap = document.getElementById("vendor-meetings-list");
@@ -5465,7 +5476,7 @@
         return `
           <div style="border-bottom:1px solid var(--border);padding:14px 0;">
             <div style="display:flex;gap:14px;align-items:baseline;">
-              <span style="font-size:12px;color:var(--gold-dark);letter-spacing:0.06em;min-width:70px;">${esc(item.time||"")}</span>
+              <span style="font-size:12px;color:var(--gold-dark);letter-spacing:0.06em;min-width:70px;">${esc(display12h(item.time))}</span>
               <span style="font-size:15px;color:var(--charcoal);">${esc(item.title||"")}</span>
             </div>
             ${notes.length ? `<div style="margin:8px 0 4px 84px;display:flex;flex-direction:column;gap:6px;">` + notes.map(n => `
@@ -5590,11 +5601,15 @@
     // with its status dropdown, without changing the heading's own class/
     // spacing rules -- h2's default margin-bottom (6px) moves onto this
     // wrapper instead so the row keeps the same rhythm as a bare heading did.
+    function dueByLineHTML() {
+      return `<p class="due-by-line" style="font-size:11px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 10px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>`;
+    }
+
     function sectionTitleRowHTML(title, idPrefix, sectionKey, statusMap) {
       return `<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:6px;">
         <h2 class="form-section-title" style="margin-bottom:0;">${title}</h2>
         ${sectionStatusFieldHTML(idPrefix, sectionKey, statusMap)}
-      </div>`;
+      </div>${sectionKey === "shuttleSchedule" ? "" : dueByLineHTML()}`;
     }
 
     function aggregateSectionStatus(statusMap) {
@@ -5901,7 +5916,7 @@
       const lc = (vendorGatedInfo && vendorGatedInfo.leadCoordinator) || {};
       document.getElementById("vendor-venue-info").innerHTML = `
         <div class="amd-row"><div class="amd-key">Guest Count</div><div class="amd-val">${(vendorGatedInfo && Number.isFinite(vendorGatedInfo.guestCount)) ? esc(String(vendorGatedInfo.guestCount)) : "Not yet set"} <span style="color:var(--mid-gray);font-size:11px;">(live-linked from Guest List/RSVP)</span></div></div>
-        <div class="amd-row"><div class="amd-key">Venue Rental Ends</div><div class="amd-val">${esc((vendorGatedInfo && vendorGatedInfo.venueRentalEndTime) || "Not yet set")}</div></div>
+        <div class="amd-row"><div class="amd-key">Venue Rental Ends</div><div class="amd-val">${esc(display12h((vendorGatedInfo && vendorGatedInfo.venueRentalEndTime) || "Not yet set"))}</div></div>
         <div class="amd-row"><div class="amd-key">Vendor Arrival Window</div><div class="amd-val">${esc((vendorGatedInfo && vendorGatedInfo.vendorArrivalWindow) || "Not yet set")}</div></div>
         <div class="amd-row"><div class="amd-key">Directions</div><div class="amd-val">${esc(venueInfo.directions || "10835 State Route 374, Rockbridge, Ohio 43149")}</div></div>
         <div class="amd-row"><div class="amd-key">Parking</div><div class="amd-val">${esc(venueInfo.parking || "Details coming soon.")}</div></div>
@@ -6068,8 +6083,8 @@
         ["Wedding Date", (vendorPublicData && vendorPublicData.weddingDate) || ""],
         ["Venue Address", "10835 State Route 374, Rockbridge, Ohio 43149"],
         ["Category", vendorSlotLabel_ || ""],
-        ["Arrival Time", s.arrivalTime || ""],
-        ["Exit Time", s.exitTime || ""],
+        ["Arrival Time", display12h(s.arrivalTime)],
+        ["Exit Time", display12h(s.exitTime)],
         ["Company Name", s.vendorName || ""],
         ["Contact Name", s.contactName || ""],
         ["Phone", s.phone || ""],
@@ -6135,7 +6150,7 @@
         pdf.setFont("helvetica","normal");
         vendorTimelineItems.forEach(item => {
           if (y > 275) { pdf.addPage(); y = 20; }
-          pdf.text(`${item.time || ""} — ${item.title || ""}`, 14, y); y += 6;
+          pdf.text(`${display12h(item.time)} — ${item.title || ""}`, 14, y); y += 6;
           (item.notes||[]).forEach(n => {
             if (y > 275) { pdf.addPage(); y = 20; }
             const lines = pdf.splitTextToSize(`  [${n.author}] ${n.text}`, 170);
@@ -6337,6 +6352,7 @@
         barHours: [],
         champagneToast: false, champagnePourStyle: "",
         linenFlipNote: "", linenBreakdownNote: "",
+        rainPlan: "",
         coupleBuffetSelections: "", coupleSpecialRequests: "",
         toGoBoxContents: "", bulkLeftoverContact: "", bulkLeftoverAlcoholContact: "",
         privateMomentHold: false, privateMomentDetails: "",
@@ -6398,7 +6414,8 @@
           ${dinnerStyle ? "" : `<div class="form-group full"><label class="form-label">Service Format (manual)</label><input class="form-input" data-cf="serviceFormatManual" value="${esc(r.serviceFormatManual)}" placeholder="Sit-down / Buffet / Family-style / Stations / Four-course"></div>`}
           <div class="form-group"><label class="form-label">Appetizer Service</label><input class="form-input" data-cf="appetizerService" value="${esc(r.appetizerService)}" placeholder="Passed / Stationary / Both"></div>
           <div class="form-group"><label class="form-label">Appetizer Quantities</label><input class="form-input" data-cf="appetizerQty" value="${esc(r.appetizerQty)}"></div>
-          <div class="form-group full"><label class="form-label">Table Release Order</label><textarea class="form-textarea" data-cf="tableReleaseOrder">${esc(r.tableReleaseOrder)}</textarea></div>
+          <div class="form-group full"><p style="font-size:12px;color:var(--mid-gray);line-height:1.6;margin:0;">One 8-ft table fits most stationary appetizers. More than 3 or 4 appetizers usually needs a second 8-ft table.</p></div>
+          <div class="form-group full"><label class="form-label">Table Release Order</label><p style="font-size:12px;color:var(--mid-gray);line-height:1.6;margin:0 0 6px;">Tell your caterer which table numbers are seated with your bridal party, VIPs and parents, so they can release tables in that order.</p><textarea class="form-textarea" data-cf="tableReleaseOrder">${esc(r.tableReleaseOrder)}</textarea></div>
         </div>
 
         <div class="form-divider"></div>
@@ -6456,7 +6473,8 @@
 
         <div class="form-divider"></div>
         ${sectionTitleRowHTML("Vendor Meals", idPrefix, "vendorMeals", sectionStatus)}
-        <p style="font-size:12px;color:var(--mid-gray);margin-bottom:10px;">Read-only — auto-pulled from every vendor's own Meal Request. The venue doesn't require vendor meals, but they're commonly given one, especially buffet-style; each vendor self-requests via their own tab.</p>
+        <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:8px;">The Seventy Five doesn’t require vendor meals, but vendors appreciate them. Most vendors who work your day expect one, typically your DJ, photographer(s), videographer(s), planner/coordinator, shuttle driver(s) and any third-party bartender. Please decide who to include and give your caterer the count by your final planning meeting. Our own staff (usually 3–4) usually go through the buffet line on their own and don’t need a separate meal, but please ask your caterer whether to include them in your count.</p>
+        <p style="font-size:11px;color:var(--mid-gray);font-style:italic;margin-bottom:10px;">The list below is read-only — auto-pulled from every vendor's own Meal Request.</p>
         ${mealsRollup.length ? mealsRollup.map(m => `<div class="amd-row"><div class="amd-key">${esc(m.label)}</div><div class="amd-val">${m.requested ? "Requesting a meal" + (m.dietary ? " — " + esc(m.dietary) : "") : "No meal requested"}</div></div>`).join("") : `<p style="font-size:13px;color:var(--mid-gray);font-style:italic;">No vendors have set a meal request yet.</p>`}
 
         <div class="form-divider"></div>
@@ -6492,10 +6510,19 @@
         </div>
 
         <div class="form-divider"></div>
+        ${sectionTitleRowHTML("Rain <em>plan</em>", idPrefix, "rainPlan", sectionStatus)}
+        <p style="font-size:12px;color:var(--mid-gray);line-height:1.7;margin-bottom:10px;">A full flip moves the whole setup to the other space. A partial flip moves only part of it, such as the ceremony. A full flip takes significantly more setup time, so please think about this early.</p>
+        <div class="form-grid">
+          <div class="form-group full"><label class="form-label">Describe your backup rain plan</label><textarea class="form-textarea" data-cf="rainPlan">${esc(r.rainPlan)}</textarea></div>
+        </div>
+        <!-- Reserved: rain-plan diagrams will be added here later. Intentionally empty. -->
+        <div id="cf-rain-diagrams-${idPrefix}" data-reserved="rain-plan-diagrams"></div>
+
+        <div class="form-divider"></div>
         ${sectionTitleRowHTML("Couple's Own Service", idPrefix, "couplesOwnService", sectionStatus)}
         <div class="form-grid">
           <div class="form-group full"><label class="form-label">Couple's Meal Selections (if buffet — couple is always served directly)</label><textarea class="form-textarea" data-cf="coupleBuffetSelections">${esc(r.coupleBuffetSelections)}</textarea></div>
-          <div class="form-group full"><label class="form-label">Special Requests</label><textarea class="form-textarea" data-cf="coupleSpecialRequests" placeholder="e.g. &quot;don't let food touch&quot;">${esc(r.coupleSpecialRequests)}</textarea></div>
+          <div class="form-group full"><label class="form-label">Special Requests</label><p style="font-size:12px;color:var(--mid-gray);line-height:1.6;margin:0 0 6px;">Please also note any dietary preferences or allergies specific to you as a couple.</p><textarea class="form-textarea" data-cf="coupleSpecialRequests" placeholder="For example: all items on the buffet, or only chicken, pasta and sides.">${esc(r.coupleSpecialRequests)}</textarea></div>
           <div class="form-group full"><label class="form-label">To-Go Box Contents (including dessert, if any)</label><textarea class="form-textarea" data-cf="toGoBoxContents">${esc(r.toGoBoxContents)}</textarea></div>
           <div class="form-group full"><label class="form-label">Who's Taking Home Bulk Leftover Food — Name + Contact</label><input class="form-input" data-cf="bulkLeftoverContact" value="${esc(r.bulkLeftoverContact)}"></div>
           <div class="form-group full"><label class="form-label">Who's Taking Home Bulk Leftover Alcohol — Name + Contact</label><input class="form-input" data-cf="bulkLeftoverAlcoholContact" value="${esc(r.bulkLeftoverAlcoholContact)}"></div>
@@ -6799,7 +6826,7 @@
           <label class="check-item"><input type="radio" name="cf-lastdance-${idPrefix}" value="no" data-cf="privateLastDance" ${!r.privateLastDance?"checked":""}><span>No</span></label>
         </div>
         <div class="form-group" style="margin-bottom:12px;max-width:340px;"><label class="form-label">Final Song</label><input class="form-input" data-cf="lastDanceSong" value="${esc(r.lastDanceSong)}"></div>
-        ${r.privateLastDance ? `<div class="amd-row"><div class="amd-key">Auto-Calculated Start Time</div><div class="amd-val">${lastDanceTime ? esc(lastDanceTime) + ` <span style="color:var(--mid-gray);font-size:11px;">(40 min before venue rental ends at ${esc(venueEnd)} — lights come up 30 min prior)</span>` : "Venue rental end time isn't set yet (admin sets this) — can't calculate."}</div></div>` : ""}
+        ${r.privateLastDance ? `<div class="amd-row"><div class="amd-key">Auto-Calculated Start Time</div><div class="amd-val">${lastDanceTime ? esc(lastDanceTime) + ` <span style="color:var(--mid-gray);font-size:11px;">(40 min before venue rental ends at ${esc(display12h(venueEnd))} — lights come up 30 min prior)</span>` : "Venue rental end time isn't set yet (admin sets this) — can't calculate."}</div></div>` : ""}
         <p style="font-size:11px;color:var(--mid-gray);margin-top:10px;">Standing note: DJ/Band is responsible for asking guests to exit the property or move to the cocktail area during this private moment.</p>
 
         <div class="form-divider"></div>
@@ -8333,6 +8360,8 @@
     </section>
     <section style="background:var(--warm-white);padding:50px 24px 100px;">
       <div style="max-width:720px;margin:0 auto;">
+
+        <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 24px;font-style:italic;text-align:center;">Due by your final planning meeting (4 weeks before your wedding).</p>
 
         <div class="form-section-block">
           <span class="section-label">Venue Info</span>
@@ -10363,6 +10392,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 20px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>
     <div id="vendorcat-cards-caterer"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
@@ -10388,6 +10418,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 20px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>
     <div id="vendorcat-cards-dj"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
@@ -10413,6 +10444,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 20px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>
     <div id="vendorcat-cards-photo"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
@@ -10438,6 +10470,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 20px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>
     <div id="vendorcat-cards-florist"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('florist')">+ Add Another Florist/Design Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
@@ -10475,6 +10508,7 @@
         <span class="autosave-indicator" id="roster-save-indicator-hairmakeup">Saved</span>
       </div>
     </div>
+    <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 20px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>
     <div id="vendorcat-cards-hairmakeup"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
@@ -10500,6 +10534,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share this link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. They can't see any other vendor's information.</p>
+    <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 20px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>
     <div id="vendorcat-cards-shuttle"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>    <div class="form-section-block" style="margin-top:40px;">
       <h2 class="form-section-title">Couple's Social <em>Handles</em></h2>
       <p style="font-size:13px;color:var(--mid-gray);margin-bottom:20px;line-height:1.8;">Shared with every vendor on this event, so no one has to ask separately — read-only to vendors, only you can edit it.</p>
@@ -10525,6 +10560,7 @@
   </div>
   <div class="planning-form-wrap">
     <p style="font-size:14px;color:var(--mid-gray);margin-bottom:40px;line-height:1.8;font-style:italic;">Share each link and PIN with your vendor directly — they'll be dropped straight into their own tab, with no account needed. No vendor can see any other vendor's information.</p>
+    <p class="due-by-line" style="font-size:13px;letter-spacing:0.04em;color:var(--gold-dark);margin:0 0 20px;font-style:italic;">Due by your final planning meeting (4 weeks before your wedding).</p>
     <div id="vendorcat-cards-other"><p style="color:var(--mid-gray);font-size:13px;">Loading&hellip;</p></div>
     <button class="acc-btn-export" style="padding:10px 22px;font-size:10px;margin-top:8px;" onclick="window.addVendorHubSlot('other')">+ Add Vendor</button>
     <div class="form-section-block" style="margin-top:40px;">
