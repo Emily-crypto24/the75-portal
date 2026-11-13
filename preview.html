@@ -935,7 +935,7 @@
       const grid = document.getElementById("resources-grid");
       if (!grid) return;
       if (!items.length) { grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">No resources have been added yet.</p>'; return; }
-      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(safeUrl(r.linkUrl))}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${r.description}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
+      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(safeUrl(r.linkUrl))}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
     }
     // ── VENDOR MEETINGS (PLANNING TOOL) ──────────────────────────
     let vendorMeetingsCache = [];
