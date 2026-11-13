@@ -2076,7 +2076,7 @@
               guestListCache[idx] = { ...existing, ...rsvpFields, plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName };
             } else {
               guestListCache.push({
-                id: Date.now().toString() + Math.floor(Math.random()*1000),
+                id: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10),
                 guestName,
                 address: "",
                 plusOneAllowed: !!rsvpFields.plusOneName,
@@ -2552,8 +2552,15 @@
     window.confirmGuestImport = async function() {
       if (!currentUser || !pendingGuestImportRows.length) return;
       if (!canSave("guestList")) return;
-      const newEntries = pendingGuestImportRows.map(g => ({
-        id: Date.now().toString() + Math.floor(Math.random()*10000),
+      const importBatchStamp = Date.now().toString(36);
+      const newEntries = pendingGuestImportRows.map((g, i) => ({
+        // Index guarantees uniqueness within this import batch even when
+        // Date.now() ties across synchronous map() iterations (previously
+        // just a 0-9999 random suffix, which for a 100+ row import had a
+        // real chance of colliding -- a collision meant editing/deleting one
+        // imported guest silently affected the wrong one, since every guest
+        // action looks the row up by this id).
+        id: importBatchStamp + "-" + i + "-" + Math.random().toString(36).slice(2, 8),
         guestName: g.guestName,
         address: g.address,
         plusOneAllowed: g.plusOneAllowed,
