@@ -62,6 +62,16 @@
 
     let currentUser = null;
 
+    // ── ACCOUNT SWITCH GUARD ─────────────────────────────────────
+    // This page keeps one account's data in memory (lists, form fields, admin caches).
+    // Rather than try to clear every variable and field by hand, a page session only
+    // ever serves ONE account: signing out, or signing in as a different uid, reloads
+    // the page so nothing from the previous account can survive.
+    // sessionUid is set once an account's session is established (just after the
+    // email-verified gate) and cleared on the sign-in failure paths below, so the
+    // error messages those paths show are not wiped by a reload.
+    let sessionUid = null;
+
     // ── LOAD GUARD ───────────────────────────────────────────────
     // Every planning tool saves by writing its whole list back to the couple's
     // doc, so a save made before that list has loaded (or after its load
@@ -644,6 +654,8 @@
     // ── AUTH STATE ──────────────────────────────────────────────
     onAuthStateChanged(auth, async (user) => {
       if (isGuestViewMode) return;
+      if (user && sessionUid && sessionUid !== user.uid) { window.location.reload(); return; }
+      if (!user && sessionUid) { sessionUid = null; window.location.reload(); return; }
       if (user) {
         currentUser = user;
 
@@ -660,6 +672,7 @@
           return;
         }
 
+        sessionUid = user.uid;
         document.getElementById("login-screen").style.display = "none";
         if (isAdmin(user.email)) {
           document.getElementById("portal-root").style.display = "none";
@@ -699,6 +712,7 @@
               // other account -- an older one with no record, a first-time Google
               // sign-in, a staff address -- is only signed out, never deleted.
               console.error("Couldn't create the couple record:", e);
+              sessionUid = null; // nothing was loaded for this account; keep the message below on screen
               document.getElementById("admin-root").style.display = "none";
               document.getElementById("portal-root").style.display = "none";
               document.getElementById("login-screen").style.display = "flex";
@@ -3006,21 +3020,44 @@
     let adminTimelineCache = [];
     let editingAdminTimelineId = null;
 
+    // True only once the CURRENT target couple's timeline has been read successfully.
+    // Saves and deletes are refused until then, so a stale list (the previous couple's,
+    // or an empty one after a failed read) can never be written into this couple's record.
+    let adminTimelineReady = false;
+    let adminTimelineLoadSeq = 0; // lets a late read for a previous couple be ignored
+
     window.openClientTimeline = async function(uid, coupleName) {
       currentTimelineCoupleId = uid;
+      adminTimelineReady = false;
+      adminTimelineCache = [];
+      const seq = ++adminTimelineLoadSeq;
       document.getElementById("admin-timeline-modal-title").textContent = `${coupleName} — Client Timeline`;
       document.getElementById("admin-timeline-modal").style.display = "flex";
       window.adminResetTimelineForm();
+      const wrap = document.getElementById("admin-timeline-list");
+      if (wrap) wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">Loading this couple\'s timeline…</p>';
       try {
         const snap = await getDoc(doc(db, "couples", uid));
+        if (seq !== adminTimelineLoadSeq) return; // closed or switched to another couple meanwhile
         const data = snap.exists() ? snap.data() : {};
         adminTimelineCache = Array.isArray(data.timelineItems) ? data.timelineItems : [];
-      } catch(e) { adminTimelineCache = []; }
+        adminTimelineReady = true;
+      } catch(e) {
+        if (seq !== adminTimelineLoadSeq) return;
+        adminTimelineCache = [];
+        if (wrap) wrap.innerHTML = '<p style="color:#c0392b;font-size:13px;padding:12px 0;">We couldn\'t load this couple\'s timeline, so saving is paused to protect what is already there. Close this window and open it again.</p>';
+        return;
+      }
       renderAdminTimelineList();
     };
 
     window.closeClientTimeline = function() {
+      adminTimelineLoadSeq++;
+      adminTimelineReady = false;
+      adminTimelineCache = [];
       document.getElementById("admin-timeline-modal").style.display = "none";
+      const wrap = document.getElementById("admin-timeline-list");
+      if (wrap) wrap.innerHTML = "";
       currentTimelineCoupleId = null;
     };
 
@@ -3074,6 +3111,8 @@
 
     window.adminSaveTimelineItem = async function() {
       if (!currentTimelineCoupleId) return;
+      if (!adminTimelineReady) { alert("This couple's timeline hasn't finished loading (or couldn't be loaded), so saving is paused. Please wait a moment, or close this window and reopen it."); return; }
+      const targetUid = currentTimelineCoupleId;
       const activity = document.getElementById("admin-tl-activity").value.trim();
       if (!activity) { alert("Please enter an event or activity."); return; }
       const entry = {
@@ -3083,28 +3122,37 @@
         location: document.getElementById("admin-tl-location").value.trim(),
         notes: document.getElementById("admin-tl-notes").value.trim()
       };
+      const next = adminTimelineCache.slice();
       if (editingAdminTimelineId) {
-        const idx = adminTimelineCache.findIndex(x => x.id === editingAdminTimelineId);
-        if (idx > -1) adminTimelineCache[idx] = entry; else adminTimelineCache.push(entry);
+        const idx = next.findIndex(x => x.id === editingAdminTimelineId);
+        if (idx > -1) next[idx] = entry; else next.push(entry);
       } else {
-        adminTimelineCache.push(entry);
+        next.push(entry);
       }
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
-        window.adminResetTimelineForm();
-        renderAdminTimelineList();
+        await ud(dc(db, "couples", targetUid), { timelineItems: next });
+        if (targetUid === currentTimelineCoupleId && adminTimelineReady) {
+          adminTimelineCache = next;
+          window.adminResetTimelineForm();
+          renderAdminTimelineList();
+        }
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
     window.adminDeleteTimelineItem = async function(id) {
       if (!currentTimelineCoupleId) return;
+      if (!adminTimelineReady) { alert("This couple's timeline hasn't finished loading (or couldn't be loaded), so deleting is paused. Please wait a moment, or close this window and reopen it."); return; }
       if (!confirm("Remove this timeline item?")) return;
-      adminTimelineCache = adminTimelineCache.filter(x => x.id !== id);
+      const targetUid = currentTimelineCoupleId;
+      const next = adminTimelineCache.filter(x => x.id !== id);
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
-        renderAdminTimelineList();
+        await ud(dc(db, "couples", targetUid), { timelineItems: next });
+        if (targetUid === currentTimelineCoupleId && adminTimelineReady) {
+          adminTimelineCache = next;
+          renderAdminTimelineList();
+        }
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
@@ -3799,6 +3847,20 @@
       const coupleId = document.getElementById("lo-coupleId").value;
       if (!coupleId) { alert("Please select a couple."); return; }
       const c = allCouplesCache.find(x => x.id === coupleId);
+      // Editing (the couple dropdown is locked to that order) replaces its own order on purpose.
+      // Adding for a couple that already has an order would silently replace it, so check the
+      // stored copy first (a fresh read, not the page's list, which may be out of date) and ask.
+      if (editingLinenOrderCoupleId !== coupleId) {
+        try {
+          const { doc: dc0, getDoc: gd0 } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+          const existing = await gd0(dc0(db, "linenOrders", coupleId));
+          if (existing.exists()) {
+            const ex = existing.data();
+            const who = c ? coupleDisplayName(c) : (ex.coupleName || "This couple");
+            if (!confirm(`${who} already has a linen order (status: ${ex.status || "none"}, event date: ${ex.eventDate || "none"}).\n\nSaving will REPLACE it with what is in this form. Replace it?`)) return;
+          }
+        } catch(e) { alert("Couldn't check whether this couple already has a linen order, so nothing was saved: " + e.message); return; }
+      }
       const linenOrder = {
         coupleName: c ? coupleDisplayName(c) : "",
         eventDate: document.getElementById("lo-eventDate").value,
