@@ -3501,49 +3501,139 @@
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
 
+    // ── AUTOSAVE: ONE FIELD AT A TIME ───────────────────────────
+    // Every Meeting 1/2/3 control saves ITSELF (just the field that changed) 0.8 s after the
+    // last change. Nothing here ever writes a field the couple did not change.
+    //   pendingSaves  - changes still waiting out the 0.8 s delay
+    //   failedSaves   - changes whose write did NOT go through; the value is still on the page
+    //   inFlightSaves - writes that have been sent and not yet answered
+    // The "Save Progress" button uses the same pipeline (see saveSection below): it only
+    // hurries up pending changes, retries failed ones, waits, and reports honestly.
+    const SAVE_TIMEOUT_MS = 10000; // an unanswered write (offline / server unreachable) counts as NOT saved after this
+    const pendingSaves = {};
+    const failedSaves = {};
+    const inFlightSaves = {};
+    const latestSaveSeq = {};
+    let saveSeq = 0;
+
+    function runFieldSave(entry) {
+      const { key, meeting, field, value, uid, seq } = entry;
+      // A change typed while a different account was signed in is never written to this one.
+      if (!currentUser || currentUser.uid !== uid) return Promise.resolve(true);
+      let w;
+      try { w = updateDoc(doc(db, "couples", uid), { [key]: value }); }
+      catch (e) { w = Promise.reject(e); }
+      const onSaved = () => {
+        if (failedSaves[key] === entry) delete failedSaves[key];
+        showSaveIndicator(meeting, "saved");
+        updateProgress(meeting);
+        if (meeting === "meeting1" && PUBLIC_PROFILE_FIELDS.includes(field)) syncPublicProfile(uid);
+      };
+      const p = new Promise(resolve => {
+        const timer = setTimeout(() => resolve(false), SAVE_TIMEOUT_MS);
+        w.then(() => { clearTimeout(timer); onSaved(); resolve(true); },
+               () => { clearTimeout(timer); resolve(false); });
+      }).then(ok => {
+        if (!ok) {
+          // Only remember the failure if the couple has not typed a newer value in this field since.
+          if (latestSaveSeq[key] === seq) failedSaves[key] = entry;
+          showSaveIndicator(meeting, "error");
+        }
+        return ok;
+      });
+      inFlightSaves[key] = p;
+      p.then(() => { if (inFlightSaves[key] === p) delete inFlightSaves[key]; });
+      return p;
+    }
+
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
       if (!isLoaded("forms")) { showSaveIndicator(meeting, "error"); return; }
       const key = `${meeting}.${field}`;
       clearTimeout(autoSaveTimers[key]);
-      autoSaveTimers[key] = setTimeout(async () => {
-        try {
-          await updateDoc(doc(db, "couples", currentUser.uid), {
-            [`${meeting}.${field}`]: value
-          });
-          showSaveIndicator(meeting, "saved");
-          updateProgress(meeting);
-          if (meeting === "meeting1" && PUBLIC_PROFILE_FIELDS.includes(field)) syncPublicProfile(currentUser.uid);
-        } catch(e) { showSaveIndicator(meeting, "error"); }
+      delete failedSaves[key]; // the newer value replaces whatever failed before
+      const entry = { key, meeting, field, value, uid: currentUser.uid, seq: ++saveSeq };
+      latestSaveSeq[key] = entry.seq;
+      pendingSaves[key] = entry;
+      autoSaveTimers[key] = setTimeout(() => {
+        if (pendingSaves[key] !== entry) return;
+        delete pendingSaves[key];
+        runFieldSave(entry);
       }, 800);
     };
 
-    // ── MANUAL SAVE ─────────────────────────────────────────────
+    // ── SAVE PROGRESS BUTTON ────────────────────────────────────
+    // Does NOT collect or write the form. It (a) writes right now anything still waiting on the
+    // 0.8 s delay, (b) retries any change that failed earlier, (c) waits for every write to
+    // finish, then (d) says plainly whether everything is saved or something was NOT saved.
+    function saveMessageEl(btn, meeting) {
+      let el = document.getElementById(`save-msg-${meeting}`);
+      if (!el) {
+        el = document.createElement("div");
+        el.id = `save-msg-${meeting}`;
+        el.setAttribute("role", "status");
+        el.setAttribute("aria-live", "polite");
+        el.style.cssText = "margin-top:12px;font-size:13px;line-height:1.5;";
+        const row = btn.closest(".form-save-row") || btn.parentElement;
+        row.insertAdjacentElement("afterend", el);
+      }
+      return el;
+    }
+    function setSaveMessage(el, kind, text) {
+      clearTimeout(el._timer);
+      el.textContent = text;
+      el.style.color = kind === "error" ? "#c0392b" : "var(--gold-dark)";
+      el.style.fontWeight = kind === "error" ? "600" : "400";
+      if (kind === "ok") el._timer = setTimeout(() => { el.textContent = ""; }, 10000);
+    }
     window.saveSection = async function(meeting) {
       if (!currentUser) return;
-      if (!canSave("forms")) return;
       const btn = document.getElementById(`save-btn-${meeting}`);
+      const msg = saveMessageEl(btn, meeting);
+      if (!canSave("forms")) {
+        // Same alert (and, after a failed load, the same red banner) as before. Nothing is written,
+        // and any earlier "All changes saved" message is replaced so it cannot be mistaken for this press.
+        setSaveMessage(msg, "error", loadState.forms === "failed"
+          ? "⚠ NOT saved. We couldn't load your saved information, so saving is paused. Please refresh the page and try again."
+          : "⚠ NOT saved yet. Your saved information is still loading. Please wait a moment and press Save Progress again.");
+        return;
+      }
       btn.textContent = "Saving…";
       btn.disabled = true;
+      setSaveMessage(msg, "ok", "");
       try {
-        const fields = document.querySelectorAll(`[data-field^="${meeting}."]`);
-        const updates = {};
-        fields.forEach(el => {
-          const fieldKey = el.getAttribute("data-field").replace(`${meeting}.`, "");
-          if (el.type === "checkbox") updates[`${meeting}.${fieldKey}`] = el.checked;
-          else if (el.type === "radio") { if (el.checked) updates[`${meeting}.${fieldKey}`] = el.value; }
-          else updates[`${meeting}.${fieldKey}`] = el.value;
-        });
-        await updateDoc(doc(db, "couples", currentUser.uid), updates);
-        btn.textContent = "Saved!";
-        btn.style.background = "var(--gold)";
+        for (let round = 0; round < 5; round++) {
+          // (a) + (b): cancel the timers and write now; retry earlier failures.
+          const waiting = Object.values(pendingSaves);
+          Object.keys(pendingSaves).forEach(k => { clearTimeout(autoSaveTimers[k]); delete pendingSaves[k]; });
+          const retries = Object.values(failedSaves);
+          retries.forEach(e => { delete failedSaves[e.key]; });
+          [...waiting, ...retries].forEach(e => runFieldSave(e));
+          // (c): wait for every write that is on its way (these plus any autosave already sent).
+          const flights = Object.values(inFlightSaves);
+          if (!flights.length) break;
+          await Promise.all(flights);
+          if (Object.keys(failedSaves).length) break;
+          if (!Object.keys(pendingSaves).length) break;
+        }
         updateProgress(meeting);
-        if (meeting === "meeting1") syncPublicProfile(currentUser.uid);
-        setTimeout(() => { btn.textContent = "Save Progress"; btn.style.background = ""; btn.disabled = false; }, 10000);
+        const failed = Object.keys(failedSaves).length;
+        const stillWaiting = Object.keys(pendingSaves).length + Object.keys(inFlightSaves).length;
+        if (failed) {
+          setSaveMessage(msg, "error", `⚠ NOT saved. ${failed === 1 ? "One change" : failed + " changes"} could not be saved (check your internet connection). Your answers are still on this page, but they may be lost if you leave. Please press Save Progress to try again.`);
+        } else if (stillWaiting) {
+          setSaveMessage(msg, "error", "⚠ Some changes are still being saved. Please press Save Progress again in a moment.");
+        } else {
+          const t = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          setSaveMessage(msg, "ok", `✓ All changes saved at ${t}`);
+        }
       } catch(e) {
         console.error("Save Progress failed:", e);
-        btn.textContent = "Save Progress"; btn.disabled = false;
-        alert("Couldn't save your progress: " + e.message + "\nPlease check your connection and try again.");
+        setSaveMessage(msg, "error", "⚠ NOT saved. Something went wrong, so please press Save Progress to try again.");
+      } finally {
+        btn.textContent = "Save Progress";
+        btn.style.background = "";
+        btn.disabled = false;
       }
     };
 
