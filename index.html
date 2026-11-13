@@ -62,6 +62,16 @@
 
     let currentUser = null;
 
+    // ── ACCOUNT SWITCH GUARD ─────────────────────────────────────
+    // This page keeps one account's data in memory (lists, form fields, admin caches).
+    // Rather than try to clear every variable and field by hand, a page session only
+    // ever serves ONE account: signing out, or signing in as a different uid, reloads
+    // the page so nothing from the previous account can survive.
+    // sessionUid is set once an account's session is established (just after the
+    // email-verified gate) and cleared on the sign-in failure paths below, so the
+    // error messages those paths show are not wiped by a reload.
+    let sessionUid = null;
+
     // ── LOAD GUARD ───────────────────────────────────────────────
     // Every planning tool saves by writing its whole list back to the couple's
     // doc, so a save made before that list has loaded (or after its load
@@ -644,6 +654,8 @@
     // ── AUTH STATE ──────────────────────────────────────────────
     onAuthStateChanged(auth, async (user) => {
       if (isGuestViewMode) return;
+      if (user && sessionUid && sessionUid !== user.uid) { window.location.reload(); return; }
+      if (!user && sessionUid) { sessionUid = null; window.location.reload(); return; }
       if (user) {
         currentUser = user;
 
@@ -660,6 +672,7 @@
           return;
         }
 
+        sessionUid = user.uid;
         document.getElementById("login-screen").style.display = "none";
         if (isAdmin(user.email)) {
           document.getElementById("portal-root").style.display = "none";
@@ -699,6 +712,7 @@
               // other account -- an older one with no record, a first-time Google
               // sign-in, a staff address -- is only signed out, never deleted.
               console.error("Couldn't create the couple record:", e);
+              sessionUid = null; // nothing was loaded for this account; keep the message below on screen
               document.getElementById("admin-root").style.display = "none";
               document.getElementById("portal-root").style.display = "none";
               document.getElementById("login-screen").style.display = "flex";
@@ -3006,21 +3020,44 @@
     let adminTimelineCache = [];
     let editingAdminTimelineId = null;
 
+    // True only once the CURRENT target couple's timeline has been read successfully.
+    // Saves and deletes are refused until then, so a stale list (the previous couple's,
+    // or an empty one after a failed read) can never be written into this couple's record.
+    let adminTimelineReady = false;
+    let adminTimelineLoadSeq = 0; // lets a late read for a previous couple be ignored
+
     window.openClientTimeline = async function(uid, coupleName) {
       currentTimelineCoupleId = uid;
+      adminTimelineReady = false;
+      adminTimelineCache = [];
+      const seq = ++adminTimelineLoadSeq;
       document.getElementById("admin-timeline-modal-title").textContent = `${coupleName} — Client Timeline`;
       document.getElementById("admin-timeline-modal").style.display = "flex";
       window.adminResetTimelineForm();
+      const wrap = document.getElementById("admin-timeline-list");
+      if (wrap) wrap.innerHTML = '<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:12px 0;">Loading this couple\'s timeline…</p>';
       try {
         const snap = await getDoc(doc(db, "couples", uid));
+        if (seq !== adminTimelineLoadSeq) return; // closed or switched to another couple meanwhile
         const data = snap.exists() ? snap.data() : {};
         adminTimelineCache = Array.isArray(data.timelineItems) ? data.timelineItems : [];
-      } catch(e) { adminTimelineCache = []; }
+        adminTimelineReady = true;
+      } catch(e) {
+        if (seq !== adminTimelineLoadSeq) return;
+        adminTimelineCache = [];
+        if (wrap) wrap.innerHTML = '<p style="color:#c0392b;font-size:13px;padding:12px 0;">We couldn\'t load this couple\'s timeline, so saving is paused to protect what is already there. Close this window and open it again.</p>';
+        return;
+      }
       renderAdminTimelineList();
     };
 
     window.closeClientTimeline = function() {
+      adminTimelineLoadSeq++;
+      adminTimelineReady = false;
+      adminTimelineCache = [];
       document.getElementById("admin-timeline-modal").style.display = "none";
+      const wrap = document.getElementById("admin-timeline-list");
+      if (wrap) wrap.innerHTML = "";
       currentTimelineCoupleId = null;
     };
 
@@ -3074,6 +3111,8 @@
 
     window.adminSaveTimelineItem = async function() {
       if (!currentTimelineCoupleId) return;
+      if (!adminTimelineReady) { alert("This couple's timeline hasn't finished loading (or couldn't be loaded), so saving is paused. Please wait a moment, or close this window and reopen it."); return; }
+      const targetUid = currentTimelineCoupleId;
       const activity = document.getElementById("admin-tl-activity").value.trim();
       if (!activity) { alert("Please enter an event or activity."); return; }
       const entry = {
@@ -3083,28 +3122,37 @@
         location: document.getElementById("admin-tl-location").value.trim(),
         notes: document.getElementById("admin-tl-notes").value.trim()
       };
+      const next = adminTimelineCache.slice();
       if (editingAdminTimelineId) {
-        const idx = adminTimelineCache.findIndex(x => x.id === editingAdminTimelineId);
-        if (idx > -1) adminTimelineCache[idx] = entry; else adminTimelineCache.push(entry);
+        const idx = next.findIndex(x => x.id === editingAdminTimelineId);
+        if (idx > -1) next[idx] = entry; else next.push(entry);
       } else {
-        adminTimelineCache.push(entry);
+        next.push(entry);
       }
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
-        window.adminResetTimelineForm();
-        renderAdminTimelineList();
+        await ud(dc(db, "couples", targetUid), { timelineItems: next });
+        if (targetUid === currentTimelineCoupleId && adminTimelineReady) {
+          adminTimelineCache = next;
+          window.adminResetTimelineForm();
+          renderAdminTimelineList();
+        }
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
 
     window.adminDeleteTimelineItem = async function(id) {
       if (!currentTimelineCoupleId) return;
+      if (!adminTimelineReady) { alert("This couple's timeline hasn't finished loading (or couldn't be loaded), so deleting is paused. Please wait a moment, or close this window and reopen it."); return; }
       if (!confirm("Remove this timeline item?")) return;
-      adminTimelineCache = adminTimelineCache.filter(x => x.id !== id);
+      const targetUid = currentTimelineCoupleId;
+      const next = adminTimelineCache.filter(x => x.id !== id);
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db, "couples", currentTimelineCoupleId), { timelineItems: adminTimelineCache });
-        renderAdminTimelineList();
+        await ud(dc(db, "couples", targetUid), { timelineItems: next });
+        if (targetUid === currentTimelineCoupleId && adminTimelineReady) {
+          adminTimelineCache = next;
+          renderAdminTimelineList();
+        }
       } catch(e) { alert("Couldn't delete: " + e.message); }
     };
 
@@ -3453,49 +3501,139 @@
       } catch(e) { console.error("Public profile sync failed:", e); }
     }
 
+    // ── AUTOSAVE: ONE FIELD AT A TIME ───────────────────────────
+    // Every Meeting 1/2/3 control saves ITSELF (just the field that changed) 0.8 s after the
+    // last change. Nothing here ever writes a field the couple did not change.
+    //   pendingSaves  - changes still waiting out the 0.8 s delay
+    //   failedSaves   - changes whose write did NOT go through; the value is still on the page
+    //   inFlightSaves - writes that have been sent and not yet answered
+    // The "Save Progress" button uses the same pipeline (see saveSection below): it only
+    // hurries up pending changes, retries failed ones, waits, and reports honestly.
+    const SAVE_TIMEOUT_MS = 10000; // an unanswered write (offline / server unreachable) counts as NOT saved after this
+    const pendingSaves = {};
+    const failedSaves = {};
+    const inFlightSaves = {};
+    const latestSaveSeq = {};
+    let saveSeq = 0;
+
+    function runFieldSave(entry) {
+      const { key, meeting, field, value, uid, seq } = entry;
+      // A change typed while a different account was signed in is never written to this one.
+      if (!currentUser || currentUser.uid !== uid) return Promise.resolve(true);
+      let w;
+      try { w = updateDoc(doc(db, "couples", uid), { [key]: value }); }
+      catch (e) { w = Promise.reject(e); }
+      const onSaved = () => {
+        if (failedSaves[key] === entry) delete failedSaves[key];
+        showSaveIndicator(meeting, "saved");
+        updateProgress(meeting);
+        if (meeting === "meeting1" && PUBLIC_PROFILE_FIELDS.includes(field)) syncPublicProfile(uid);
+      };
+      const p = new Promise(resolve => {
+        const timer = setTimeout(() => resolve(false), SAVE_TIMEOUT_MS);
+        w.then(() => { clearTimeout(timer); onSaved(); resolve(true); },
+               () => { clearTimeout(timer); resolve(false); });
+      }).then(ok => {
+        if (!ok) {
+          // Only remember the failure if the couple has not typed a newer value in this field since.
+          if (latestSaveSeq[key] === seq) failedSaves[key] = entry;
+          showSaveIndicator(meeting, "error");
+        }
+        return ok;
+      });
+      inFlightSaves[key] = p;
+      p.then(() => { if (inFlightSaves[key] === p) delete inFlightSaves[key]; });
+      return p;
+    }
+
     window.saveField = async function(meeting, field, value) {
       if (!currentUser) return;
       if (!isLoaded("forms")) { showSaveIndicator(meeting, "error"); return; }
       const key = `${meeting}.${field}`;
       clearTimeout(autoSaveTimers[key]);
-      autoSaveTimers[key] = setTimeout(async () => {
-        try {
-          await updateDoc(doc(db, "couples", currentUser.uid), {
-            [`${meeting}.${field}`]: value
-          });
-          showSaveIndicator(meeting, "saved");
-          updateProgress(meeting);
-          if (meeting === "meeting1" && PUBLIC_PROFILE_FIELDS.includes(field)) syncPublicProfile(currentUser.uid);
-        } catch(e) { showSaveIndicator(meeting, "error"); }
+      delete failedSaves[key]; // the newer value replaces whatever failed before
+      const entry = { key, meeting, field, value, uid: currentUser.uid, seq: ++saveSeq };
+      latestSaveSeq[key] = entry.seq;
+      pendingSaves[key] = entry;
+      autoSaveTimers[key] = setTimeout(() => {
+        if (pendingSaves[key] !== entry) return;
+        delete pendingSaves[key];
+        runFieldSave(entry);
       }, 800);
     };
 
-    // ── MANUAL SAVE ─────────────────────────────────────────────
+    // ── SAVE PROGRESS BUTTON ────────────────────────────────────
+    // Does NOT collect or write the form. It (a) writes right now anything still waiting on the
+    // 0.8 s delay, (b) retries any change that failed earlier, (c) waits for every write to
+    // finish, then (d) says plainly whether everything is saved or something was NOT saved.
+    function saveMessageEl(btn, meeting) {
+      let el = document.getElementById(`save-msg-${meeting}`);
+      if (!el) {
+        el = document.createElement("div");
+        el.id = `save-msg-${meeting}`;
+        el.setAttribute("role", "status");
+        el.setAttribute("aria-live", "polite");
+        el.style.cssText = "margin-top:12px;font-size:13px;line-height:1.5;";
+        const row = btn.closest(".form-save-row") || btn.parentElement;
+        row.insertAdjacentElement("afterend", el);
+      }
+      return el;
+    }
+    function setSaveMessage(el, kind, text) {
+      clearTimeout(el._timer);
+      el.textContent = text;
+      el.style.color = kind === "error" ? "#c0392b" : "var(--gold-dark)";
+      el.style.fontWeight = kind === "error" ? "600" : "400";
+      if (kind === "ok") el._timer = setTimeout(() => { el.textContent = ""; }, 10000);
+    }
     window.saveSection = async function(meeting) {
       if (!currentUser) return;
-      if (!canSave("forms")) return;
       const btn = document.getElementById(`save-btn-${meeting}`);
+      const msg = saveMessageEl(btn, meeting);
+      if (!canSave("forms")) {
+        // Same alert (and, after a failed load, the same red banner) as before. Nothing is written,
+        // and any earlier "All changes saved" message is replaced so it cannot be mistaken for this press.
+        setSaveMessage(msg, "error", loadState.forms === "failed"
+          ? "⚠ NOT saved. We couldn't load your saved information, so saving is paused. Please refresh the page and try again."
+          : "⚠ NOT saved yet. Your saved information is still loading. Please wait a moment and press Save Progress again.");
+        return;
+      }
       btn.textContent = "Saving…";
       btn.disabled = true;
+      setSaveMessage(msg, "ok", "");
       try {
-        const fields = document.querySelectorAll(`[data-field^="${meeting}."]`);
-        const updates = {};
-        fields.forEach(el => {
-          const fieldKey = el.getAttribute("data-field").replace(`${meeting}.`, "");
-          if (el.type === "checkbox") updates[`${meeting}.${fieldKey}`] = el.checked;
-          else if (el.type === "radio") { if (el.checked) updates[`${meeting}.${fieldKey}`] = el.value; }
-          else updates[`${meeting}.${fieldKey}`] = el.value;
-        });
-        await updateDoc(doc(db, "couples", currentUser.uid), updates);
-        btn.textContent = "Saved!";
-        btn.style.background = "var(--gold)";
+        for (let round = 0; round < 5; round++) {
+          // (a) + (b): cancel the timers and write now; retry earlier failures.
+          const waiting = Object.values(pendingSaves);
+          Object.keys(pendingSaves).forEach(k => { clearTimeout(autoSaveTimers[k]); delete pendingSaves[k]; });
+          const retries = Object.values(failedSaves);
+          retries.forEach(e => { delete failedSaves[e.key]; });
+          [...waiting, ...retries].forEach(e => runFieldSave(e));
+          // (c): wait for every write that is on its way (these plus any autosave already sent).
+          const flights = Object.values(inFlightSaves);
+          if (!flights.length) break;
+          await Promise.all(flights);
+          if (Object.keys(failedSaves).length) break;
+          if (!Object.keys(pendingSaves).length) break;
+        }
         updateProgress(meeting);
-        if (meeting === "meeting1") syncPublicProfile(currentUser.uid);
-        setTimeout(() => { btn.textContent = "Save Progress"; btn.style.background = ""; btn.disabled = false; }, 10000);
+        const failed = Object.keys(failedSaves).length;
+        const stillWaiting = Object.keys(pendingSaves).length + Object.keys(inFlightSaves).length;
+        if (failed) {
+          setSaveMessage(msg, "error", `⚠ NOT saved. ${failed === 1 ? "One change" : failed + " changes"} could not be saved (check your internet connection). Your answers are still on this page, but they may be lost if you leave. Please press Save Progress to try again.`);
+        } else if (stillWaiting) {
+          setSaveMessage(msg, "error", "⚠ Some changes are still being saved. Please press Save Progress again in a moment.");
+        } else {
+          const t = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          setSaveMessage(msg, "ok", `✓ All changes saved at ${t}`);
+        }
       } catch(e) {
         console.error("Save Progress failed:", e);
-        btn.textContent = "Save Progress"; btn.disabled = false;
-        alert("Couldn't save your progress: " + e.message + "\nPlease check your connection and try again.");
+        setSaveMessage(msg, "error", "⚠ NOT saved. Something went wrong, so please press Save Progress to try again.");
+      } finally {
+        btn.textContent = "Save Progress";
+        btn.style.background = "";
+        btn.disabled = false;
       }
     };
 
@@ -3799,6 +3937,20 @@
       const coupleId = document.getElementById("lo-coupleId").value;
       if (!coupleId) { alert("Please select a couple."); return; }
       const c = allCouplesCache.find(x => x.id === coupleId);
+      // Editing (the couple dropdown is locked to that order) replaces its own order on purpose.
+      // Adding for a couple that already has an order would silently replace it, so check the
+      // stored copy first (a fresh read, not the page's list, which may be out of date) and ask.
+      if (editingLinenOrderCoupleId !== coupleId) {
+        try {
+          const { doc: dc0, getDoc: gd0 } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+          const existing = await gd0(dc0(db, "linenOrders", coupleId));
+          if (existing.exists()) {
+            const ex = existing.data();
+            const who = c ? coupleDisplayName(c) : (ex.coupleName || "This couple");
+            if (!confirm(`${who} already has a linen order (status: ${ex.status || "none"}, event date: ${ex.eventDate || "none"}).\n\nSaving will REPLACE it with what is in this form. Replace it?`)) return;
+          }
+        } catch(e) { alert("Couldn't check whether this couple already has a linen order, so nothing was saved: " + e.message); return; }
+      }
       const linenOrder = {
         coupleName: c ? coupleDisplayName(c) : "",
         eventDate: document.getElementById("lo-eventDate").value,
