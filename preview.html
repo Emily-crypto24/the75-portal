@@ -423,6 +423,7 @@
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
         if (btn) btn.classList.toggle("active", t === tab);
       });
+      window.updateGPMirrors();
     };
 
     function renderPhotoBox(boxId, url, placeholder) {
@@ -458,6 +459,25 @@
         const [y,m,d] = dateEl.value.split("-").map(Number);
         previewDate.textContent = new Date(y,m-1,d).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});
       } else if (previewDate) { previewDate.textContent = ""; }
+      window.updateGPMirrors();
+    };
+
+    // The Guest Portal shows six Planning Meeting 1 answers as read-only previews. They are not
+    // inputs and are never saved from here: the single source is the Planning Meeting 1 field.
+    const GP_MIRROR_KEYS = ["coupleNames","weddingDate","ceremonyTime","receptionTime","ceremonyLocation","ceremonyAddress"];
+    window.updateGPMirrors = function() {
+      GP_MIRROR_KEYS.forEach(key => {
+        const src = document.querySelector(`input[data-field="meeting1.${key}"]`);
+        let val = src ? (src.value || "").trim() : "";
+        if (key === "weddingDate" && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+          const [y,m,d] = val.split("-").map(Number);
+          val = new Date(y,m-1,d).toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"});
+        }
+        document.querySelectorAll(`[data-mirror="${key}"]`).forEach(el => {
+          el.textContent = val || "Not set yet";
+          el.classList.toggle("empty", !val);
+        });
+      });
     };
 
     window.switchGuestTab = function(tab) {
@@ -5204,6 +5224,9 @@
     .form-grid.single{grid-template-columns:1fr;}
     .form-group{display:flex;flex-direction:column;gap:8px;}
     .form-group.full{grid-column:1/-1;}
+    .gp-mirror{padding:11px 14px;background:var(--cream);border:1px solid var(--border);color:var(--charcoal);font-size:13px;font-weight:300;border-radius:1px;min-height:42px;line-height:1.5;}
+    .gp-mirror.empty{color:var(--mid-gray);font-style:italic;}
+    .gp-mirror-link{display:inline-block;margin-top:6px;font-size:11px;letter-spacing:0.06em;color:var(--gold-dark);text-decoration:underline;}
     .form-label{font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--charcoal);font-weight:400;}
     .form-label-note{font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;font-weight:300;display:block;margin-top:2px;}
     .form-input{padding:11px 14px;background:var(--warm-white);border:1px solid var(--border);color:var(--charcoal);font-family:var(--font-body);font-size:13px;font-weight:300;border-radius:1px;transition:border-color 0.2s;outline:none;width:100%;}
@@ -5775,7 +5798,7 @@
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Bride + Groom Full Names</label>
-          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Bride's Phone Number</label>
@@ -5787,7 +5810,7 @@
         </div>
         <div class="form-group">
           <label class="form-label">Wedding Date</label>
-          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value)">
+          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Wedding Planner Name &amp; Contact <span class="form-label-note">If applicable</span></label>
@@ -5795,19 +5818,19 @@
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Time <span class="form-label-note">Approximate is fine</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Reception Start Time <span class="form-label-note">Approximate is fine</span></label>
-          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Location Name <span class="form-label-note">If not at The Seventy Five</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Address <span class="form-label-note">Only if different from The Seventy Five</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Time of Guest Arrival</label>
@@ -7505,23 +7528,28 @@
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Couple Names</label>
-          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value);window.updateGPHomePreview();">
+          <div class="gp-mirror" data-mirror="coupleNames">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Wedding Date</label>
-          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value);window.updateGPHomePreview();">
+          <div class="gp-mirror" data-mirror="weddingDate">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Time</label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value)">
+          <div class="gp-mirror" data-mirror="ceremonyTime">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Reception Time</label>
-          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value)">
+          <div class="gp-mirror" data-mirror="receptionTime">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Location</label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
+          <div class="gp-mirror" data-mirror="ceremonyLocation">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
       </div>
       <div class="form-save-row" style="margin-top:24px;">
@@ -7551,7 +7579,8 @@
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Ceremony Address <span style="font-size:11px;color:var(--mid-gray);">(only if different from The Seventy Five)</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
+          <div class="gp-mirror" data-mirror="ceremonyAddress">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group full">
           <label class="form-label">Parking &amp; Additional Directions Notes</label>
@@ -7857,6 +7886,7 @@
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     const target = document.getElementById('page-' + pageId);
     if (target) { target.classList.add('active'); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    if (pageId === 'guestportal' && window.updateGPMirrors) window.updateGPMirrors();
   };
 </script>
 
