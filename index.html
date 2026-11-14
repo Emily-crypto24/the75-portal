@@ -528,7 +528,7 @@
           </div>` : ""}
         </div>
         <div class="form-save-row" style="margin-top:24px;">
-          <button class="btn-save" id="rsvp-submit-btn" onclick="window.submitGuestRSVP('${esc(data.slug)}')">Submit RSVP</button>
+          <button class="btn-save" id="rsvp-submit-btn" onclick="window.submitGuestRSVP('${jsq(data.slug)}')">Submit RSVP</button>
         </div>
         <div id="rsvp-submit-error" style="display:none;margin-top:14px;font-size:12px;color:#c0392b;"></div>`;
     }
@@ -600,7 +600,7 @@
           </div>` : ""}
         </div>
         <div class="form-save-row" style="margin-top:24px;">
-          <button class="btn-save" id="rsvp-submit-btn" onclick="window.submitGuestRSVP('${esc(guestGateData.slug)}')">Update RSVP</button>
+          <button class="btn-save" id="rsvp-submit-btn" onclick="window.submitGuestRSVP('${jsq(guestGateData.slug)}')">Update RSVP</button>
         </div>
         <div id="rsvp-submit-error" style="display:none;margin-top:14px;font-size:12px;color:#c0392b;"></div>`;
       if (stored && stored.mealChoice) document.getElementById("rsvp-mealChoice") && (document.getElementById("rsvp-mealChoice").value = stored.mealChoice);
@@ -835,7 +835,7 @@
           <p style="font-size:13px;color:var(--mid-gray);line-height:1.8;word-break:break-all;">
             <a href="${esc(safeUrl(url))}" target="_blank" style="color:var(--gold-dark);">${esc(url)}</a>
           </p>
-          <button onclick="navigator.clipboard.writeText('${esc(url)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy Link';},1500);" style="margin-top:10px;background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;cursor:pointer;border-radius:1px;">Copy Link</button>`;
+          <button onclick="navigator.clipboard.writeText('${jsq(url)}');this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy Link';},1500);" style="margin-top:10px;background:none;border:1px solid var(--border);color:var(--mid-gray);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;padding:8px 16px;cursor:pointer;border-radius:1px;">Copy Link</button>`;
       }
       slots.forEach(slot => { slot.innerHTML = html; });
     }
@@ -993,9 +993,9 @@
               ${v.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(v.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editVendorMeeting('${v.id}')">Edit</button>
-              <button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.toggleVendorDone('${v.id}')">${v.done ? "&#8635; Mark Upcoming" : "&#10003; Mark Done"}</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteVendorMeeting('${v.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editVendorMeeting('${jsq(v.id)}')">Edit</button>
+              <button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.toggleVendorDone('${jsq(v.id)}')">${v.done ? "&#8635; Mark Upcoming" : "&#10003; Mark Done"}</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteVendorMeeting('${jsq(v.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -1195,9 +1195,9 @@
               ${f.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(f.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editFinanceEntry('${f.id}')">Edit</button>
-              ${!isPaidInFull ? `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.markFinancePaidInFull('${f.id}')">&#10003; Mark Paid in Full</button>` : `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.undoFinancePaidInFull('${f.id}')">&#8635; Undo Paid in Full</button>`}
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteFinanceEntry('${f.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editFinanceEntry('${jsq(f.id)}')">Edit</button>
+              ${!isPaidInFull ? `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.markFinancePaidInFull('${jsq(f.id)}')">&#10003; Mark Paid in Full</button>` : `<button class="acc-btn-archive" style="padding:8px 16px;font-size:10px;" onclick="window.undoFinancePaidInFull('${jsq(f.id)}')">&#8635; Undo Paid in Full</button>`}
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteFinanceEntry('${jsq(f.id)}')">Delete</button>
             </div>
           </div>
         </div>`;
@@ -1436,8 +1436,8 @@
               ${p.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(p.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editPlaceToStay('${p.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deletePlaceToStay('${p.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editPlaceToStay('${jsq(p.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deletePlaceToStay('${jsq(p.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -1543,8 +1543,8 @@
               ${t.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:6px;font-style:italic;">${esc(t.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editThingToDo('${t.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteThingToDo('${t.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editThingToDo('${jsq(t.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteThingToDo('${jsq(t.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -1639,8 +1639,8 @@
             <div style="font-size:12px;color:var(--mid-gray);margin-top:2px;word-break:break-all;">${esc(r.url||"")}</div>
           </div>
           <div style="display:flex;gap:8px;flex-shrink:0;">
-            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editRegistryLink('${r.id}')">Edit</button>
-            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteRegistryLink('${r.id}')">Delete</button>
+            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editRegistryLink('${jsq(r.id)}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteRegistryLink('${jsq(r.id)}')">Delete</button>
           </div>
         </div>`).join("");
     }
@@ -1721,8 +1721,8 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editRegistryItem('${r.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteRegistryItem('${r.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editRegistryItem('${jsq(r.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteRegistryItem('${jsq(r.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -1813,8 +1813,8 @@
             <div><div style="font-size:14px;color:var(--charcoal);">${esc(i.title||"")}</div><div style="font-size:12px;color:var(--mid-gray);">${esc(i.time||"")}</div></div>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editItineraryItem('${i.id}')">Edit</button>
-            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteItineraryItem('${i.id}')">Delete</button>
+            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editItineraryItem('${jsq(i.id)}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteItineraryItem('${jsq(i.id)}')">Delete</button>
           </div>
         </div>`).join("");
     }
@@ -1893,8 +1893,8 @@
             <div><div style="font-size:14px;color:var(--charcoal);">${esc(p.name||"")}</div><div style="font-size:12px;color:var(--gold-dark);">${esc(p.role||"")}</div></div>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editWeddingPartyMember('${p.id}')">Edit</button>
-            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteWeddingPartyMember('${p.id}')">Delete</button>
+            <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editWeddingPartyMember('${jsq(p.id)}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteWeddingPartyMember('${jsq(p.id)}')">Delete</button>
           </div>
         </div>`).join("");
     }
@@ -1976,8 +1976,8 @@
               <div style="font-size:13px;color:var(--mid-gray);margin-top:4px;">${esc(f.answer||"")}</div>
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;">
-              <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editFAQ('${f.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteFAQ('${f.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:6px 14px;font-size:10px;" onclick="window.editFAQ('${jsq(f.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.deleteFAQ('${jsq(f.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -2108,7 +2108,7 @@
       wrap.innerHTML = blockedGuestsCache.map(name => `
         <div class="note-item" style="padding:10px 0;display:flex;align-items:center;justify-content:space-between;">
           <span style="font-size:14px;color:var(--charcoal);">${esc(name)}</span>
-          <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.removeBlockedGuest('${esc(name).replace(/'/g,"\\'")}')">Unblock</button>
+          <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;" onclick="window.removeBlockedGuest('${jsq(name)}')">Unblock</button>
         </div>`).join("");
     }
 
@@ -2286,8 +2286,8 @@
               ${g.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(g.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editGuest('${g.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteGuest('${g.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editGuest('${jsq(g.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteGuest('${jsq(g.id)}')">Delete</button>
             </div>
           </div>
         </div>`;
@@ -2749,8 +2749,8 @@
               ${p.notes ? `<div style="font-size:12px;color:var(--charcoal);margin-top:8px;font-style:italic;">${esc(p.notes)}</div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editBachParty('${p.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteBachParty('${p.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editBachParty('${jsq(p.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteBachParty('${jsq(p.id)}')">Delete</button>
             </div>
           </div>
         </div>`;
@@ -2932,8 +2932,8 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editTimelineItem('${t.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteTimelineItem('${t.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editTimelineItem('${jsq(t.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteTimelineItem('${jsq(t.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -3085,8 +3085,8 @@
               </div>
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;">
-              <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.adminEditTimelineItem('${t.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.adminDeleteTimelineItem('${t.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.adminEditTimelineItem('${jsq(t.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.adminDeleteTimelineItem('${jsq(t.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -3206,12 +3206,12 @@
         const preview = (n.content || "").slice(0, 120);
         const dateStr = n.updatedAt ? new Date(n.updatedAt).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) + " · " + new Date(n.updatedAt).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}) : "";
         return `
-        <div style="border:1px solid var(--border);background:var(--cream);min-height:160px;padding:20px;display:flex;flex-direction:column;cursor:pointer;" onclick="window.editNote('${n.id}')">
+        <div style="border:1px solid var(--border);background:var(--cream);min-height:160px;padding:20px;display:flex;flex-direction:column;cursor:pointer;" onclick="window.editNote('${jsq(n.id)}')">
           <div style="font-size:15px;color:var(--charcoal);font-weight:500;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(n.title||"Untitled note")}</div>
           <div style="font-size:12px;color:var(--mid-gray);line-height:1.6;flex:1;overflow:hidden;">${esc(preview)}${(n.content||"").length > 120 ? "…" : ""}</div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;">
             <span style="font-size:10px;color:var(--mid-gray);letter-spacing:0.03em;">${dateStr ? "Edited " + dateStr : ""}</span>
-            <button onclick="event.stopPropagation();window.deleteNote('${n.id}')" style="background:none;border:none;color:var(--mid-gray);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Delete</button>
+            <button onclick="event.stopPropagation();window.deleteNote('${jsq(n.id)}')" style="background:none;border:none;color:var(--mid-gray);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Delete</button>
           </div>
         </div>`;
       }).join("");
@@ -3297,8 +3297,8 @@
               ${idea.link ? `<div style="font-size:12px;margin-top:6px;"><a href="${esc(safeUrl(idea.link))}" target="_blank" style="color:var(--gold-dark);">${esc(idea.link)}</a></div>` : ""}
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;">
-              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editIdea('${idea.id}')">Edit</button>
-              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteIdea('${idea.id}')">Delete</button>
+              <button class="acc-btn-view" style="padding:8px 16px;font-size:10px;" onclick="window.editIdea('${jsq(idea.id)}')">Edit</button>
+              <button class="acc-btn-export" style="padding:8px 16px;font-size:10px;" onclick="window.deleteIdea('${jsq(idea.id)}')">Delete</button>
             </div>
           </div>
         </div>`).join("");
@@ -3395,15 +3395,15 @@
         <div class="note-item" style="padding:14px 0;${isDone ? "opacity:0.6;" : ""}">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">
             <div style="flex:2;min-width:160px;font-size:14px;color:var(--charcoal);${isDone ? "text-decoration:line-through;" : ""}">${esc(item.text)}</div>
-            <input type="number" class="form-input" value="${item.quantity!==undefined && item.quantity!==null ? item.quantity : ""}" min="0" placeholder="Qty" style="flex:1;max-width:80px;" onchange="window.updateChecklistItem('${item.id}','quantity',this.value)">
-            <input type="number" class="form-input" value="${item.price!==undefined && item.price!==null ? item.price : ""}" min="0" step="0.01" placeholder="Price" style="flex:1;max-width:100px;" onchange="window.updateChecklistItem('${item.id}','price',this.value)">
-            <select class="form-input" style="flex:1;max-width:160px;" onchange="window.updateChecklistItem('${item.id}','status',this.value)">
+            <input type="number" class="form-input" value="${item.quantity!==undefined && item.quantity!==null ? item.quantity : ""}" min="0" placeholder="Qty" style="flex:1;max-width:80px;" onchange="window.updateChecklistItem('${jsq(item.id)}','quantity',this.value)">
+            <input type="number" class="form-input" value="${item.price!==undefined && item.price!==null ? item.price : ""}" min="0" step="0.01" placeholder="Price" style="flex:1;max-width:100px;" onchange="window.updateChecklistItem('${jsq(item.id)}','price',this.value)">
+            <select class="form-input" style="flex:1;max-width:160px;" onchange="window.updateChecklistItem('${jsq(item.id)}','status',this.value)">
               <option value="Need to Purchase" ${item.status === "Need to Purchase" || !item.status ? "selected" : ""}>Need to Purchase</option>
               <option value="Purchased" ${item.status === "Purchased" ? "selected" : ""}>Purchased</option>
               <option value="Delivered" ${item.status === "Delivered" ? "selected" : ""}>Delivered</option>
             </select>
             <div style="flex-shrink:0;font-size:12px;color:var(--mid-gray);min-width:70px;text-align:right;">${formatMoney(lineTotal)}</div>
-            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;flex-shrink:0;" onclick="window.deleteChecklistItem('${item.id}')">Delete</button>
+            <button class="acc-btn-export" style="padding:6px 14px;font-size:10px;flex-shrink:0;" onclick="window.deleteChecklistItem('${jsq(item.id)}')">Delete</button>
           </div>
         </div>`;
       }).join("");
@@ -3890,8 +3890,8 @@
           <td style="padding:10px 12px;border:1px solid var(--border);">${formatMoney(paid)}</td>
           <td style="padding:10px 12px;border:1px solid var(--border);color:${isComplete ? '#a8a29a' : (balance > 0 ? '#c0392b' : 'var(--charcoal)')};">${formatMoney(balance)}</td>
           <td style="padding:10px 12px;border:1px solid var(--border);white-space:nowrap;">
-            <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.editLinenOrder('${lo.coupleId}')">Edit</button>
-            <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.deleteLinenOrder('${lo.coupleId}')">Delete</button>
+            <button class="acc-btn-view" style="padding:6px 12px;font-size:10px;" onclick="window.editLinenOrder('${jsq(lo.coupleId)}')">Edit</button>
+            <button class="acc-btn-export" style="padding:6px 12px;font-size:10px;" onclick="window.deleteLinenOrder('${jsq(lo.coupleId)}')">Delete</button>
           </td>
         </tr>`;
       }).join("");
@@ -4079,14 +4079,14 @@
             ${[["M1",m1],["M2",m2],["M3",m3]].map(([l,p]) => `<div class="acc-prog-row"><span class="acc-prog-label">${l}</span><div class="acc-prog-track"><div class="acc-prog-fill" style="width:${p}%"></div></div><span class="acc-prog-pct">${p}%</span></div>`).join("")}
           </div>
           <div class="acc-actions">
-            <button class="acc-btn-view" onclick="window.openCouple('${c.id}')">View / Edit</button>
-            <button class="acc-btn-export" onclick="window.exportCouple('${c.id}','${esc(names)}')">&#8595; Export</button>
+            <button class="acc-btn-view" onclick="window.openCouple('${jsq(c.id)}')">View / Edit</button>
+            <button class="acc-btn-export" onclick="window.exportCouple('${jsq(c.id)}','${jsq(names)}')">&#8595; Export</button>
           </div>
-          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openDayOfDisplay('${c.id}')">&#128250; Day-Of TV Display</button>
-          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:#3a3a3a;" onclick="window.openCloseoutSheet('${c.id}')">&#128424;&#65039; Event Closeout Sheet</button>
-          <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${c.id}','${esc(names)}')">&#128197; View Client Timeline</button>
-          <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${esc(c.email||"")}')">&#128274; Send Password Reset</button>
-          <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${c.id}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:var(--gold-dark);" onclick="window.openDayOfDisplay('${jsq(c.id)}')">&#128250; Day-Of TV Display</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;background:#3a3a3a;" onclick="window.openCloseoutSheet('${jsq(c.id)}')">&#128424;&#65039; Event Closeout Sheet</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.openClientTimeline('${jsq(c.id)}','${jsq(names)}')">&#128197; View Client Timeline</button>
+          <button class="acc-btn-view" style="width:100%;margin-top:8px;" onclick="window.sendCouplePasswordReset('${jsq(c.email||"")}')">&#128274; Send Password Reset</button>
+          <button class="acc-btn-archive" onclick="window.toggleCoupleStatus('${jsq(c.id)}','${isCompleted ? "active" : "completed"}')">${isCompleted ? "&#8635; Restore to Active" : "&#128193; Archive Project"}</button>
         </div>`;
       }).join("");
     }
@@ -4123,6 +4123,14 @@
     }
 
     function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+    // For a value placed inside a single-quoted string in an inline handler attribute
+    // (onclick="doThing('${jsq(value)}')"). The browser decodes the attribute's HTML first and
+    // then runs the result as JavaScript, so the value has to be escaped for JavaScript first
+    // (backslash, quote, line breaks) and then for HTML. esc() alone is not enough here.
+    function jsq(s) {
+      return esc(String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/\r/g,"\\r").replace(/\n/g,"\\n").replace(/\u2028/g,"\\u2028").replace(/\u2029/g,"\\u2029"));
+    }
 
     // esc() only HTML-escapes -- it doesn't stop a couple-entered link (Places to
     // Stay, Things to Do, Registry, Ideas) from carrying a javascript:/data:/
@@ -4179,7 +4187,7 @@
           <div class="amd-val"><input class="amd-input" type="text" id="lc-phone-${uid}" value="${esc(lc.phone||"")}" placeholder="614.555.1234"></div>
         </div>
         <div style="text-align:right;margin-top:12px;">
-          <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveLeadCoordinator('${uid}')">Save Coordinator</button>
+          <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveLeadCoordinator('${jsq(uid)}')">Save Coordinator</button>
         </div>
       </div>`;
 
@@ -4191,14 +4199,14 @@
             <div class="note-item">
               <div class="note-meta" style="display:flex;justify-content:space-between;align-items:center;">
                 <span><span class="note-author">${esc(n.author||"Unknown")}</span> &middot; <span class="note-date">${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span></span>
-                <button onclick="window.deleteCoupleNote('${uid}',${origIdx})" style="background:none;border:none;color:var(--mid-gray);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Delete</button>
+                <button onclick="window.deleteCoupleNote('${jsq(uid)}',${origIdx})" style="background:none;border:none;color:var(--mid-gray);font-size:11px;text-decoration:underline;cursor:pointer;padding:0;">Delete</button>
               </div>
               <div class="note-text">${esc(n.text||"")}</div>
             </div>`; }).join("") : `<p style="color:var(--mid-gray);font-size:13px;font-style:italic;padding:8px 0;">No internal notes yet.</p>`}
         </div>
         <div class="note-add-row">
           <textarea class="amd-input amd-textarea" id="note-input-${uid}" placeholder="Add an internal note about this couple..." rows="2"></textarea>
-          <button class="acc-btn-view" style="padding:10px 20px;font-size:10px;white-space:nowrap;" onclick="window.addNote('${uid}')">Add Note</button>
+          <button class="acc-btn-view" style="padding:10px 20px;font-size:10px;white-space:nowrap;" onclick="window.addNote('${jsq(uid)}')">Add Note</button>
         </div>
       </div>`;
 
@@ -4237,12 +4245,12 @@
           <div class="amd-stitle">${m.label}</div>
           ${textRows}${checkRows}
           <div style="text-align:right;margin-top:12px;">
-            <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveAdminSection('${uid}','${m.key}')">Save ${m.label.split("—")[0].trim()}</button>
+            <button class="acc-btn-view" style="padding:8px 20px;font-size:10px;" onclick="window.saveAdminSection('${jsq(uid)}','${jsq(m.key)}')">Save ${m.label.split("—")[0].trim()}</button>
           </div>
         </div>`;
       }).join("");
       return coordinatorHTML + notesHTML + sections + `<div style="text-align:center;margin-top:24px;padding-bottom:16px;border-top:1px solid var(--border);padding-top:24px;">
-        <button class="acc-btn-export" style="padding:14px 40px;font-size:11px;" onclick="window.exportCouple('${uid}','couple')">&#8595; Export This Couple to CSV</button>
+        <button class="acc-btn-export" style="padding:14px 40px;font-size:11px;" onclick="window.exportCouple('${jsq(uid)}','couple')">&#8595; Export This Couple to CSV</button>
       </div>`;
     }
 
@@ -4430,7 +4438,7 @@
       if (!notes.length) { wrap.innerHTML = '<p style="color:rgba(253,250,246,0.35);font-size:12px;font-style:italic;">No notes yet.</p>'; return; }
       const sorted = notes.slice().reverse();
       wrap.innerHTML = sorted.map(n => `<div class="dof-note">
-        <div class="dof-note-meta"><span>${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span><button class="dof-note-del" onclick="window.dofDeleteNote('${n.id}')">Delete</button></div>
+        <div class="dof-note-meta"><span>${n.timestamp ? new Date(n.timestamp).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : ""}</span><button class="dof-note-del" onclick="window.dofDeleteNote('${jsq(n.id)}')">Delete</button></div>
         <div class="dof-note-text">${esc(n.text)}</div>
       </div>`).join("");
     }
@@ -4467,7 +4475,7 @@
       const val = (dofCurrentData.dayOf||{})[key] || "";
       return `<div class="dof-field">
         <div class="dof-field-label">${esc(labelText)}</div>
-        <div class="dof-field-val dof-editable ${val?"":"empty"}" id="dof-fv-${key}" onclick="window.dofStartEdit('${key}',${multiline?"true":"false"})">${val ? esc(val) : "Tap to add"}</div>
+        <div class="dof-field-val dof-editable ${val?"":"empty"}" id="dof-fv-${key}" onclick="window.dofStartEdit('${jsq(key)}',${multiline?"true":"false"})">${val ? esc(val) : "Tap to add"}</div>
       </div>`;
     }
 
@@ -4607,12 +4615,12 @@
     function clsField(labelText, key, isTextarea) {
       const val = (clsCurrentData.closeoutSheet||{})[key] || "";
       return isTextarea
-        ? `<div class="cls-field"><label>${esc(labelText)}</label><textarea class="cls-textarea" onblur="window.clsSaveField('${key}',this.value)">${esc(val)}</textarea></div>`
-        : `<div class="cls-field"><label>${esc(labelText)}</label><input class="cls-input" type="text" value="${esc(val)}" onblur="window.clsSaveField('${key}',this.value)"></div>`;
+        ? `<div class="cls-field"><label>${esc(labelText)}</label><textarea class="cls-textarea" onblur="window.clsSaveField('${jsq(key)}',this.value)">${esc(val)}</textarea></div>`
+        : `<div class="cls-field"><label>${esc(labelText)}</label><input class="cls-input" type="text" value="${esc(val)}" onblur="window.clsSaveField('${jsq(key)}',this.value)"></div>`;
     }
     function clsCheck(labelText, key) {
       const checked = (clsCurrentData.closeoutSheet||{})[key] ? "checked" : "";
-      return `<label style="display:flex;align-items:center;gap:6px;font-size:12px;"><input type="checkbox" ${checked} onchange="window.clsSaveField('${key}',this.checked)"> ${esc(labelText)}</label>`;
+      return `<label style="display:flex;align-items:center;gap:6px;font-size:12px;"><input type="checkbox" ${checked} onchange="window.clsSaveField('${jsq(key)}',this.checked)"> ${esc(labelText)}</label>`;
     }
     function clsStatic(labelText, val) {
       return `<div class="cls-field"><label>${esc(labelText)}</label><div class="cls-static">${val ? esc(val) : "&nbsp;"}</div></div>`;
@@ -4973,7 +4981,7 @@
         <div class="amd-section" data-row="${r._rowId}" style="border:1px solid var(--border);padding:20px;border-radius:2px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
             <span style="font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gold-dark);">Resource ${idx+1}</span>
-            <button style="background:none;border:none;color:#c0392b;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;" onclick="window.removeResourceRow('${r._rowId}')">Remove</button>
+            <button style="background:none;border:none;color:#c0392b;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;" onclick="window.removeResourceRow('${jsq(r._rowId)}')">Remove</button>
           </div>
           <div class="amd-row"><div class="amd-key">Title</div><div class="amd-val"><input class="amd-input" data-rf="title" value="${esc(r.title||"")}"></div></div>
           <div class="amd-row"><div class="amd-key">Description</div><div class="amd-val"><textarea class="amd-input amd-textarea" data-rf="description">${esc(r.description||"")}</textarea></div></div>
