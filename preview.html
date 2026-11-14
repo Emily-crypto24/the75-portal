@@ -3734,12 +3734,12 @@
       const partner2 = document.getElementById("signup-partner2").value.trim();
       const email = document.getElementById("signup-email").value.trim();
       const password = document.getElementById("signup-password").value;
-      const code = document.getElementById("signup-code").value.trim();
+      const code = normalizeSignupCode(document.getElementById("signup-code").value);
       const btn = document.getElementById("btn-signup");
       const isStaffEmail = isAdmin(email);
       if (!isStaffEmail && (!partner1 || !partner2)) { showSignupError("Please enter both partners' names."); return; }
       if (!email || !password) { showSignupError("Please enter an email and password."); return; }
-      if (!isStaffEmail && !/^\d{4}$/.test(code)) { showSignupError("Please enter the 4-digit signup code from your coordinator's email."); return; }
+      if (!isStaffEmail && !isValidSignupCodeFormat(code)) { showSignupError("Please enter the signup code from your coordinator's email (8 letters and numbers)."); return; }
       pendingCoupleNames = `${partner1} & ${partner2}`;
       pendingWeddingDate = document.getElementById("signup-weddingDate").value;
       pendingSlugBase = firstNameSlug(partner1) + "and" + firstNameSlug(partner2);
@@ -4157,6 +4157,26 @@
     // (backslash, quote, line breaks) and then for HTML. esc() alone is not enough here.
     function jsq(s) {
       return esc(String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/\r/g,"\\r").replace(/\n/g,"\\n").replace(/\u2028/g,"\\u2028").replace(/\u2029/g,"\\u2029"));
+    }
+
+    // ── SIGNUP CODE FORMAT ───────────────────────────────────────
+    // New codes are 8 characters: capital letters and digits, leaving out the look-alikes
+    // 0, O, 1, I and L. The old 4-digit codes are still accepted until the owner changes the
+    // code. What a couple types is trimmed (spaces anywhere are dropped) and capitalised before
+    // it is compared, and the stored code is always saved in that same form.
+    const SIGNUP_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    const SIGNUP_CODE_NEW_RE = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$/;
+    const SIGNUP_CODE_OLD_RE = /^\d{4}$/;
+    function normalizeSignupCode(raw) { return String(raw == null ? "" : raw).replace(/\s+/g, "").toUpperCase(); }
+    function isValidSignupCodeFormat(code) { return SIGNUP_CODE_NEW_RE.test(code) || SIGNUP_CODE_OLD_RE.test(code); }
+    function generateSignupCode() {
+      const n = SIGNUP_CODE_ALPHABET.length, limit = 256 - (256 % n);
+      let out = "";
+      while (out.length < 8) {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        for (const b of bytes) { if (b < limit && out.length < 8) out += SIGNUP_CODE_ALPHABET[b % n]; }
+      }
+      return out;
     }
 
     // esc() only HTML-escapes -- it doesn't stop a couple-entered link (Places to
@@ -4841,6 +4861,8 @@
       if (copyBtn) copyBtn.style.display = "inline-block";
       if (changeBtn) changeBtn.style.display = "inline-block";
       if (saveBtn) saveBtn.style.display = "none";
+      const genBtn0 = document.getElementById("signup-code-gen-btn");
+      if (genBtn0) genBtn0.style.display = "none";
       if (modal) modal.style.display = "flex";
       try {
         const snap = await getDoc(doc(db, "settings", "signupCode"));
@@ -4859,7 +4881,7 @@
       const input = document.getElementById("signup-code-input");
       const status = document.getElementById("signup-code-status");
       const code = input ? input.value : "";
-      if (!/^\d{4}$/.test(code)) {
+      if (!isValidSignupCodeFormat(code)) {
         if (status) { status.textContent = "No valid code to copy yet."; status.style.color = "#c0392b"; status.style.display = "block"; }
         return;
       }
@@ -4909,10 +4931,20 @@
       const changeBtn = document.getElementById("signup-code-change-btn");
       const saveBtn = document.getElementById("signup-code-save-btn");
       if (scModal) scModal.style.display = "flex";
-      if (codeInput) { codeInput.disabled = false; codeInput.value = /^\d{4}$/.test(codeInput.value) ? codeInput.value : ""; codeInput.focus(); }
+      const genBtn = document.getElementById("signup-code-gen-btn");
+      if (codeInput) { codeInput.disabled = false; codeInput.value = isValidSignupCodeFormat(codeInput.value) ? codeInput.value : ""; codeInput.focus(); }
       if (copyBtn) copyBtn.style.display = "none";
       if (changeBtn) changeBtn.style.display = "none";
+      if (genBtn) genBtn.style.display = "inline-block";
       if (saveBtn) saveBtn.style.display = "inline-block";
+    };
+
+    // Fills the box with a fresh random code. Nothing is saved until Save is clicked.
+    window.generateSignupCodeInModal = function() {
+      const input = document.getElementById("signup-code-input");
+      const status = document.getElementById("signup-code-status");
+      if (input) input.value = generateSignupCode();
+      if (status) { status.textContent = "New code ready. Click Save to start using it."; status.style.color = "#2e7d32"; status.style.display = "block"; }
     };
 
     window.saveSignupCode = async function() {
@@ -4921,17 +4953,19 @@
       const copyBtn = document.getElementById("signup-code-copy-btn");
       const changeBtn = document.getElementById("signup-code-change-btn");
       const saveBtn = document.getElementById("signup-code-save-btn");
-      const code = input ? input.value.trim() : "";
-      if (!/^\d{4}$/.test(code)) {
-        if (status) { status.textContent = "Please enter exactly 4 digits."; status.style.color = "#c0392b"; status.style.display = "block"; }
+      const genBtn = document.getElementById("signup-code-gen-btn");
+      const code = normalizeSignupCode(input ? input.value : "");
+      if (!isValidSignupCodeFormat(code)) {
+        if (status) { status.textContent = "Please enter 8 letters and numbers (no 0, O, 1, I or L), or click Generate."; status.style.color = "#c0392b"; status.style.display = "block"; }
         return;
       }
       try {
         await setDoc(doc(db, "settings", "signupCode"), { code, updatedAt: new Date().toISOString() });
         if (status) { status.textContent = "Saved! Update the HoneyBook email template with this code."; status.style.color = "#2e7d32"; status.style.display = "block"; }
-        if (input) input.disabled = true;
+        if (input) { input.value = code; input.disabled = true; }
         if (copyBtn) copyBtn.style.display = "inline-block";
         if (changeBtn) changeBtn.style.display = "inline-block";
+        if (genBtn) genBtn.style.display = "none";
         if (saveBtn) saveBtn.style.display = "none";
       } catch (e) {
         if (status) { status.textContent = "Something went wrong saving the code. Please try again."; status.style.color = "#c0392b"; status.style.display = "block"; }
@@ -5100,6 +5134,7 @@
     .login-or span{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:rgba(253,250,246,0.25);}
     .login-input{width:100%;padding:12px 16px;background:rgba(253,250,246,0.05);border:1px solid rgba(232,224,213,0.15);color:var(--warm-white);font-family:var(--font-body);font-size:14px;font-weight:300;border-radius:1px;margin-bottom:12px;transition:border-color 0.2s;outline:none;}
     .login-input::placeholder{color:rgba(253,250,246,0.3);}
+    #signup-code::placeholder{text-transform:none;}
     .login-input:focus{border-color:rgba(184,150,90,0.5);}
     .btn-email{width:100%;padding:13px 20px;background:var(--gold);border:none;color:var(--warm-white);font-family:var(--font-body);font-size:11px;letter-spacing:0.2em;text-transform:uppercase;cursor:pointer;transition:background 0.25s;border-radius:1px;}
     .btn-email:hover{background:var(--gold-dark);}
@@ -5601,7 +5636,7 @@
       <input class="login-input" type="date" id="signup-weddingDate" style="color-scheme:dark;"/>
       <input class="login-input" type="email" id="signup-email" placeholder="Email address" autocomplete="email"/>
       <input class="login-input" type="password" id="signup-password" placeholder="Create a password" autocomplete="new-password"/>
-      <input class="login-input" type="text" inputmode="numeric" maxlength="4" id="signup-code" placeholder="4-digit code (from your coordinator's email)" autocomplete="off"/>
+      <input class="login-input" type="text" maxlength="12" id="signup-code" placeholder="Signup code (from your coordinator's email)" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" style="text-transform:uppercase;"/>
       <button class="btn-email" id="btn-signup" onclick="window.createAccount()">Create Account</button>
       <div id="signup-error"></div>
       <p class="login-footer-note">One shared account links both of you to the same planning portal.</p>
@@ -8188,11 +8223,12 @@
       <span onclick="window.closeSignupCodeModal()" style="position:absolute;top:16px;right:20px;font-size:22px;color:var(--mid-gray);cursor:pointer;line-height:1;">&times;</span>
       <div style="font-size:28px;margin-bottom:8px;text-align:center;">&#128273;</div>
       <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:400;color:var(--charcoal);margin-bottom:8px;text-align:center;">Couple Signup Code</h2>
-      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:20px;line-height:1.6;text-align:center;">The 4-digit code couples need to create an account. Copy it into your HoneyBook welcome email template. Only venue ownership can change it.</p>
+      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:20px;line-height:1.6;text-align:center;">The code couples need to create an account (8 letters and numbers; older 4-digit codes keep working until you change it). Copy it into your HoneyBook welcome email template. Only venue ownership can change it.</p>
       <label style="display:block;font-size:11px;letter-spacing:0.06em;color:var(--mid-gray);margin-bottom:6px;">Current Code</label>
-      <input type="text" inputmode="numeric" maxlength="4" id="signup-code-input" class="login-input" disabled style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
+      <input type="text" maxlength="12" id="signup-code-input" class="login-input" disabled autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off" style="text-align:center;letter-spacing:0.25em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);text-transform:uppercase;" placeholder="••••••••">
       <p id="signup-code-status" style="display:none;font-size:12px;margin-top:10px;text-align:center;"></p>
-      <div style="display:flex;gap:10px;margin-top:20px;">
+      <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;">
+        <button class="btn-back" id="signup-code-gen-btn" style="flex:1 1 100%;display:none;" onclick="window.generateSignupCodeInModal()">Generate New Code</button>
         <button class="btn-back" id="signup-code-copy-btn" style="flex:1;" onclick="window.copySignupCode()">Copy Code</button>
         <button class="btn-save" id="signup-code-change-btn" style="flex:1;" onclick="window.requestSignupCodeChange()">Change Code</button>
         <button class="btn-save" id="signup-code-save-btn" style="flex:1;display:none;" onclick="window.saveSignupCode()">Save</button>
