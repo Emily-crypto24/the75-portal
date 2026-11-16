@@ -381,8 +381,8 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
  */
 const NOTE_FIELD_ALLOWLIST = ["notes", "barNotes"];
 // A note id is only ever a short token the page makes ("n" + base-36). It is used as an HTML id and
-// inside click handlers on the pages, so anything else (quotes, spaces, <, >, unicode, or over 100
-// characters) is refused outright rather than trimmed.
+// inside click handlers on the pages, so a NEW note whose id is anything else (quotes, spaces, <, >,
+// unicode, or over 100 characters) is refused outright rather than trimmed.
 const NOTE_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
 exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }, async (request) => {
@@ -427,7 +427,7 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
     const cleanNotes = [];
     const seenIds = new Set();
     for (const n of newNotes) {
-      if (!n || typeof n !== "object" || typeof n.id !== "string" || seenIds.has(n.id) || !NOTE_ID_RE.test(n.id)) {
+      if (!n || typeof n !== "object" || typeof n.id !== "string" || seenIds.has(n.id)) {
         throw new HttpsError("invalid-argument", "Malformed notes payload.");
       }
       seenIds.add(n.id);
@@ -457,8 +457,11 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
         }
         cleanNotes.push(kept);
       } else {
-        // Brand-new note -- must be attributed to the caller, not forged as
-        // someone else's.
+        // Brand-new note -- its id must be a plain token (see NOTE_ID_RE). A note that is
+        // ALREADY stored keeps whatever id it has (the pages now render ids safely), so an
+        // odd old id can never lock a vendor out of saving.
+        if (!NOTE_ID_RE.test(n.id)) throw new HttpsError("invalid-argument", "Malformed notes payload.");
+        // Must be attributed to the caller, not forged as someone else's.
         cleanNotes.push({
           id: n.id.slice(0, 100),
           text,

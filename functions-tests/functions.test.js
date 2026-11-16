@@ -311,6 +311,17 @@ describe("saveVendorSlotNotes: note id validation", () => {
       assert.equal(store.get(SLOTP).notes.length, 1); assert.equal(store.get(SLOTP).notes[0].id, "keep1");
     });
   }
+  test("an id that is ALREADY stored (even an odd one) is kept; it never blocks the vendor from saving other notes", async () => {
+    seed({ secrets: { sessionEpoch: EP } });
+    const odd = "legacy \"odd\" id'1";
+    store.get(SLOTP).notes = [{ id: odd, text: "old", authorKey: KEY, author: "C", lastEditedAt: "t" }, { id: "couplenote'x", text: "c", authorKey: "couple", author: "Couple", lastEditedAt: "t" }];
+    const r = await save([{ id: odd, text: "old, edited" }, { id: "couplenote'x", text: "c" }, { id: "fresh1", text: "new", author: "C" }]);
+    assert.ok(r.ok, r.msg);
+    assert.deepEqual(store.get(SLOTP).notes.map((n) => n.id), [odd, "couplenote'x", "fresh1"]);
+    assert.equal(store.get(SLOTP).notes[0].text, "old, edited");
+    // ... but a NEW note with an odd id is still refused in the same request
+    assert.equal((await save([{ id: odd, text: "old, edited" }, { id: "couplenote'x", text: "c" }, { id: "fresh1", text: "new" }, { id: "bad'new", text: "x" }])).code, "invalid-argument");
+  });
   test("a non-string id is refused", async () => {
     seedEmpty(); assert.equal((await save([{ id: 5, text: "x" }])).code, "invalid-argument");
     assert.equal((await save([{ id: null, text: "x" }])).code, "invalid-argument");
