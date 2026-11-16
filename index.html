@@ -423,6 +423,7 @@
         if (panel) panel.style.display = (t === tab) ? "block" : "none";
         if (btn) btn.classList.toggle("active", t === tab);
       });
+      window.updateGPMirrors();
     };
 
     function renderPhotoBox(boxId, url, placeholder) {
@@ -439,11 +440,33 @@
       }
     }
 
+    // Photo boxes take a WEB LINK, never the photo itself. A pasted "data:" link (the picture's
+    // own bytes) or a very long link used to be accepted and could grow the saved page past
+    // Firestore's 1 MiB per-document limit. Returns "" when the entry is fine (an empty entry
+    // removes the photo), otherwise a friendly message.
+    const PHOTO_LINK_MAX_LENGTH = 2000;
+    function photoLinkProblem(raw) {
+      const u = String(raw == null ? "" : raw).trim();
+      if (!u) return "";
+      if (/^data:/i.test(u.replace(/[\x00-\x20]+/g, ""))) {
+        return "That looks like the photo itself rather than a web link, and photos can't be pasted in directly.\n\nPlease upload the photo to imgur.com/upload, right-click it, choose \"Copy image address,\" and paste that link. A web link starts with https://";
+      }
+      if (u.length > PHOTO_LINK_MAX_LENGTH) {
+        return "That link is too long (over " + PHOTO_LINK_MAX_LENGTH + " characters).\n\nPlease paste a shorter web link that starts with https://";
+      }
+      if (/\s/.test(u) || !/^https:\/\//i.test(u)) {
+        return "That doesn't look like a web link.\n\nPlease paste a link that starts with https:// (for example, from imgur.com).";
+      }
+      return "";
+    }
+
     window.promptForPhoto = function(hiddenInputId, boxId, placeholder) {
       const input = document.getElementById(hiddenInputId);
       const current = input.value || "";
       const url = prompt("Paste your photo link here.\n\nNeed one? Go to imgur.com/upload, drag your photo in, then right-click it and choose \"Copy image address.\"", current);
       if (url === null) return;
+      const problem = photoLinkProblem(url);
+      if (problem) { alert(problem); return; } // nothing changes: the box keeps what it had
       input.value = url.trim();
       renderPhotoBox(boxId, url.trim(), placeholder);
     };
@@ -458,6 +481,25 @@
         const [y,m,d] = dateEl.value.split("-").map(Number);
         previewDate.textContent = new Date(y,m-1,d).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});
       } else if (previewDate) { previewDate.textContent = ""; }
+      window.updateGPMirrors();
+    };
+
+    // The Guest Portal shows six Planning Meeting 1 answers as read-only previews. They are not
+    // inputs and are never saved from here: the single source is the Planning Meeting 1 field.
+    const GP_MIRROR_KEYS = ["coupleNames","weddingDate","ceremonyTime","receptionTime","ceremonyLocation","ceremonyAddress"];
+    window.updateGPMirrors = function() {
+      GP_MIRROR_KEYS.forEach(key => {
+        const src = document.querySelector(`input[data-field="meeting1.${key}"]`);
+        let val = src ? (src.value || "").trim() : "";
+        if (key === "weddingDate" && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+          const [y,m,d] = val.split("-").map(Number);
+          val = new Date(y,m-1,d).toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"});
+        }
+        document.querySelectorAll(`[data-mirror="${key}"]`).forEach(el => {
+          el.textContent = val || "Not set yet";
+          el.classList.toggle("empty", !val);
+        });
+      });
     };
 
     window.switchGuestTab = function(tab) {
@@ -935,7 +977,7 @@
       const grid = document.getElementById("resources-grid");
       if (!grid) return;
       if (!items.length) { grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--mid-gray);font-size:13px;padding:20px;">No resources have been added yet.</p>'; return; }
-      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(safeUrl(r.linkUrl))}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${r.description}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
+      grid.innerHTML = items.map(r => `<a class="resource-card" href="${esc(safeUrl(r.linkUrl))}" target="_blank"><div class="resource-icon"></div><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p><span class="resource-link">${esc(r.buttonLabel||"Learn More")}</span></a>`).join("");
     }
     // ── VENDOR MEETINGS (PLANNING TOOL) ──────────────────────────
     let vendorMeetingsCache = [];
@@ -2076,7 +2118,7 @@
               guestListCache[idx] = { ...existing, ...rsvpFields, plusOneAllowed: existing.plusOneAllowed || !!rsvpFields.plusOneName };
             } else {
               guestListCache.push({
-                id: Date.now().toString() + Math.floor(Math.random()*1000),
+                id: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10),
                 guestName,
                 address: "",
                 plusOneAllowed: !!rsvpFields.plusOneName,
@@ -2552,8 +2594,15 @@
     window.confirmGuestImport = async function() {
       if (!currentUser || !pendingGuestImportRows.length) return;
       if (!canSave("guestList")) return;
-      const newEntries = pendingGuestImportRows.map(g => ({
-        id: Date.now().toString() + Math.floor(Math.random()*10000),
+      const importBatchStamp = Date.now().toString(36);
+      const newEntries = pendingGuestImportRows.map((g, i) => ({
+        // Index guarantees uniqueness within this import batch even when
+        // Date.now() ties across synchronous map() iterations (previously
+        // just a 0-9999 random suffix, which for a 100+ row import had a
+        // real chance of colliding -- a collision meant editing/deleting one
+        // imported guest silently affected the wrong one, since every guest
+        // action looks the row up by this id).
+        id: importBatchStamp + "-" + i + "-" + Math.random().toString(36).slice(2, 8),
         guestName: g.guestName,
         address: g.address,
         plusOneAllowed: g.plusOneAllowed,
@@ -3707,12 +3756,12 @@
       const partner2 = document.getElementById("signup-partner2").value.trim();
       const email = document.getElementById("signup-email").value.trim();
       const password = document.getElementById("signup-password").value;
-      const code = document.getElementById("signup-code").value.trim();
+      const code = normalizeSignupCode(document.getElementById("signup-code").value);
       const btn = document.getElementById("btn-signup");
       const isStaffEmail = isAdmin(email);
       if (!isStaffEmail && (!partner1 || !partner2)) { showSignupError("Please enter both partners' names."); return; }
       if (!email || !password) { showSignupError("Please enter an email and password."); return; }
-      if (!isStaffEmail && !/^\d{4}$/.test(code)) { showSignupError("Please enter the 4-digit signup code from your coordinator's email."); return; }
+      if (!isStaffEmail && !isValidSignupCodeFormat(code)) { showSignupError("Please enter the signup code from your coordinator's email (8 letters and numbers)."); return; }
       pendingCoupleNames = `${partner1} & ${partner2}`;
       pendingWeddingDate = document.getElementById("signup-weddingDate").value;
       pendingSlugBase = firstNameSlug(partner1) + "and" + firstNameSlug(partner2);
@@ -4130,6 +4179,26 @@
     // (backslash, quote, line breaks) and then for HTML. esc() alone is not enough here.
     function jsq(s) {
       return esc(String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/\r/g,"\\r").replace(/\n/g,"\\n").replace(/\u2028/g,"\\u2028").replace(/\u2029/g,"\\u2029"));
+    }
+
+    // ── SIGNUP CODE FORMAT ───────────────────────────────────────
+    // New codes are 8 characters: capital letters and digits, leaving out the look-alikes
+    // 0, O, 1, I and L. The old 4-digit codes are still accepted until the owner changes the
+    // code. What a couple types is trimmed (spaces anywhere are dropped) and capitalised before
+    // it is compared, and the stored code is always saved in that same form.
+    const SIGNUP_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    const SIGNUP_CODE_NEW_RE = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$/;
+    const SIGNUP_CODE_OLD_RE = /^\d{4}$/;
+    function normalizeSignupCode(raw) { return String(raw == null ? "" : raw).replace(/\s+/g, "").toUpperCase(); }
+    function isValidSignupCodeFormat(code) { return SIGNUP_CODE_NEW_RE.test(code) || SIGNUP_CODE_OLD_RE.test(code); }
+    function generateSignupCode() {
+      const n = SIGNUP_CODE_ALPHABET.length, limit = 256 - (256 % n);
+      let out = "";
+      while (out.length < 8) {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        for (const b of bytes) { if (b < limit && out.length < 8) out += SIGNUP_CODE_ALPHABET[b % n]; }
+      }
+      return out;
     }
 
     // esc() only HTML-escapes -- it doesn't stop a couple-entered link (Places to
@@ -4814,6 +4883,8 @@
       if (copyBtn) copyBtn.style.display = "inline-block";
       if (changeBtn) changeBtn.style.display = "inline-block";
       if (saveBtn) saveBtn.style.display = "none";
+      const genBtn0 = document.getElementById("signup-code-gen-btn");
+      if (genBtn0) genBtn0.style.display = "none";
       if (modal) modal.style.display = "flex";
       try {
         const snap = await getDoc(doc(db, "settings", "signupCode"));
@@ -4832,7 +4903,7 @@
       const input = document.getElementById("signup-code-input");
       const status = document.getElementById("signup-code-status");
       const code = input ? input.value : "";
-      if (!/^\d{4}$/.test(code)) {
+      if (!isValidSignupCodeFormat(code)) {
         if (status) { status.textContent = "No valid code to copy yet."; status.style.color = "#c0392b"; status.style.display = "block"; }
         return;
       }
@@ -4882,10 +4953,20 @@
       const changeBtn = document.getElementById("signup-code-change-btn");
       const saveBtn = document.getElementById("signup-code-save-btn");
       if (scModal) scModal.style.display = "flex";
-      if (codeInput) { codeInput.disabled = false; codeInput.value = /^\d{4}$/.test(codeInput.value) ? codeInput.value : ""; codeInput.focus(); }
+      const genBtn = document.getElementById("signup-code-gen-btn");
+      if (codeInput) { codeInput.disabled = false; codeInput.value = isValidSignupCodeFormat(codeInput.value) ? codeInput.value : ""; codeInput.focus(); }
       if (copyBtn) copyBtn.style.display = "none";
       if (changeBtn) changeBtn.style.display = "none";
+      if (genBtn) genBtn.style.display = "inline-block";
       if (saveBtn) saveBtn.style.display = "inline-block";
+    };
+
+    // Fills the box with a fresh random code. Nothing is saved until Save is clicked.
+    window.generateSignupCodeInModal = function() {
+      const input = document.getElementById("signup-code-input");
+      const status = document.getElementById("signup-code-status");
+      if (input) input.value = generateSignupCode();
+      if (status) { status.textContent = "New code ready. Click Save to start using it."; status.style.color = "#2e7d32"; status.style.display = "block"; }
     };
 
     window.saveSignupCode = async function() {
@@ -4894,17 +4975,19 @@
       const copyBtn = document.getElementById("signup-code-copy-btn");
       const changeBtn = document.getElementById("signup-code-change-btn");
       const saveBtn = document.getElementById("signup-code-save-btn");
-      const code = input ? input.value.trim() : "";
-      if (!/^\d{4}$/.test(code)) {
-        if (status) { status.textContent = "Please enter exactly 4 digits."; status.style.color = "#c0392b"; status.style.display = "block"; }
+      const genBtn = document.getElementById("signup-code-gen-btn");
+      const code = normalizeSignupCode(input ? input.value : "");
+      if (!isValidSignupCodeFormat(code)) {
+        if (status) { status.textContent = "Please enter 8 letters and numbers (no 0, O, 1, I or L), or click Generate."; status.style.color = "#c0392b"; status.style.display = "block"; }
         return;
       }
       try {
         await setDoc(doc(db, "settings", "signupCode"), { code, updatedAt: new Date().toISOString() });
         if (status) { status.textContent = "Saved! Update the HoneyBook email template with this code."; status.style.color = "#2e7d32"; status.style.display = "block"; }
-        if (input) input.disabled = true;
+        if (input) { input.value = code; input.disabled = true; }
         if (copyBtn) copyBtn.style.display = "inline-block";
         if (changeBtn) changeBtn.style.display = "inline-block";
+        if (genBtn) genBtn.style.display = "none";
         if (saveBtn) saveBtn.style.display = "none";
       } catch (e) {
         if (status) { status.textContent = "Something went wrong saving the code. Please try again."; status.style.color = "#c0392b"; status.style.display = "block"; }
@@ -5073,6 +5156,7 @@
     .login-or span{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:rgba(253,250,246,0.25);}
     .login-input{width:100%;padding:12px 16px;background:rgba(253,250,246,0.05);border:1px solid rgba(232,224,213,0.15);color:var(--warm-white);font-family:var(--font-body);font-size:14px;font-weight:300;border-radius:1px;margin-bottom:12px;transition:border-color 0.2s;outline:none;}
     .login-input::placeholder{color:rgba(253,250,246,0.3);}
+    #signup-code::placeholder{text-transform:none;}
     .login-input:focus{border-color:rgba(184,150,90,0.5);}
     .btn-email{width:100%;padding:13px 20px;background:var(--gold);border:none;color:var(--warm-white);font-family:var(--font-body);font-size:11px;letter-spacing:0.2em;text-transform:uppercase;cursor:pointer;transition:background 0.25s;border-radius:1px;}
     .btn-email:hover{background:var(--gold-dark);}
@@ -5205,6 +5289,9 @@
     .form-grid.single{grid-template-columns:1fr;}
     .form-group{display:flex;flex-direction:column;gap:8px;}
     .form-group.full{grid-column:1/-1;}
+    .gp-mirror{padding:11px 14px;background:var(--cream);border:1px solid var(--border);color:var(--charcoal);font-size:13px;font-weight:300;border-radius:1px;min-height:42px;line-height:1.5;}
+    .gp-mirror.empty{color:var(--mid-gray);font-style:italic;}
+    .gp-mirror-link{display:inline-block;margin-top:6px;font-size:11px;letter-spacing:0.06em;color:var(--gold-dark);text-decoration:underline;}
     .form-label{font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--charcoal);font-weight:400;}
     .form-label-note{font-size:11px;color:var(--mid-gray);text-transform:none;letter-spacing:0;font-weight:300;display:block;margin-top:2px;}
     .form-input{padding:11px 14px;background:var(--warm-white);border:1px solid var(--border);color:var(--charcoal);font-family:var(--font-body);font-size:13px;font-weight:300;border-radius:1px;transition:border-color 0.2s;outline:none;width:100%;}
@@ -5571,7 +5658,7 @@
       <input class="login-input" type="date" id="signup-weddingDate" style="color-scheme:dark;"/>
       <input class="login-input" type="email" id="signup-email" placeholder="Email address" autocomplete="email"/>
       <input class="login-input" type="password" id="signup-password" placeholder="Create a password" autocomplete="new-password"/>
-      <input class="login-input" type="text" inputmode="numeric" maxlength="4" id="signup-code" placeholder="4-digit code (from your coordinator's email)" autocomplete="off"/>
+      <input class="login-input" type="text" maxlength="12" id="signup-code" placeholder="Signup code (from your coordinator's email)" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" style="text-transform:uppercase;"/>
       <button class="btn-email" id="btn-signup" onclick="window.createAccount()">Create Account</button>
       <div id="signup-error"></div>
       <p class="login-footer-note">One shared account links both of you to the same planning portal.</p>
@@ -5776,7 +5863,7 @@
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Bride + Groom Full Names</label>
-          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Bride's Phone Number</label>
@@ -5788,7 +5875,7 @@
         </div>
         <div class="form-group">
           <label class="form-label">Wedding Date</label>
-          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value)">
+          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Wedding Planner Name &amp; Contact <span class="form-label-note">If applicable</span></label>
@@ -5796,19 +5883,19 @@
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Time <span class="form-label-note">Approximate is fine</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Reception Start Time <span class="form-label-note">Approximate is fine</span></label>
-          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Location Name <span class="form-label-note">If not at The Seventy Five</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Address <span class="form-label-note">Only if different from The Seventy Five</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
+          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value);window.updateGPHomePreview()">
         </div>
         <div class="form-group">
           <label class="form-label">Time of Guest Arrival</label>
@@ -7506,23 +7593,28 @@
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Couple Names</label>
-          <input type="text" class="form-input" data-field="meeting1.coupleNames" placeholder="e.g. Emily Johnson &amp; James Smith" oninput="window.saveField('meeting1','coupleNames',this.value);window.updateGPHomePreview();">
+          <div class="gp-mirror" data-mirror="coupleNames">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Wedding Date</label>
-          <input type="date" class="form-input" data-field="meeting1.weddingDate" oninput="window.saveField('meeting1','weddingDate',this.value);window.updateGPHomePreview();">
+          <div class="gp-mirror" data-mirror="weddingDate">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Time</label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyTime" placeholder="e.g. 4:30 PM" oninput="window.saveField('meeting1','ceremonyTime',this.value)">
+          <div class="gp-mirror" data-mirror="ceremonyTime">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Reception Time</label>
-          <input type="text" class="form-input" data-field="meeting1.receptionTime" placeholder="e.g. 6:00 PM" oninput="window.saveField('meeting1','receptionTime',this.value)">
+          <div class="gp-mirror" data-mirror="receptionTime">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group">
           <label class="form-label">Ceremony Location</label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyLocation" placeholder="The Seventy Five" oninput="window.saveField('meeting1','ceremonyLocation',this.value)">
+          <div class="gp-mirror" data-mirror="ceremonyLocation">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
       </div>
       <div class="form-save-row" style="margin-top:24px;">
@@ -7552,7 +7644,8 @@
       <div class="form-grid">
         <div class="form-group full">
           <label class="form-label">Ceremony Address <span style="font-size:11px;color:var(--mid-gray);">(only if different from The Seventy Five)</span></label>
-          <input type="text" class="form-input" data-field="meeting1.ceremonyAddress" placeholder="Street, City, State, ZIP" oninput="window.saveField('meeting1','ceremonyAddress',this.value)">
+          <div class="gp-mirror" data-mirror="ceremonyAddress">Not set yet</div>
+          <a href="#" class="gp-mirror-link" onclick="window.showPage('meeting1');return false;">Edit in Planning Meeting 1</a>
         </div>
         <div class="form-group full">
           <label class="form-label">Parking &amp; Additional Directions Notes</label>
@@ -7858,6 +7951,7 @@
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     const target = document.getElementById('page-' + pageId);
     if (target) { target.classList.add('active'); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    if (pageId === 'guestportal' && window.updateGPMirrors) window.updateGPMirrors();
   };
 </script>
 
@@ -8151,11 +8245,12 @@
       <span onclick="window.closeSignupCodeModal()" style="position:absolute;top:16px;right:20px;font-size:22px;color:var(--mid-gray);cursor:pointer;line-height:1;">&times;</span>
       <div style="font-size:28px;margin-bottom:8px;text-align:center;">&#128273;</div>
       <h2 style="font-family:var(--font-heading);font-size:24px;font-weight:400;color:var(--charcoal);margin-bottom:8px;text-align:center;">Couple Signup Code</h2>
-      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:20px;line-height:1.6;text-align:center;">The 4-digit code couples need to create an account. Copy it into your HoneyBook welcome email template. Only venue ownership can change it.</p>
+      <p style="font-size:12px;color:var(--mid-gray);margin-bottom:20px;line-height:1.6;text-align:center;">The code couples need to create an account (8 letters and numbers; older 4-digit codes keep working until you change it). Copy it into your HoneyBook welcome email template. Only venue ownership can change it.</p>
       <label style="display:block;font-size:11px;letter-spacing:0.06em;color:var(--mid-gray);margin-bottom:6px;">Current Code</label>
-      <input type="text" inputmode="numeric" maxlength="4" id="signup-code-input" class="login-input" disabled style="text-align:center;letter-spacing:0.5em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);" placeholder="••••">
+      <input type="text" maxlength="12" id="signup-code-input" class="login-input" disabled autocapitalize="characters" autocorrect="off" spellcheck="false" autocomplete="off" style="text-align:center;letter-spacing:0.25em;font-size:20px;color:var(--charcoal);background:var(--cream);border-color:var(--border);text-transform:uppercase;" placeholder="••••••••">
       <p id="signup-code-status" style="display:none;font-size:12px;margin-top:10px;text-align:center;"></p>
-      <div style="display:flex;gap:10px;margin-top:20px;">
+      <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;">
+        <button class="btn-back" id="signup-code-gen-btn" style="flex:1 1 100%;display:none;" onclick="window.generateSignupCodeInModal()">Generate New Code</button>
         <button class="btn-back" id="signup-code-copy-btn" style="flex:1;" onclick="window.copySignupCode()">Copy Code</button>
         <button class="btn-save" id="signup-code-change-btn" style="flex:1;" onclick="window.requestSignupCodeChange()">Change Code</button>
         <button class="btn-save" id="signup-code-save-btn" style="flex:1;display:none;" onclick="window.saveSignupCode()">Save</button>
