@@ -380,6 +380,10 @@ exports.verifyVendorPin = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS 
  * covered by responses' own broad vendor-write grant and defeat the point.
  */
 const NOTE_FIELD_ALLOWLIST = ["notes", "barNotes"];
+// A note id is only ever a short token the page makes ("n" + base-36). It is used as an HTML id and
+// inside click handlers on the pages, so anything else (quotes, spaces, <, >, unicode, or over 100
+// characters) is refused outright rather than trimmed.
+const NOTE_ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
 exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }, async (request) => {
   let slotId = "(unparsed)";
@@ -423,7 +427,7 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
     const cleanNotes = [];
     const seenIds = new Set();
     for (const n of newNotes) {
-      if (!n || typeof n !== "object" || typeof n.id !== "string" || seenIds.has(n.id)) {
+      if (!n || typeof n !== "object" || typeof n.id !== "string" || seenIds.has(n.id) || !NOTE_ID_RE.test(n.id)) {
         throw new HttpsError("invalid-argument", "Malformed notes payload.");
       }
       seenIds.add(n.id);
@@ -479,5 +483,94 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
     if (err instanceof HttpsError) throw err;
     logger.error("saveVendorSlotNotes: uncaught error", { slotId, message: err && err.message, stack: err && err.stack });
     throw new HttpsError("internal", "Couldn't save notes. Please try again.");
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Guest page gate
+//
+// A couple's public page used to carry the full guest roster and the
+// blocked-names list so the page itself could check a guest's name. That made
+// both lists readable by anyone holding the page link. This function does the
+// check on the server instead: it reads the couple's own record (Admin SDK)
+// and answers only "ok / blocked / date-mismatch / not-found", plus -- for a
+// successful check -- whether THAT one name has a plus-one. It never returns
+// the roster, the blocked list, or anyone else's name.
+//
+// Same rules as the page had: names are compared trimmed and lower-cased; the
+// blocked list is checked before the date; the date must equal the couple's
+// wedding date exactly (YYYY-MM-DD).
+//
+// Abuse limits (cost-light on purpose, no database writes): a per-instance,
+// in-memory cap on calls per source address + page, and App Check. In-memory
+// means each function instance counts separately (maxInstances is 10), so the
+// cap is a coarse brake, not an exact one.
+// ═══════════════════════════════════════════════════════════════════════
+const GUEST_SLUG_RE = /^[^\/\s]{1,200}$/;
+const GUEST_NAME_MAX_LEN = 200;
+const GUEST_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const GUEST_GATE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const GUEST_GATE_MAX_CALLS = 30;             // per address + page, per instance, per window
+const guestGateCalls = new Map();
+
+function guestGateWithinLimit(ip, slug, now) {
+  const key = String(ip || "unknown") + "|" + slug;
+  if (guestGateCalls.size > 5000) {
+    for (const [k, v] of guestGateCalls) if (now - v.start > GUEST_GATE_WINDOW_MS) guestGateCalls.delete(k);
+    if (guestGateCalls.size > 5000) guestGateCalls.clear();
+  }
+  const cur = guestGateCalls.get(key);
+  if (!cur || now - cur.start > GUEST_GATE_WINDOW_MS) { guestGateCalls.set(key, { start: now, count: 1 }); return true; }
+  if (cur.count >= GUEST_GATE_MAX_CALLS) return false;
+  cur.count++;
+  return true;
+}
+
+const guestNameKey = (s) => String(s == null ? "" : s).trim().toLowerCase();
+
+exports.checkGuestGate = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }, async (request) => {
+  let slugTag = "(unparsed)";
+  try {
+    const slug = String((request.data && request.data.slug) || "").trim();
+    const name = String((request.data && request.data.name) || "").trim().slice(0, GUEST_NAME_MAX_LEN);
+    const date = String((request.data && request.data.date) || "").trim();
+    if (!GUEST_SLUG_RE.test(slug) || slug === "." || slug === ".." || /^__.*__$/.test(slug)) {
+      throw new HttpsError("invalid-argument", "Invalid page.");
+    }
+    if (!name) throw new HttpsError("invalid-argument", "Please enter your name.");
+    if (!GUEST_DATE_RE.test(date)) throw new HttpsError("invalid-argument", "Please enter the wedding date from your invitation.");
+    // Log a short fingerprint of the page address, never the address itself (it contains the couple's names).
+    slugTag = crypto.createHash("sha256").update(slug).digest("hex").slice(0, 8);
+
+    const ip = request.rawRequest && request.rawRequest.ip;
+    if (!guestGateWithinLimit(ip, slug, Date.now())) {
+      logger.info("checkGuestGate", { status: "rate-limited", page: slugTag });
+      throw new HttpsError("resource-exhausted", "Too many tries. Please wait a few minutes and try again.");
+    }
+
+    const found = await db.collection("couples").where("slug", "==", slug).limit(2).get();
+    if (found.size === 0) { logger.info("checkGuestGate", { status: "not-found", page: slugTag }); return { status: "not-found" }; }
+    if (found.size > 1) {
+      // Two couples claim this address: refuse to guess which one is meant.
+      logger.warn("checkGuestGate", { status: "ambiguous-page", page: slugTag });
+      throw new HttpsError("failed-precondition", "This page can't be checked right now. Please contact the couple.");
+    }
+    const couple = found.docs[0].data() || {};
+
+    const key = guestNameKey(name);
+    const blocked = Array.isArray(couple.blockedGuestNames) ? couple.blockedGuestNames : [];
+    if (blocked.some((b) => guestNameKey(b) === key)) { logger.info("checkGuestGate", { status: "blocked", page: slugTag }); return { status: "blocked" }; }
+
+    const weddingDate = String(((couple.meeting1 || {}).weddingDate) || "");
+    if (date !== weddingDate) { logger.info("checkGuestGate", { status: "date-mismatch", page: slugTag }); return { status: "date-mismatch" }; }
+
+    const roster = Array.isArray(couple.guestList) ? couple.guestList : [];
+    const match = roster.find((g) => g && guestNameKey(g.guestName) === key);
+    logger.info("checkGuestGate", { status: "ok", page: slugTag });
+    return { status: "ok", plusOneAllowed: !!(match && match.plusOneAllowed) };
+  } catch (err) {
+    if (err instanceof HttpsError) throw err;
+    logger.error("checkGuestGate: uncaught error", { page: slugTag, message: err && err.message });
+    throw new HttpsError("internal", "Couldn't check this page right now. Please try again.");
   }
 });

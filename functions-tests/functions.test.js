@@ -34,8 +34,16 @@ const ref = (p) => ({
   get: async () => snap(p),
   update: async (u) => { if (!store.has(p)) throw new Error("5 NOT_FOUND: " + p); store.set(p, apply(store.get(p), u)); },
 });
+const queryCollection = (c, field, value, n) => {
+  const docs = [...store.keys()].filter((k) => k.startsWith(c + "/") && !k.slice(c.length + 1).includes("/") && store.get(k)[field] === value)
+    .slice(0, n).map((k) => ({ id: k.slice(c.length + 1), data: () => structuredClone2(store.get(k)) }));
+  return { size: docs.length, empty: docs.length === 0, docs };
+};
 const fakeDb = {
-  collection: (c) => ({ doc: (i) => ref(c + "/" + i) }),
+  collection: (c) => ({
+    doc: (i) => ref(c + "/" + i),
+    where: (field, op, value) => { if (op !== "==") throw new Error("fake db: only == is supported"); return { limit: (n) => ({ get: async () => queryCollection(c, field, value, n) }) }; },
+  }),
   runTransaction: async (fn) => fn({
     get: async (r) => snap(r.path),
     set: (r, d) => store.set(r.path, apply({}, d)),
@@ -46,7 +54,10 @@ const minted = []; // every custom token request: { uid, claims }
 fsMod.getFirestore = () => fakeDb;
 req("firebase-admin/auth").getAuth = () => ({ createCustomToken: async (uid, claims) => { minted.push({ uid, claims }); return "TOKEN:" + uid; } });
 
-const { verifyVendorPin, saveVendorSlotNotes } = req(path.join(fnDir, "index.js"));
+const loggerMod = req("firebase-functions/logger");
+const logged = []; // every log call the handlers make: { level, args }
+for (const level of ["info", "warn", "error", "log", "debug"]) loggerMod[level] = (...args) => { logged.push({ level, args }); };
+const { verifyVendorPin, saveVendorSlotNotes, checkGuestGate } = req(path.join(fnDir, "index.js"));
 const call = async (fn, o) => { try { return { ok: true, out: await fn.run(o) }; } catch (e) { return { ok: false, code: e.code, msg: e.message, reason: e.details && e.details.reason, isHttps: e.constructor.name === "HttpsError" }; } };
 
 const SLOT = "sam-alex_caterer", SLOTP = "vendorSlots/" + SLOT, SECP = "vendorSlotSecrets/" + SLOT, KEY = "vendor:" + SLOT;
@@ -278,5 +289,123 @@ describe("saveVendorSlotNotes", () => {
       seedN(base, { portal: { enabled: true, pilotCoupleSlugs: ["jo-pat"] } }); closed(await call(saveVendorSlotNotes, nreq(base)));
       seedN(base, { portal: { enabled: true, pilotCoupleSlugs: [] } }); closed(await call(saveVendorSlotNotes, nreq(base)));
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+describe("saveVendorSlotNotes: note id validation", () => {
+  const EP = "epoch-for-sam-alex-caterer";
+  const authN = () => ({ uid: "vendor_" + SLOT, token: { vendorSlotId: SLOT, sessionEpoch: EP } });
+  const seedEmpty = () => { seed({ secrets: { sessionEpoch: EP } }); store.get(SLOTP).notes = [{ id: "keep1", text: "existing", authorKey: KEY, author: "C", lastEditedAt: "t" }]; };
+  const save = (notes) => call(saveVendorSlotNotes, { auth: authN(), data: { slotId: SLOT, notes, field: "notes" } });
+  const bad = [
+    ["a single quote", "x'y"], ["a double quote", 'x"y'], ["a space", "a b"], ["a less-than sign", "a<b"], ["a greater-than sign", "a>b"],
+    ["an ampersand", "a&b"], ["a backslash", "a\\b"], ["a newline", "a\nb"], ["a closing paren and semicolon", "');alert(1);('"], ["an accented letter", "n\u00e9"],
+    ["an emoji", "n\u{1F600}"], ["a dot", "a.b"], ["a slash", "a/b"], ["101 characters", "n".repeat(101)], ["an empty string", ""],
+  ];
+  for (const [label, id] of bad) {
+    test(`a NEW note with ${label} in its id is refused and nothing is saved`, async () => {
+      seedEmpty();
+      const r = await save([{ id: "keep1", text: "existing" }, { id, text: "hello", author: "C" }]);
+      assert.equal(r.code, "invalid-argument");
+      assert.equal(store.get(SLOTP).notes.length, 1); assert.equal(store.get(SLOTP).notes[0].id, "keep1");
+    });
+  }
+  test("a non-string id is refused", async () => {
+    seedEmpty(); assert.equal((await save([{ id: 5, text: "x" }])).code, "invalid-argument");
+    assert.equal((await save([{ id: null, text: "x" }])).code, "invalid-argument");
+  });
+  for (const id of ["n1abc", "A_b-9", "n".repeat(100), "x", "nlq3k9z2ab"]) {
+    test(`a note id like "${id.slice(0, 12)}${id.length > 12 ? "..." : ""}" is accepted exactly as sent`, async () => {
+      seedEmpty();
+      const r = await save([{ id: "keep1", text: "existing" }, { id, text: "ok", author: "C" }]);
+      assert.ok(r.ok, r.msg); assert.ok(store.get(SLOTP).notes.some((n) => n.id === id));
+    });
+  }
+  test("the same limit applies to the bar-notes field", async () => {
+    seedEmpty(); const r = await call(saveVendorSlotNotes, { auth: authN(), data: { slotId: SLOT, notes: [{ id: "bad id", text: "x" }], field: "barNotes" } });
+    assert.equal(r.code, "invalid-argument");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+describe("checkGuestGate", () => {
+  const PAGE = "alexandsam";
+  let ip = 0;
+  const gate = (over, rawIp) => call(checkGuestGate, { data: { slug: PAGE, name: "Pat Guest", date: "2027-05-08", ...(over || {}) }, rawRequest: { ip: rawIp || "198.51.100." + (++ip % 250) + "." + Math.floor(ip / 250) } });
+  const seedGate = (over) => {
+    store.clear(); logged.length = 0;
+    store.set("couples/uA", {
+      uid: "uA", slug: PAGE, email: "owner@example.com", meeting1: { coupleNames: "Alex & Sam", weddingDate: "2027-05-08" },
+      blockedGuestNames: ["Troublemaker Tom", "  SPAMMY sue "],
+      guestList: [{ id: "1", guestName: "Pat Guest", plusOneAllowed: true }, { id: "2", guestName: "Solo Sally", plusOneAllowed: false }, { id: "3", guestName: "Ned Nameless" }],
+      notes: [{ text: "internal staff note" }], leadCoordinator: { name: "Coord C", email: "c@example.com", phone: "555-0100" }, ...(over || {}),
+    });
+    store.set("couples/uB", { uid: "uB", slug: "someoneelse", meeting1: { weddingDate: "2028-01-01" }, guestList: [{ id: "9", guestName: "Pat Guest", plusOneAllowed: true }] });
+  };
+  beforeEach(() => seedGate());
+
+  test("right name and date => ok, and says whether this guest has a plus-one", async () => {
+    assert.deepEqual((await gate()).out, { status: "ok", plusOneAllowed: true });
+    assert.deepEqual((await gate({ name: "Solo Sally" })).out, { status: "ok", plusOneAllowed: false });
+    assert.deepEqual((await gate({ name: "Ned Nameless" })).out, { status: "ok", plusOneAllowed: false });
+  });
+  test("a name that is not on the list still gets in (as before), with no plus-one", async () => {
+    assert.deepEqual((await gate({ name: "Somebody Else" })).out, { status: "ok", plusOneAllowed: false });
+  });
+  test("names are compared trimmed and case-insensitively, exactly like the page did", async () => {
+    assert.deepEqual((await gate({ name: "  PAT guest  " })).out, { status: "ok", plusOneAllowed: true });
+    assert.equal((await gate({ name: "Pat  Guest" })).out.plusOneAllowed, false); // inner spacing is not collapsed (same as the old page)
+  });
+  test("wrong date => date-mismatch (and nothing else about the guest)", async () => {
+    const r = await gate({ date: "2027-05-09" }); assert.deepEqual(r.out, { status: "date-mismatch" });
+  });
+  test("a couple with no wedding date set can never be opened", async () => {
+    seedGate({ meeting1: { coupleNames: "x" } }); assert.equal((await gate()).out.status, "date-mismatch");
+  });
+  test("blocked names are refused, trimmed and case-insensitively, even with the right date, and before the date is checked", async () => {
+    assert.deepEqual((await gate({ name: "troublemaker tom" })).out, { status: "blocked" });
+    assert.deepEqual((await gate({ name: "Spammy Sue" })).out, { status: "blocked" });
+    assert.deepEqual((await gate({ name: "Troublemaker Tom", date: "1999-01-01" })).out, { status: "blocked" });
+  });
+  test("unknown page => not-found", async () => { assert.deepEqual((await gate({ slug: "nosuchpage" })).out, { status: "not-found" }); });
+  test("two couples with the same address => refused, nothing revealed", async () => {
+    store.set("couples/uC", { uid: "uC", slug: PAGE, meeting1: { weddingDate: "2027-05-08" }, guestList: [] });
+    const r = await gate(); assert.equal(r.code, "failed-precondition"); assert.equal(r.out, undefined);
+  });
+  test("the answer never contains the roster, the blocked list, notes, the coordinator, or any other guest's name", async () => {
+    const outs = [await gate(), await gate({ name: "Troublemaker Tom" }), await gate({ date: "2000-01-01" }), await gate({ slug: "nosuchpage" })];
+    const text = JSON.stringify(outs);
+    for (const secret of ["Solo Sally", "Ned Nameless", "Troublemaker", "SPAMMY", "internal staff note", "Coord C", "555-0100", "owner@example.com", "Alex & Sam", "someoneelse"]) assert.ok(!text.includes(secret), secret);
+    assert.deepEqual(Object.keys(outs[0].out).sort(), ["plusOneAllowed", "status"]);
+  });
+  test("it uses the couple's record at the moment of the call (a name blocked a second ago is blocked now)", async () => {
+    assert.equal((await gate({ name: "Late Larry" })).out.status, "ok");
+    store.get("couples/uA").blockedGuestNames.push("Late Larry"); assert.equal((await gate({ name: "Late Larry" })).out.status, "blocked");
+  });
+  test("bad input => invalid-argument", async () => {
+    for (const o of [{ slug: "a/b" }, { slug: "" }, { slug: "has space" }, { slug: ".." }, { slug: "__x__" }, { name: "   " }, { name: undefined }, { date: "" }, { date: "May 8 2027" }, { date: "2027-5-8" }]) {
+      const r = await gate(o); assert.equal(r.code, "invalid-argument", JSON.stringify(o));
+    }
+  });
+  test("a very long name is cut to 200 characters, not an error", async () => {
+    assert.equal((await gate({ name: "x".repeat(5000) })).out.status, "ok");
+  });
+  test("31st call from the same address for the same page is rate limited; another address or page is not", async () => {
+    let tripped = null; for (let i = 1; i <= 31; i++) { const r = await gate({}, "203.0.113.50"); if (!r.ok && r.code === "resource-exhausted") { tripped = i; break; } }
+    assert.equal(tripped, 31);
+    assert.ok((await gate({}, "203.0.113.51")).ok);
+    assert.ok((await gate({ slug: "someoneelse", date: "2028-01-01" }, "203.0.113.50")).ok);
+  });
+  test("logs carry a status and a short fingerprint only: no names, no page address, no dates, no IP", async () => {
+    await gate(); await gate({ name: "Troublemaker Tom" }); await gate({ date: "2000-01-01" }); await gate({ slug: "nosuchpage" });
+    const text = JSON.stringify(logged);
+    assert.ok(logged.length >= 4);
+    for (const secret of ["Pat Guest", "Troublemaker", PAGE, "nosuchpage", "2027-05-08", "2000-01-01", "198.51.100", "Alex"]) assert.ok(!text.includes(secret), secret);
+    assert.ok(logged.every((l) => typeof l.args[1].page === "string" && l.args[1].page.length === 8));
+  });
+  test("a database error becomes a generic 'try again' (no internals leaked)", async () => {
+    const orig = fakeDb.collection; fakeDb.collection = () => { throw new Error("secret internal detail xyz"); };
+    try { const r = await gate(); assert.equal(r.code, "internal"); assert.ok(!r.msg.includes("secret")); } finally { fakeDb.collection = orig; }
   });
 });
