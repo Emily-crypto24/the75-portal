@@ -99,10 +99,15 @@ describe("A. live-site paths", () => {
     ["blockedGuestNames", { blockedGuestNames: ["x"] }], ["guestListSettings", { guestListSettings: { dinnerStyle: "Buffet" } }],
     ["bachParties", { bachParties: [] }], ["rehearsalDinner", { rehearsalDinner: { venueName: "v" } }], ["timelineItems", { timelineItems: [{ id: "t" }] }],
     ["notesTool", { notesTool: [] }], ["ideaItems", { ideaItems: [] }], ["checklistItems", { checklistItems: [] }],
-    ["slug", { slug: "sam-alex" }], ["meeting form fields (dotted)", { "meeting1.venue": "Barn" }], ["dayOf dotted", { "dayOf.uniqueNotes": [] }],
+    ["slug", { slug: "sam-alex" }], ["meeting form fields (dotted)", { "meeting1.venue": "Barn" }],
   ]) {
     test(`couple saves own doc: ${label}`, async () => { await assertSucceeds(updateDoc(doc(couple("coupleA"), "couples/coupleA"), patch)); });
   }
+  // The deployed rules let a couple write this staff-only field; the Phase 1 rules do not (see section D).
+  test("couple writing dayOf (staff-only): allowed on the deployed rules, denied on the new rules", async () => {
+    const attempt = updateDoc(doc(couple("coupleA"), "couples/coupleA"), { "dayOf.uniqueNotes": [] });
+    await (NEW ? assertFails(attempt) : assertSucceeds(attempt));
+  });
   test("couple cannot read or write another couple's doc", async () => {
     await assertFails(getDoc(doc(couple("coupleA"), "couples/coupleB")));
     await assertFails(updateDoc(doc(couple("coupleA"), "couples/coupleB"), { notesTool: [] }));
@@ -387,5 +392,117 @@ describe("C. on/off setting and pilot list", () => {
     await assertFails(setDoc(doc(v(), "settings/vendorPortal"), { enabled: true }));
     await assertSucceeds(getDoc(doc(couple("coupleA"), "settings/vendorPortal")));
     await assertFails(getDoc(doc(guest(), "settings/vendorPortal")));
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════�
+// D. PHASE 1: staff-only fields on the couple record, and coupleStaff
+// ═════════════════════════════════════════════════════════════════�
+const staffLike = () => env.authenticatedContext("notListed", { email: "someone@theseventyfivevenue.com", email_verified: true }).firestore();
+const COUPLE_KEYS_THE_PAGE_WRITES = {
+  "meeting1.coupleNames": "A & B", "meeting2.napkinColor": "Navy", "meeting3.finalGuestCount": "120",
+  guestList: [{ id: "g1", guestName: "X" }], blockedGuestNames: ["Y"], guestPortalContent: { dressCode: "Formal" },
+  guestListSettings: { dinnerStyle: "Buffet", mealOptions: [] }, placesToStay: [], thingsToDo: [], registryItems: [], registryLinks: [],
+  faqs: [], weddingParty: [], itineraryItems: [], timelineItems: [{ id: "t1" }], ideaItems: [], checklistItems: [], financeEntries: [],
+  vendorMeetings: [], bachParties: [], rehearsalDinner: { venueName: "V" }, notesTool: [{ id: "n1" }], vendorSlotsInitialized: true,
+};
+const STAFF_ONLY_UPDATES = {
+  status: "completed", notes: [{ text: "n" }], leadCoordinator: { name: "N", email: "", phone: "" }, dayOf: { x: "1" },
+  closeoutSheet: { x: "1" }, leadCloser: "N", venueRentalEndTime: "11 PM", vendorArrivalWindow: "10-12",
+  "dayOf.uniqueNotes": [], "dayOf.lcChecklist.o1": { at: "t" }, "closeoutSheet.s1": "x", "leadCoordinator.name": "Z", notes_arrayUnion: null,
+};
+
+describe("D. staff-only fields: a couple cannot write them (new rules)", () => {
+  beforeEach(() => seed());
+  for (const [k, v] of Object.entries(STAFF_ONLY_UPDATES)) {
+    if (k === "notes_arrayUnion") continue;
+    test(`couple update of ${k} is denied`, newOnly, async () => {
+      await assertFails(updateDoc(doc(couple("coupleA"), "couples/coupleA"), { [k]: v }));
+    });
+    test(`admin update of ${k} is allowed`, newOnly, async () => {
+      await assertSucceeds(updateDoc(doc(admin(), "couples/coupleA"), { [k]: v }));
+    });
+  }
+  test("couple arrayUnion into notes is denied", newOnly, async () => {
+    await assertFails(updateDoc(doc(couple("coupleA"), "couples/coupleA"), { notes: arrayUnion({ text: "x" }) }));
+  });
+  test("a mixed update (allowed key + staff-only key) is denied as a whole", newOnly, async () => {
+    await assertFails(updateDoc(doc(couple("coupleA"), "couples/coupleA"), { "meeting1.coupleNames": "A", status: "completed" }));
+  });
+  for (const [k, v] of Object.entries(COUPLE_KEYS_THE_PAGE_WRITES)) {
+    test(`couple update of ${k} still works`, async () => {
+      await assertSucceeds(updateDoc(doc(couple("coupleA"), "couples/coupleA"), { [k]: v }));
+    });
+  }
+  test("re-writing a staff-only field with the SAME value is not a change, so it is allowed", newOnly, async () => {
+    await assertSucceeds(updateDoc(doc(couple("coupleA"), "couples/coupleA"), { status: "active", notes: [] }));
+  });
+  test("another couple and a vendor session cannot update this couple's record at all", async () => {
+    await assertFails(updateDoc(doc(couple("coupleB"), "couples/coupleA"), { "meeting1.coupleNames": "x" }));
+    await assertFails(updateDoc(doc(vendor("sam-alex_dj", E("sam-alex_dj")), "couples/coupleA"), { "meeting1.coupleNames": "x" }));
+    await assertFails(updateDoc(doc(guest(), "couples/coupleA"), { "meeting1.coupleNames": "x" }));
+  });
+  test("the couple can still READ their record, including leadCoordinator", async () => {
+    await patchDoc("couples/coupleA", { leadCoordinator: { name: "Coord", email: "c@x.com", phone: "1" } });
+    const s = await assertSucceeds(getDoc(doc(couple("coupleA"), "couples/coupleA")));
+    require("node:assert").equal(s.data().leadCoordinator.name, "Coord");
+  });
+});
+
+describe("D. signup (create) may only start with the page's own initial values (new rules)", () => {
+  const base = (over) => ({ uid: "newU", email: "n@x.com", status: "active", notes: [], slug: "new-slug", signupCode: "LETMEIN", leadCoordinator: { name: "", email: "", phone: "" }, ...(over || {}) });
+  beforeEach(() => seed());
+  test("exactly what the signup page writes is allowed", async () => {
+    await assertSucceeds(setDoc(doc(couple("newU"), "couples/newU"), base()));
+  });
+  test("a record with no status/notes/leadCoordinator at all is allowed", async () => {
+    const d = base(); delete d.status; delete d.notes; delete d.leadCoordinator;
+    await assertSucceeds(setDoc(doc(couple("newU"), "couples/newU"), d));
+  });
+  for (const [label, over] of [
+    ["status other than active", { status: "completed" }], ["a pre-filled note", { notes: [{ text: "x" }] }],
+    ["a coordinator name", { leadCoordinator: { name: "N", email: "", phone: "" } }], ["a dayOf block", { dayOf: { a: "1" } }],
+    ["a closeoutSheet block", { closeoutSheet: { a: "1" } }], ["leadCloser", { leadCloser: "N" }],
+    ["venueRentalEndTime", { venueRentalEndTime: "11" }], ["vendorArrivalWindow", { vendorArrivalWindow: "10" }],
+  ]) {
+    test(`create with ${label} is denied`, newOnly, async () => {
+      await assertFails(setDoc(doc(couple("newU"), "couples/newU"), base(over)));
+    });
+  }
+  test("wrong code, vendor token and mismatched uid still fail", async () => {
+    await assertFails(setDoc(doc(couple("newU"), "couples/newU"), base({ signupCode: "NOPE" })));
+    await assertFails(setDoc(doc(vendor("sam-alex_dj", E("sam-alex_dj")), "couples/vendor_sam-alex_dj"), base({ uid: "vendor_sam-alex_dj" })));
+    await assertFails(setDoc(doc(couple("newU"), "couples/other"), base()));
+  });
+});
+
+describe("D. coupleStaff is staff-only (works on the deployed rules too)", () => {
+  beforeEach(async () => { await seed(); await rawSet("coupleStaff/coupleA", { notes: [{ text: "internal" }], dayOf: { a: "1" }, closeoutSheet: { b: "2" } }); });
+  const nobody = [
+    ["the couple whose uid is the document id", () => couple("coupleA")],
+    ["another couple", () => couple("coupleB")],
+    ["a vendor with a valid session", () => vendor("sam-alex_dj", E("sam-alex_dj"))],
+    ["a vendor with an old token", () => vendor("sam-alex_dj")],
+    ["an anonymous guest", () => guest()],
+    ["an unverified staff email", () => adminUnverified()],
+    ["a verified address that looks like staff but is not on the list", () => staffLike()],
+  ];
+  for (const [label, who] of nobody) {
+    test(`${label}: get, list, create, update, delete are all denied`, async () => {
+      await assertFails(getDoc(doc(who(), "coupleStaff/coupleA")));
+      await assertFails(getDocs(collection(who(), "coupleStaff")));
+      await assertFails(setDoc(doc(who(), "coupleStaff/coupleA"), { notes: [] }));
+      await assertFails(setDoc(doc(who(), "coupleStaff/newOne"), { notes: [] }));
+      await assertFails(updateDoc(doc(who(), "coupleStaff/coupleA"), { "dayOf.a": "2" }));
+      await assertFails(deleteDoc(doc(who(), "coupleStaff/coupleA")));
+    });
+  }
+  test("a verified staff member can read, list, create, update and delete", async () => {
+    const db = admin();
+    await assertSucceeds(getDoc(doc(db, "coupleStaff/coupleA")));
+    await assertSucceeds(getDocs(collection(db, "coupleStaff")));
+    await assertSucceeds(setDoc(doc(db, "coupleStaff/newOne"), { notes: [] }, { merge: true }));
+    await assertSucceeds(updateDoc(doc(db, "coupleStaff/coupleA"), { "dayOf.a": "2", notes: arrayUnion({ text: "more" }) }));
+    await assertSucceeds(deleteDoc(doc(db, "coupleStaff/newOne")));
   });
 });

@@ -28,14 +28,46 @@ service cloud.firestore {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['slug']) ||
         (resource.data.get('slug', '') == '' && slugAvailable(request.resource.data.slug));
     }
+    // Fields on a couple's record that only staff may write. The couple page never writes
+    // them (staff do, through the admin dashboard), so a couple's own update must not
+    // touch any of them -- a dotted update like "dayOf.x" counts as touching "dayOf".
+    // Staff are unaffected (the isAdmin rule below is a separate allow). The couple can
+    // still READ the record; moving notes/dayOf/closeoutSheet out of it entirely is the
+    // coupleStaff step (see the block below).
+    function staffOnlyKeys() {
+      return ['status', 'notes', 'leadCoordinator', 'dayOf', 'closeoutSheet',
+              'leadCloser', 'venueRentalEndTime', 'vendorArrivalWindow'];
+    }
+    function touchesStaffOnlyKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(staffOnlyKeys());
+    }
+    // A brand-new couple record may only start with the values the signup page itself
+    // writes: active, no notes, an empty coordinator, and none of the staff-only keys.
+    function startsWithInitialStaffValues() {
+      let d = request.resource.data;
+      return d.get('status', 'active') == 'active' &&
+        d.get('notes', []) == [] &&
+        d.get('leadCoordinator', {'name': '', 'email': '', 'phone': ''}) == {'name': '', 'email': '', 'phone': ''} &&
+        !d.keys().hasAny(['dayOf', 'closeoutSheet', 'leadCloser', 'venueRentalEndTime', 'vendorArrivalWindow']);
+    }
     match /couples/{userId} {
       allow read, delete: if request.auth != null && request.auth.uid == userId;
-      allow update: if request.auth != null && request.auth.uid == userId && slugOkOnUpdate();
+      allow update: if request.auth != null && request.auth.uid == userId && slugOkOnUpdate() &&
+        !touchesStaffOnlyKeys();
       // Only a signup creates a couple doc; a vendor session (custom token) never does.
       allow create: if request.auth != null && request.auth.uid == userId &&
         request.auth.token.get('vendorSlotId', null) == null &&
         request.resource.data.signupCode == get(/databases/$(database)/documents/settings/signupCode).data.code &&
-        slugOkOnCreate();
+        slugOkOnCreate() && startsWithInitialStaffValues();
+      allow read, write: if isAdmin();
+    }
+    // Staff-only copy of a couple's internal fields (notes, dayOf, closeoutSheet), one
+    // document per couple, keyed by the couple's uid. Staff read and write it; nobody
+    // else -- including the couple whose uid is the document id -- can. (The catch-all at
+    // the bottom of this file already makes unmatched paths admin-only; this explicit
+    // block states the intent and is covered by tests, so a future broader rule cannot
+    // silently open it.)
+    match /coupleStaff/{coupleUid} {
       allow read, write: if isAdmin();
     }
     match /settings/{document} {

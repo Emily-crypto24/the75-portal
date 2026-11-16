@@ -72,7 +72,7 @@ describe("slug ownership", () => {
     await assertSucceeds(setDoc(doc(user("other"), "couples/other"), newCouple("other", "other-slug")));
     await assertFails(updateDoc(doc(user("other"), "couples/other"), { slug: "sam-alex" }));
     await assertFails(updateDoc(doc(user("other"), "couples/other"), { slug: "" }));
-    await assertSucceeds(updateDoc(doc(user("coupleA"), "couples/coupleA"), { slug: "sam-alex", notes: [] }));
+    await assertSucceeds(updateDoc(doc(user("coupleA"), "couples/coupleA"), { slug: "sam-alex", thingsToDo: [] }));
     await assertSucceeds(updateDoc(doc(user("coupleA"), "couples/coupleA"), { guestList: [{ id: "1" }], "meeting1.coupleNames": "Sam & Alexandra" }));
   });
   test("an account that predates slugs can set one once, to a free slug only", async () => {
