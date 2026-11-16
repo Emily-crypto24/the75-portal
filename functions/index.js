@@ -495,7 +495,9 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
 // check on the server instead: it reads the couple's own record (Admin SDK)
 // and answers only "ok / blocked / date-mismatch / not-found", plus -- for a
 // successful check -- whether THAT one name has a plus-one. It never returns
-// the roster, the blocked list, or anyone else's name.
+// the roster, the blocked list, or anyone else's name. (`onList` is there because the old
+// page told a guest "we couldn't find your exact name on our list" -- the same one yes/no
+// about the name they typed, nothing more.)
 //
 // Same rules as the page had: names are compared trimmed and lower-cased; the
 // blocked list is checked before the date; the date must equal the couple's
@@ -567,7 +569,7 @@ exports.checkGuestGate = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }
     const roster = Array.isArray(couple.guestList) ? couple.guestList : [];
     const match = roster.find((g) => g && guestNameKey(g.guestName) === key);
     logger.info("checkGuestGate", { status: "ok", page: slugTag });
-    return { status: "ok", plusOneAllowed: !!(match && match.plusOneAllowed) };
+    return { status: "ok", onList: !!match, plusOneAllowed: !!(match && match.plusOneAllowed) };
   } catch (err) {
     if (err instanceof HttpsError) throw err;
     logger.error("checkGuestGate: uncaught error", { page: slugTag, message: err && err.message });

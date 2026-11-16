@@ -346,15 +346,15 @@ describe("checkGuestGate", () => {
   beforeEach(() => seedGate());
 
   test("right name and date => ok, and says whether this guest has a plus-one", async () => {
-    assert.deepEqual((await gate()).out, { status: "ok", plusOneAllowed: true });
-    assert.deepEqual((await gate({ name: "Solo Sally" })).out, { status: "ok", plusOneAllowed: false });
-    assert.deepEqual((await gate({ name: "Ned Nameless" })).out, { status: "ok", plusOneAllowed: false });
+    assert.deepEqual((await gate()).out, { status: "ok", onList: true, plusOneAllowed: true });
+    assert.deepEqual((await gate({ name: "Solo Sally" })).out, { status: "ok", onList: true, plusOneAllowed: false });
+    assert.deepEqual((await gate({ name: "Ned Nameless" })).out, { status: "ok", onList: true, plusOneAllowed: false });
   });
-  test("a name that is not on the list still gets in (as before), with no plus-one", async () => {
-    assert.deepEqual((await gate({ name: "Somebody Else" })).out, { status: "ok", plusOneAllowed: false });
+  test("a name that is not on the list still gets in (as before), flagged as not on the list, with no plus-one", async () => {
+    assert.deepEqual((await gate({ name: "Somebody Else" })).out, { status: "ok", onList: false, plusOneAllowed: false });
   });
   test("names are compared trimmed and case-insensitively, exactly like the page did", async () => {
-    assert.deepEqual((await gate({ name: "  PAT guest  " })).out, { status: "ok", plusOneAllowed: true });
+    assert.deepEqual((await gate({ name: "  PAT guest  " })).out, { status: "ok", onList: true, plusOneAllowed: true });
     assert.equal((await gate({ name: "Pat  Guest" })).out.plusOneAllowed, false); // inner spacing is not collapsed (same as the old page)
   });
   test("wrong date => date-mismatch (and nothing else about the guest)", async () => {
@@ -377,7 +377,7 @@ describe("checkGuestGate", () => {
     const outs = [await gate(), await gate({ name: "Troublemaker Tom" }), await gate({ date: "2000-01-01" }), await gate({ slug: "nosuchpage" })];
     const text = JSON.stringify(outs);
     for (const secret of ["Solo Sally", "Ned Nameless", "Troublemaker", "SPAMMY", "internal staff note", "Coord C", "555-0100", "owner@example.com", "Alex & Sam", "someoneelse"]) assert.ok(!text.includes(secret), secret);
-    assert.deepEqual(Object.keys(outs[0].out).sort(), ["plusOneAllowed", "status"]);
+    assert.deepEqual(Object.keys(outs[0].out).sort(), ["onList", "plusOneAllowed", "status"]);
   });
   test("it uses the couple's record at the moment of the call (a name blocked a second ago is blocked now)", async () => {
     assert.equal((await gate({ name: "Late Larry" })).out.status, "ok");
