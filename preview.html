@@ -440,11 +440,33 @@
       }
     }
 
+    // Photo boxes take a WEB LINK, never the photo itself. A pasted "data:" link (the picture's
+    // own bytes) or a very long link used to be accepted and could grow the saved page past
+    // Firestore's 1 MiB per-document limit. Returns "" when the entry is fine (an empty entry
+    // removes the photo), otherwise a friendly message.
+    const PHOTO_LINK_MAX_LENGTH = 2000;
+    function photoLinkProblem(raw) {
+      const u = String(raw == null ? "" : raw).trim();
+      if (!u) return "";
+      if (/^data:/i.test(u.replace(/[\x00-\x20]+/g, ""))) {
+        return "That looks like the photo itself rather than a web link, and photos can't be pasted in directly.\n\nPlease upload the photo to imgur.com/upload, right-click it, choose \"Copy image address,\" and paste that link. A web link starts with https://";
+      }
+      if (u.length > PHOTO_LINK_MAX_LENGTH) {
+        return "That link is too long (over " + PHOTO_LINK_MAX_LENGTH + " characters).\n\nPlease paste a shorter web link that starts with https://";
+      }
+      if (/\s/.test(u) || !/^https:\/\//i.test(u)) {
+        return "That doesn't look like a web link.\n\nPlease paste a link that starts with https:// (for example, from imgur.com).";
+      }
+      return "";
+    }
+
     window.promptForPhoto = function(hiddenInputId, boxId, placeholder) {
       const input = document.getElementById(hiddenInputId);
       const current = input.value || "";
       const url = prompt("Paste your photo link here.\n\nNeed one? Go to imgur.com/upload, drag your photo in, then right-click it and choose \"Copy image address.\"", current);
       if (url === null) return;
+      const problem = photoLinkProblem(url);
+      if (problem) { alert(problem); return; } // nothing changes: the box keeps what it had
       input.value = url.trim();
       renderPhotoBox(boxId, url.trim(), placeholder);
     };
