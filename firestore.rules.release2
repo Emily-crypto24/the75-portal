@@ -1,0 +1,424 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email in [
+          'jess@theseventyfivevenue.com',
+          'emily@theboxhop.com',
+          'emilyt@theseventyfivevenue.com',
+          'seth@theboxhop.com',
+          'kara@theseventyfivevenue.com',
+          'events@theseventyfivevenue.com'
+        ];
+    }
+    // A couple's public-page slug is set once -- at signup, or by the one-time
+    // backfill for accounts that predate slugs -- and then stays fixed (admin can
+    // still change it). It can only be set to a slug that has no public page yet.
+    function slugAvailable(slug) {
+      return slug is string && slug.size() > 0 && slug.size() <= 200 &&
+        !exists(/databases/$(database)/documents/publicCouples/$(slug));
+    }
+    function slugOkOnCreate() {
+      let s = request.resource.data.get('slug', '');
+      return s == '' || slugAvailable(s);
+    }
+    function slugOkOnUpdate() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['slug']) ||
+        (resource.data.get('slug', '') == '' && slugAvailable(request.resource.data.slug));
+    }
+    // Fields on a couple's record that only staff may write. The couple page never writes
+    // them (staff do, through the admin dashboard), so a couple's own update must not
+    // touch any of them -- a dotted update like "dayOf.x" counts as touching "dayOf".
+    // Staff are unaffected (the isAdmin rule below is a separate allow). The couple can
+    // still READ the record; moving notes/dayOf/closeoutSheet out of it entirely is the
+    // coupleStaff step (see the block below).
+    function staffOnlyKeys() {
+      return ['status', 'notes', 'leadCoordinator', 'dayOf', 'closeoutSheet',
+              'leadCloser', 'venueRentalEndTime', 'vendorArrivalWindow'];
+    }
+    function touchesStaffOnlyKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(staffOnlyKeys());
+    }
+    // A brand-new couple record may only start with the values the signup page itself
+    // writes: active, no notes, an empty coordinator, and none of the staff-only keys.
+    function startsWithInitialStaffValues() {
+      let d = request.resource.data;
+      return d.get('status', 'active') == 'active' &&
+        d.get('notes', []) == [] &&
+        d.get('leadCoordinator', {'name': '', 'email': '', 'phone': ''}) == {'name': '', 'email': '', 'phone': ''} &&
+        !d.keys().hasAny(['dayOf', 'closeoutSheet', 'leadCloser', 'venueRentalEndTime', 'vendorArrivalWindow']);
+    }
+    match /couples/{userId} {
+      // Deleting a couple record is staff-only (the isAdmin rule below): the couple pages never delete
+      // it, and a delete followed by a fresh signup-style create would reset staff-controlled fields.
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId && slugOkOnUpdate() &&
+        !touchesStaffOnlyKeys();
+      // Only a signup creates a couple doc; a vendor session (custom token) never does.
+      allow create: if request.auth != null && request.auth.uid == userId &&
+        request.auth.token.get('vendorSlotId', null) == null &&
+        request.resource.data.signupCode == get(/databases/$(database)/documents/settings/signupCode).data.code &&
+        slugOkOnCreate() && startsWithInitialStaffValues();
+      allow read, write: if isAdmin();
+    }
+    // Staff-only copy of a couple's internal fields (notes, dayOf, closeoutSheet), one
+    // document per couple, keyed by the couple's uid. Staff read and write it; nobody
+    // else -- including the couple whose uid is the document id -- can. (The catch-all at
+    // the bottom of this file already makes unmatched paths admin-only; this explicit
+    // block states the intent and is covered by tests, so a future broader rule cannot
+    // silently open it.)
+    match /coupleStaff/{coupleUid} {
+      allow read, write: if isAdmin();
+    }
+    match /settings/{document} {
+      // The signup code is readable by admin only. A signup is still checked
+      // against it by the rule above, which does not need client read access.
+      allow read: if request.auth != null && document != 'signupCode';
+      allow write: if isAdmin();
+    }
+    // RELEASE 2: a couple's public page may only carry the fields the page itself writes. This also means
+    // the guest roster / blocked-names fields (now checked by the guestGate function instead) can never be
+    // written back by an out-of-date browser tab. Staff are not restricted (they clean up and repair pages).
+    function publicPageKeysAllowed() {
+      return request.resource.data.keys().hasOnly([
+        'slug', 'coupleNames', 'weddingDate', 'ceremonyTime', 'receptionTime', 'ceremonyLocation',
+        'ceremonyAddress', 'dinnerStyle', 'mealOptions', 'coverPhotoUrl', 'photoUrl', 'dressCode',
+        'guestItinerary', 'parkingNotes', 'propertyMapUrl', 'placesToStay', 'weddingParty', 'faqs',
+        'itineraryItems', 'thingsToDo', 'registryItems', 'registryLinks'
+      ]);
+    }
+    function ownsPublicPage(slug) {
+      return get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.slug == slug;
+    }
+    match /publicCouples/{slug} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if request.auth != null && (isAdmin() || (ownsPublicPage(slug) && publicPageKeysAllowed()));
+      allow delete: if request.auth != null && (isAdmin() || ownsPublicPage(slug));
+    }
+    // Guests have no account, so this necessarily accepts writes from
+    // anyone -- there's no auth to check. It used to accept literally any
+    // shape at all, which meant a submitted field of the wrong type (e.g.
+    // guestName as a number instead of a string) could reach
+    // autoMergeRSVPSubmissions on the couple's side and throw mid-merge,
+    // silently jamming every other pending RSVP for that couple
+    // indefinitely (the client now defends against that too, but this
+    // closes it at the source instead of only downstream). Restricting to
+    // exactly the fields the real RSVP form sends, as bounded-length
+    // strings, doesn't change anything for a legitimate submission -- it
+    // only rejects malformed/oversized payloads a script could otherwise
+    // throw at this collection directly.
+    function isValidRsvpSubmission() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['coupleSlug','guestName','rsvpStatus','plusOneName','mealChoice','plusOneMealChoice','allergies','plusOneAllergies','submittedAt','status']) &&
+        d.coupleSlug is string && d.coupleSlug.size() > 0 && d.coupleSlug.size() <= 200 &&
+        d.guestName is string && d.guestName.size() > 0 && d.guestName.size() <= 200 &&
+        d.rsvpStatus is string && d.rsvpStatus.size() <= 50 &&
+        d.plusOneName is string && d.plusOneName.size() <= 200 &&
+        d.mealChoice is string && d.mealChoice.size() <= 200 &&
+        d.plusOneMealChoice is string && d.plusOneMealChoice.size() <= 200 &&
+        d.allergies is string && d.allergies.size() <= 500 &&
+        d.plusOneAllergies is string && d.plusOneAllergies.size() <= 500 &&
+        d.submittedAt is string && d.submittedAt.size() <= 40 &&
+        d.status is string && d.status.size() <= 50;
+    }
+
+    match /rsvpSubmissions/{submissionId} {
+      allow create: if isValidRsvpSubmission();
+      allow read, delete: if request.auth != null && (
+        isAdmin() ||
+        resource.data.coupleSlug == get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.slug
+      );
+    }
+    match /linenOrders/{coupleId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // VENDOR PORTAL (added) -- vendors have no account; they authenticate
+    // via link + PIN, verified server-side by the verifyVendorPin Cloud
+    // Function (Admin SDK, bypasses these rules entirely). On success it
+    // mints a custom auth token carrying a `vendorSlotId` claim, which is
+    // what these rules trust -- never anything the client alone can assert.
+    // ═══════════════════════════════════════════════════════════════
+
+    function isOwningCouple(coupleUid) {
+      return request.auth != null && request.auth.uid == coupleUid;
+    }
+
+    // ── Vendor portal on/off switch + pilot list ─────────────────────────
+    // settings/vendorPortal = { enabled: true|false, pilotCoupleSlugs: [..] }.
+    // Any signed-in user can read settings/*, so this doc must never hold
+    // anything sensitive -- only the switch and public couple slugs.
+    //   * missing doc, or `enabled` anything other than boolean true => CLOSED
+    //   * `pilotCoupleSlugs` absent or null                          => open to every couple
+    //   * `pilotCoupleSlugs` a list                                  => open ONLY to couples in it
+    //     (so an empty list means nobody -- clearing it by accident fails closed)
+    //   * `pilotCoupleSlugs` present but not a list                  => CLOSED
+    // Only ever evaluated for a vendor session; couples and admin never depend
+    // on it. get() on a missing doc is an evaluation error, which denies.
+    function vendorPortalOpenFor(coupleSlug) {
+      let s = get(/databases/$(database)/documents/settings/vendorPortal).data;
+      return s.get('enabled', false) == true &&
+        (s.get('pilotCoupleSlugs', null) == null ||
+         (s.pilotCoupleSlugs is list && coupleSlug in s.pilotCoupleSlugs));
+    }
+
+    // A vendor session is only good while ALL of these hold, checked on every
+    // request (so revoking takes effect immediately, not when the token
+    // expires):
+    //   1. its token's sessionEpoch equals the one stored on the slot's
+    //      secrets doc. verifyVendorPin mints the epoch into the token (and
+    //      creates it on a slot's first login); a couple regenerating the PIN
+    //      writes a new one (enforced on vendorSlotSecrets below); deleting the
+    //      slot deletes the doc, so the get() fails and the session is dead.
+    //      A token with no epoch (every session issued before epochs existed)
+    //      and a slot with no epoch yet never match -- the vendor just enters
+    //      their PIN once, which mints one.
+    //   2. the portal switch / pilot list above is open for this slot's couple.
+    function validVendorSession(slotId) {
+      let secrets = get(/databases/$(database)/documents/vendorSlotSecrets/$(slotId)).data;
+      let slot = get(/databases/$(database)/documents/vendorSlots/$(slotId)).data;
+      return secrets.get('sessionEpoch', '') != '' &&
+        secrets.sessionEpoch == request.auth.token.get('sessionEpoch', null) &&
+        vendorPortalOpenFor(slot.get('coupleSlug', null));
+    }
+
+    function isVerifiedVendorFor(slotId) {
+      return request.auth != null && request.auth.token.get('vendorSlotId', null) == slotId &&
+        validVendorSession(slotId);
+    }
+
+    // True for a verified vendor identity whose OWN slot belongs to the same
+    // couple/event as coupleUid -- i.e. any vendor on this event, not just
+    // this exact slot. Backs the spec'd vendor-to-vendor read-only
+    // cross-references (Caterer reading DJ/Band's cake-cutting answer, the
+    // Vendor Meals rollup reading every vendor's own meal request, Shuttle's
+    // last-pickup time feeding DJ/Band, Florist's detail-shot flag feeding
+    // Photographer, etc.) -- never write access, and never another event's
+    // vendors.
+    function isVerifiedVendorForCouple(coupleUid) {
+      return request.auth != null && request.auth.token.get('vendorSlotId', null) != null &&
+        validVendorSession(request.auth.token.vendorSlotId) &&
+        get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == coupleUid;
+    }
+
+    // Same as isVerifiedVendorForCouple, but additionally requires the
+    // requester's own slot to be one of the given categories. Backs the
+    // guest-roster restriction: only Caterer/Bar and Photographer/
+    // Videographer ever see per-guest detail (name/table/allergy/Group) --
+    // every other category can see the aggregate guestCount (mirrored into
+    // the venueInfo doc below, gated by isVerifiedVendorForCouple -- any
+    // vendor of this event, not just caterer/photo) but not who's coming.
+    function isVerifiedVendorForCoupleInCategory(coupleUid, categories) {
+      // Auth must be checked BEFORE the `get()` below, not after -- a `let`
+      // binding evaluates unconditionally, so putting `get()` inside one runs
+      // it even for a fully unauthenticated request, unlike a plain
+      // short-circuited `&&` expression (see isVerifiedVendorForCouple above,
+      // which gets this right). Firestore denies on a rule-evaluation error
+      // either way, so this never opened an actual hole -- just noisier
+      // permission-denied evaluation than necessary for anonymous requests.
+      return request.auth != null && request.auth.token.get('vendorSlotId', null) != null &&
+        validVendorSession(request.auth.token.vendorSlotId) &&
+        get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.coupleUid == coupleUid &&
+        get(/databases/$(database)/documents/vendorSlots/$(request.auth.token.vendorSlotId)).data.category in categories;
+    }
+
+    // Public-safe vendor tab data (company info, logistics, meal request,
+    // notes, status). Never contains the PIN or lockout state -- see
+    // vendorSlotSecrets below.
+    match /vendorSlots/{slotId} {
+      // `resource` is null for a get() on a path that doesn't exist yet (e.g.
+      // an existence check before creating a slot) -- dereferencing
+      // resource.data there throws and denies the whole request, even via the
+      // other `||` branches, unless those are checked first and this one is
+      // explicitly guarded. isAdmin()/isVerifiedVendorFor never touch
+      // `resource`, so they're safe in any order; isOwningCouple/
+      // isVerifiedVendorForCouple here are not.
+      allow read: if isAdmin() || isVerifiedVendorFor(slotId) ||
+        (resource != null && (isOwningCouple(resource.data.coupleUid) || isVerifiedVendorForCouple(resource.data.coupleUid)));
+
+      // Only the couple (for their own event) or admin can create a slot, and a couple's slot must carry
+      // the couple's OWN web address (so a slot cannot be filed under another couple's address, e.g. to
+      // get into the vendor pilot list).
+      allow create: if (isOwningCouple(request.resource.data.coupleUid) &&
+          request.resource.data.get('coupleSlug', '') ==
+            get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.get('slug', '')) ||
+        isAdmin();
+
+      // Couple/admin can change anything; a verified vendor can only touch
+      // their own operational fields -- never coupleUid, coupleSlug, or
+      // category/slotLabel (which identify/rename the slot itself).
+      // 'notes' and 'barNotes' are deliberately NOT in this list (unlike
+      // every other field here) -- a vendor writing either directly could
+      // rewrite or delete another party's individual note, since this rule
+      // only checks WHICH FIELD changed, not which entries within a notes
+      // array did. That per-entry "only the original author may edit/delete
+      // their own note" check needs real logic, not declarative rules, so a
+      // vendor's writes to either go through the saveVendorSlotNotes Cloud
+      // Function instead (Admin SDK, bypasses this rule, enforces
+      // authorship itself). Both live as top-level fields, siblings of
+      // `responses`, specifically so they CAN be excluded here -- a
+      // per-category notes area nested inside `responses` would still be
+      // covered by responses' own broad grant below and defeat the point.
+      // The owning couple and admin keep unrestricted direct access to both,
+      // unchanged.
+      // A couple may not change which couple a slot belongs to, nor point it at another address; the only
+      // allowed change of coupleSlug is filling in an empty one with the couple's own current address.
+      allow update: if (isOwningCouple(resource.data.coupleUid) &&
+          request.resource.data.coupleUid == resource.data.coupleUid &&
+          (request.resource.data.get('coupleSlug', '') == resource.data.get('coupleSlug', '') ||
+           (resource.data.get('coupleSlug', '') == '' &&
+            request.resource.data.get('coupleSlug', '') ==
+              get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.get('slug', '')))) ||
+        isAdmin() ||
+        (isVerifiedVendorFor(slotId) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+           'vendorName', 'contactName', 'phone', 'email', 'website', 'socialHandles',
+           'arrivalTime', 'exitTime', 'mealRequest', 'responses',
+           'status', 'lastEditedBy', 'lastEditedAt'
+         ]));
+
+      // Couple deleting their own vendor (e.g. one they decided not to book)
+      // or admin. A verified vendor can never delete their own slot.
+      allow delete: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
+    }
+
+    // PIN + brute-force lockout state. Couple/admin only (to show/regenerate
+    // the PIN in the "share access" header box). verifyVendorPin reads/writes
+    // this via the Admin SDK -- a verified vendor identity has NO access here,
+    // by design, so the PIN itself is never sent to any vendor's client.
+    match /vendorSlotSecrets/{slotId} {
+      // Same null-resource guard as vendorSlots above.
+      allow read: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
+      // A couple changing the PIN MUST also change sessionEpoch in the same
+      // write -- that is what signs out every vendor already logged in with
+      // the old PIN (see validVendorSession). Enforced here so a client that
+      // forgets to rotate it can't silently leave old sessions alive. Writes
+      // that leave the PIN alone (e.g. clearing the lockout) are unaffected,
+      // and a couple can never reassign the doc to another couple.
+      allow update: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid) &&
+        request.resource.data.coupleUid == resource.data.coupleUid &&
+        (request.resource.data.get('accessPin', null) == resource.data.get('accessPin', null) ||
+         request.resource.data.get('sessionEpoch', null) != resource.data.get('sessionEpoch', null)));
+      allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
+      // Deleted alongside vendorSlots when the couple removes a vendor --
+      // without this the PIN doc would survive deletion, still functional
+      // against a dangling slotId a vendor might retry.
+      allow delete: if isAdmin() || (resource != null && isOwningCouple(resource.data.coupleUid));
+    }
+
+    // Holds ONLY a tagged `notes` array: [{text, author, timestamp}, ...].
+    // {itemId} matches the id of the corresponding entry in the real
+    // couples/{uid}.timelineItems[] array (edited only via the existing
+    // Timeline planning tool / admin editor -- untouched by the vendor
+    // portal), which is mirrored read-only into
+    // couples/{uid}/vendorSharedData/venueInfo (PIN-gated -- see that match
+    // block below) so a vendor can read current time/activity/location
+    // without any broader access to the couple's private document.
+    match /couples/{uid}/sharedTimeline/{itemId} {
+      function vendorBelongsToThisCouple() {
+        return isVerifiedVendorForCouple(uid);
+      }
+
+      allow read: if isOwningCouple(uid) || isAdmin() || vendorBelongsToThisCouple();
+      allow delete: if isOwningCouple(uid) || isAdmin();
+
+      // A vendor may be the first party ever to note a given item (the doc
+      // won't exist yet), so `create` -- not just `update` -- must allow it,
+      // restricted to a notes-only document either way.
+      allow create: if isOwningCouple(uid) || isAdmin() ||
+        (vendorBelongsToThisCouple() && request.resource.data.keys().hasOnly(['notes']));
+      // The vendor path is append-only: the array must strictly grow, and
+      // every note already stored must still be present unchanged. The
+      // client UI only ever appends here (addTimelineNote -- there's no
+      // edit/delete for shared-timeline notes at all), so this costs no
+      // real functionality, and it closes off a vendor rewriting or
+      // deleting another party's note via a raw Firestore call, which
+      // affectedKeys().hasOnly(['notes']) alone never restricted (it only
+      // checked WHICH FIELD changed, not which entries within it did).
+      // Couple/admin are unrestricted, same as every other collection here.
+      allow update: if isOwningCouple(uid) || isAdmin() ||
+        (vendorBelongsToThisCouple() &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['notes']) &&
+         request.resource.data.notes.size() > resource.data.notes.size() &&
+         request.resource.data.notes.hasAll(resource.data.notes));
+    }
+
+    // Named, cross-tab data under couples/{uid}/vendorSharedData/{docId}.
+    // Each doc gets its own match block with its own read/write scope --
+    // deliberately NOT one wildcard granting broad vendor read, since that
+    // would undermine guestRoster's restriction below (Firestore ORs every
+    // matching rule, so a broad grant on the wildcard would leak through
+    // regardless of a narrower rule on the specific path). The wildcard at
+    // the bottom is couple/admin-only, so any future doc added here is
+    // private by default until explicitly opened up in its own block.
+
+    // Full per-guest roster (name, table, allergy note, Group tag) --
+    // MIRRORED from Planning Tools (Guest List). Couple/admin write only --
+    // a vendor never writes anything back into Planning Tools data, even
+    // indirectly through a mirror. Read restricted to Caterer/Bar and
+    // Photographer/Videographer ONLY -- the two categories that actually
+    // need per-guest detail; every other category only ever sees the
+    // aggregate guestCount (mirrored separately into the venueInfo doc
+    // below). Deliberately NOT under publicCouples, which is world-readable
+    // with no auth (by design, for the guest RSVP page) -- allergy/attendee
+    // detail shouldn't be.
+    match /couples/{uid}/vendorSharedData/guestRoster {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCoupleInCategory(uid, ['caterer', 'photo']);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+
+    // Couple's own social handles (Partner 1/Partner 2 + optional extras).
+    // NATIVE to Vendor Access -- there's no Planning Tools field this is
+    // pulled from (there never was one). Read-only to vendors: only the
+    // couple/admin may set it, every vendor of this event may read it.
+    match /couples/{uid}/vendorSharedData/socialHandles {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+
+    // The Hair/Makeup "who's being serviced" roster -- couple/admin-set,
+    // read by any vendor of this event (harmless for a DJ/Caterer/etc. to
+    // see; only Hair/Makeup's own UI actually uses it).
+    match /couples/{uid}/vendorSharedData/hairMakeupRoster {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+
+    // Venue/POC/timeline info for the vendor skeleton (lead coordinator
+    // name+phone+email, venue rental end time, vendor arrival window, the
+    // full day-of timelineItems mirror, and guestCount). SECURITY FIX: this
+    // was previously mirrored into publicCouples, which is world-readable
+    // with NO auth at all (`allow get: if true`, by design, for the
+    // unauthenticated guest RSVP page) -- meaning the venue coordinator's
+    // personal contact info and the couple's full day-of schedule were
+    // reachable by anyone who could guess/obtain a couple's slug, with no
+    // PIN required, completely bypassing the vendor PIN-gate this data was
+    // supposed to sit behind. Moved here instead: readable only by the
+    // owning couple, admin, or a verified vendor of this specific event.
+    match /couples/{uid}/vendorSharedData/venueInfo {
+      allow read: if isOwningCouple(uid) || isAdmin() || isVerifiedVendorForCouple(uid);
+      allow write: if isOwningCouple(uid) || isAdmin();
+    }
+
+    // Fallback for any other/future vendorSharedData doc: private to
+    // couple/admin until explicitly opened up in its own match block above.
+    match /couples/{uid}/vendorSharedData/{docId} {
+      allow read, write: if isOwningCouple(uid) || isAdmin();
+    }
+
+    // settings/venueInfo (directions/parking/groom-suite policy/venue manager
+    // copy, shown read-only on every vendor tab) needs NO new rule -- the
+    // existing `match /settings/{document}` block above already allows read
+    // to any authenticated party (a verified vendor included, since they're
+    // signed in via custom token by the time they read this) and write to
+    // admin only, which is exactly the intended access.
+
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

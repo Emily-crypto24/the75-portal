@@ -51,7 +51,9 @@ service cloud.firestore {
         !d.keys().hasAny(['dayOf', 'closeoutSheet', 'leadCloser', 'venueRentalEndTime', 'vendorArrivalWindow']);
     }
     match /couples/{userId} {
-      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      // Deleting a couple record is staff-only (the isAdmin rule below): the couple pages never delete
+      // it, and a delete followed by a fresh signup-style create would reset staff-controlled fields.
+      allow read: if request.auth != null && request.auth.uid == userId;
       allow update: if request.auth != null && request.auth.uid == userId && slugOkOnUpdate() &&
         !touchesStaffOnlyKeys();
       // Only a signup creates a couple doc; a vendor session (custom token) never does.
@@ -226,8 +228,13 @@ service cloud.firestore {
       allow read: if isAdmin() || isVerifiedVendorFor(slotId) ||
         (resource != null && (isOwningCouple(resource.data.coupleUid) || isVerifiedVendorForCouple(resource.data.coupleUid)));
 
-      // Only the couple (for their own event) or admin can create a slot.
-      allow create: if isOwningCouple(request.resource.data.coupleUid) || isAdmin();
+      // Only the couple (for their own event) or admin can create a slot, and a couple's slot must carry
+      // the couple's OWN web address (so a slot cannot be filed under another couple's address, e.g. to
+      // get into the vendor pilot list).
+      allow create: if (isOwningCouple(request.resource.data.coupleUid) &&
+          request.resource.data.get('coupleSlug', '') ==
+            get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.get('slug', '')) ||
+        isAdmin();
 
       // Couple/admin can change anything; a verified vendor can only touch
       // their own operational fields -- never coupleUid, coupleSlug, or
@@ -246,7 +253,15 @@ service cloud.firestore {
       // covered by responses' own broad grant below and defeat the point.
       // The owning couple and admin keep unrestricted direct access to both,
       // unchanged.
-      allow update: if isOwningCouple(resource.data.coupleUid) || isAdmin() ||
+      // A couple may not change which couple a slot belongs to, nor point it at another address; the only
+      // allowed change of coupleSlug is filling in an empty one with the couple's own current address.
+      allow update: if (isOwningCouple(resource.data.coupleUid) &&
+          request.resource.data.coupleUid == resource.data.coupleUid &&
+          (request.resource.data.get('coupleSlug', '') == resource.data.get('coupleSlug', '') ||
+           (resource.data.get('coupleSlug', '') == '' &&
+            request.resource.data.get('coupleSlug', '') ==
+              get(/databases/$(database)/documents/couples/$(request.auth.uid)).data.get('slug', '')))) ||
+        isAdmin() ||
         (isVerifiedVendorFor(slotId) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
            'vendorName', 'contactName', 'phone', 'email', 'website', 'socialHandles',

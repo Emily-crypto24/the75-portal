@@ -34,7 +34,9 @@ const ref = (p) => ({
   get: async () => snap(p),
   update: async (u) => { if (!store.has(p)) throw new Error("5 NOT_FOUND: " + p); store.set(p, apply(store.get(p), u)); },
 });
+let queryCount = 0;
 const queryCollection = (c, field, value, n) => {
+  queryCount++;
   const docs = [...store.keys()].filter((k) => k.startsWith(c + "/") && !k.slice(c.length + 1).includes("/") && store.get(k)[field] === value)
     .slice(0, n).map((k) => ({ id: k.slice(c.length + 1), data: () => structuredClone2(store.get(k)) }));
   return { size: docs.length, empty: docs.length === 0, docs };
@@ -341,7 +343,7 @@ describe("saveVendorSlotNotes: note id validation", () => {
 
 // ═════════════════════════════════════════════════════════════════
 describe("checkGuestGate", () => {
-  const PAGE = "alexandsam";
+  let PAGE = "alexandsam"; let pageN = 0;   // a fresh page address per test: the limiter's memory lasts for the whole process
   let ip = 0;
   const gate = (over, rawIp) => call(checkGuestGate, { data: { slug: PAGE, name: "Pat Guest", date: "2027-05-08", ...(over || {}) }, rawRequest: { ip: rawIp || "198.51.100." + (++ip % 250) + "." + Math.floor(ip / 250) } });
   const seedGate = (over) => {
@@ -354,7 +356,7 @@ describe("checkGuestGate", () => {
     });
     store.set("couples/uB", { uid: "uB", slug: "someoneelse", meeting1: { weddingDate: "2028-01-01" }, guestList: [{ id: "9", guestName: "Pat Guest", plusOneAllowed: true }] });
   };
-  beforeEach(() => seedGate());
+  beforeEach(() => { PAGE = "alexandsam" + (++pageN); seedGate(); });
 
   test("right name and date => ok, and says whether this guest has a plus-one", async () => {
     assert.deepEqual((await gate()).out, { status: "ok", onList: true, plusOneAllowed: true });
@@ -402,11 +404,48 @@ describe("checkGuestGate", () => {
   test("a very long name is cut to 200 characters, not an error", async () => {
     assert.equal((await gate({ name: "x".repeat(5000) })).out.status, "ok");
   });
-  test("31st call from the same address for the same page is rate limited; another address or page is not", async () => {
-    let tripped = null; for (let i = 1; i <= 31; i++) { const r = await gate({}, "203.0.113.50"); if (!r.ok && r.code === "resource-exhausted") { tripped = i; break; } }
-    assert.equal(tripped, 31);
-    assert.ok((await gate({}, "203.0.113.51")).ok);
-    assert.ok((await gate({ slug: "someoneelse", date: "2028-01-01" }, "203.0.113.50")).ok);
+  test("the 201st call for one page in a window is refused, whoever is calling; other pages are unaffected", async () => {
+    let tripped = null;
+    for (let i = 1; i <= 201; i++) { const r = await gate({}, "203.0.113." + (i % 250)); if (!r.ok && r.code === "resource-exhausted") { tripped = i; break; } }
+    assert.equal(tripped, 201);
+    assert.equal((await gate({}, "198.51.100.200")).code, "resource-exhausted");                       // any address
+    assert.equal((await call(checkGuestGate, { data: { slug: PAGE, name: "Pat Guest", date: "2027-05-08" } })).code, "resource-exhausted"); // no address at all
+    assert.ok((await gate({ slug: "someoneelse", date: "2028-01-01" })).ok);
+  });
+  test("the cap does not depend on the visitor's address at all (many addresses share it; a spoofed address does not escape it)", async () => {
+    let ok = 0; for (let i = 0; i < 200; i++) { const r = await call(checkGuestGate, { data: { slug: PAGE, name: "n" + i, date: "2027-05-08" }, rawRequest: { ip: "10." + (i % 255) + ".0." + i, headers: { "x-forwarded-for": "1.2.3." + i } } }); if (r.ok) ok++; }
+    assert.equal(ok, 200); assert.equal((await gate({}, "9.9.9.9")).code, "resource-exhausted");
+  });
+  test("a refused call does not read the database", async () => {
+    for (let i = 0; i < 200; i++) await gate({});
+    queryCount = 0; assert.equal((await gate({})).code, "resource-exhausted"); assert.equal(queryCount, 0);
+  });
+  test("made-up addresses neither use a real page's allowance nor push its counter out of memory", async () => {
+    for (let i = 0; i < 200; i++) await gate({});                                   // real page is now at its cap
+    for (let i = 0; i < 6000; i++) assert.equal((await gate({ slug: "junk" + i })).out.status, "not-found");
+    assert.equal((await gate({})).code, "resource-exhausted");                      // still capped: the junk flood did not reset it
+    assert.ok((await gate({ slug: "someoneelse", date: "2028-01-01" })).ok);        // and did not consume anyone else's allowance
+  });
+  test("the allowance comes back when the 10-minute window is over", async () => {
+    const realNow = Date.now; let clock = realNow();
+    Date.now = () => clock;
+    try {
+      for (let i = 0; i < 200; i++) await gate({});
+      assert.equal((await gate({})).code, "resource-exhausted");
+      clock += 10 * 60 * 1000 + 1000;
+      assert.ok((await gate({})).ok);
+    } finally { Date.now = realNow; }
+  });
+  test("if the table ever fills up, one old entry is dropped at a time: a page that is still capped stays capped", async () => {
+    const realNow = Date.now; let clock = realNow(); Date.now = () => clock;
+    try {
+      for (let i = 0; i < 5000; i++) store.set("couples/p" + i, { uid: "p" + i, slug: "page" + i, meeting1: { weddingDate: "2027-01-01" }, guestList: [] });
+      await gate({ slug: "page0", date: "2027-01-01" });                           // oldest tracked page
+      for (let i = 0; i < 200; i++) await gate({ slug: "page1", date: "2027-01-01" }); clock += 1;
+      assert.equal((await gate({ slug: "page1", date: "2027-01-01" })).code, "resource-exhausted");
+      for (let i = 2; i < 5000; i++) { clock += 1; await gate({ slug: "page" + i, date: "2027-01-01" }); }   // 4999 more pages: one past the bound
+      assert.equal((await gate({ slug: "page1", date: "2027-01-01" })).code, "resource-exhausted");          // page1 NOT wiped
+    } finally { Date.now = realNow; }
   });
   test("logs carry a status and a short fingerprint only: no names, no page address, no dates, no IP", async () => {
     await gate(); await gate({ name: "Troublemaker Tom" }); await gate({ date: "2000-01-01" }); await gate({ slug: "nosuchpage" });

@@ -20,6 +20,7 @@ const {
 require("firebase/firestore").setLogLevel("silent");
 const RULES = process.env.RULES_FILE ? path.resolve(process.env.RULES_FILE) : path.join(__dirname, "..", "firestore.rules");
 const NEW = process.env.RULES_MODE === "new";
+const REL2 = process.env.RULES_RELEASE === "2";   // RULES_FILE=firestore.rules.release2 RULES_RELEASE=2 RULES_MODE=new
 const newOnly = { skip: NEW ? false : "new-rules-only" };
 
 let env;
@@ -55,7 +56,7 @@ async function seed({ portal = { enabled: true }, withEpochs = true } = {}) {
     const put = (p, d) => setDoc(doc(db, p), d);
     await put("couples/coupleA", { uid: "coupleA", slug: "sam-alex", status: "active", notes: [], timelineItems: [], guestList: [] });
     await put("couples/coupleB", { uid: "coupleB", slug: "jo-pat", status: "active", notes: [] });
-    await put("publicCouples/sam-alex", { names: "Sam & Alex" });
+    await put("publicCouples/sam-alex", { slug: "sam-alex", coupleNames: "Sam & Alex" });
     await put("settings/signupCode", { code: "LETMEIN" });
     await put("settings/resources", { items: [] });
     if (portal) await put("settings/vendorPortal", portal);
@@ -123,10 +124,10 @@ describe("A. live-site paths", () => {
     await assertFails(getDocs(collection(guest(), "publicCouples")));
   });
   test("publicCouples: couple writes only their own slug (index.html:664, 3315)", async () => {
-    await assertSucceeds(setDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), { names: "Sam & Alex 2" }));
-    await assertFails(setDoc(doc(couple("coupleA"), "publicCouples/jo-pat"), { names: "other" }));
-    await assertFails(setDoc(doc(guest(), "publicCouples/sam-alex"), { names: "x" }));
-    await assertSucceeds(setDoc(doc(admin(), "publicCouples/jo-pat"), { names: "admin" }));
+    await assertSucceeds(setDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), { coupleNames: "Sam & Alex 2" }));
+    await assertFails(setDoc(doc(couple("coupleA"), "publicCouples/jo-pat"), { coupleNames: "other" }));
+    await assertFails(setDoc(doc(guest(), "publicCouples/sam-alex"), { coupleNames: "x" }));
+    await assertSucceeds(setDoc(doc(admin(), "publicCouples/jo-pat"), { coupleNames: "admin" }));
   });
 
   test("RSVP: a signed-out guest can submit a valid RSVP (index.html:603)", async () => {
@@ -183,7 +184,7 @@ describe("A. live-site paths", () => {
     const v = vendor("sam-alex_dj", E("sam-alex_dj"));
     await assertFails(getDoc(doc(v, "couples/coupleA")));
     await assertFails(updateDoc(doc(v, "couples/coupleA"), { notesTool: [] }));
-    await assertFails(setDoc(doc(v, "publicCouples/sam-alex"), { names: "x" }));
+    await assertFails(setDoc(doc(v, "publicCouples/sam-alex"), { coupleNames: "x" }));
     await assertFails(getDocs(query(collection(v, "rsvpSubmissions"), where("coupleSlug", "==", "sam-alex"))));
     await assertFails(setDoc(doc(v, "settings/resources"), { items: [] }));
     await assertFails(getDoc(doc(v, "linenOrders/coupleA")));
@@ -520,5 +521,114 @@ describe("D. settings/appVersion (reload-required check)", () => {
     await assertFails(updateDoc(doc(vendor("sam-alex_dj", E("sam-alex_dj")), "settings/appVersion"), { minBuild: 99 }));
     await assertFails(updateDoc(doc(adminUnverified(), "settings/appVersion"), { minBuild: 99 }));
     await assertSucceeds(updateDoc(doc(admin(), "settings/appVersion"), { minBuild: 2 }));
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+// E. PHASE 1 REVIEW FIXES: couple records, vendor slots, public pages
+// ═════════════════════════════════════════════════════════════════
+describe("E. couple records can be deleted by staff only", () => {
+  beforeEach(() => seed());
+  test("the couple cannot delete their own record (so it cannot be wiped and re-created)", newOnly, async () => {
+    await assertFails(deleteDoc(doc(couple("coupleA"), "couples/coupleA")));
+  });
+  test("nobody else can either: another couple, a vendor, a guest, unverified staff, a staff look-alike", newOnly, async () => {
+    for (const who of [couple("coupleB"), vendor("sam-alex_dj", E("sam-alex_dj")), guest(), adminUnverified(), staffLike()])
+      await assertFails(deleteDoc(doc(who, "couples/coupleA")));
+  });
+  test("verified staff can delete a couple record", async () => {
+    await assertSucceeds(deleteDoc(doc(admin(), "couples/coupleA")));
+  });
+  test("the couple can still read and update their record (delete is the only thing that changed)", async () => {
+    await assertSucceeds(getDoc(doc(couple("coupleA"), "couples/coupleA")));
+    await assertSucceeds(updateDoc(doc(couple("coupleA"), "couples/coupleA"), { thingsToDo: [] }));
+  });
+});
+
+describe("E. a couple cannot move a vendor slot to another couple or another address", () => {
+  beforeEach(() => seed());
+  const slotRef = (db, id) => doc(db, "vendorSlots/" + (id || "sam-alex_dj"));
+  const mine = () => couple("coupleA");
+  test("changing coupleUid is denied (this was the way into another couple's roster)", newOnly, async () => {
+    await assertFails(updateDoc(slotRef(mine()), { coupleUid: "coupleB" }));
+  });
+  test("changing coupleSlug to another couple's address is denied (pilot-list bypass)", newOnly, async () => {
+    await assertFails(updateDoc(slotRef(mine()), { coupleSlug: "jo-pat" }));
+    await assertFails(updateDoc(slotRef(mine()), { coupleSlug: "anything-else" }));
+    await assertFails(updateDoc(slotRef(mine()), { coupleSlug: "" }));
+  });
+  test("changing both at once is denied", newOnly, async () => {
+    await assertFails(updateDoc(slotRef(mine()), { coupleUid: "coupleB", coupleSlug: "jo-pat" }));
+  });
+  test("a slot filed with an EMPTY address can be filled in with the couple's own current address, and only that", newOnly, async () => {
+    await patchDoc("vendorSlots/sam-alex_dj", { coupleSlug: "" });
+    await assertFails(updateDoc(slotRef(mine()), { coupleSlug: "jo-pat" }));
+    await assertSucceeds(updateDoc(slotRef(mine()), { coupleSlug: "sam-alex" }));
+  });
+  test("re-writing the same coupleUid / coupleSlug is not a change, so it is allowed", async () => {
+    await assertSucceeds(updateDoc(slotRef(mine()), { coupleUid: "coupleA", coupleSlug: "sam-alex", vendorName: "Renamed" }));
+  });
+  test("every ordinary couple-side change to a slot still works", async () => {
+    for (const patch of [{ vendorName: "X" }, { responses: { a: 1 } }, { notes: [{ id: "n1", text: "t" }] }, { barNotes: [] }, { status: "in_progress" }, { mealRequest: { requested: true } }, { socialHandles: "h" }, { lastEditedBy: "Couple" }])
+      await assertSucceeds(updateDoc(slotRef(mine()), patch));
+  });
+  test("creating a slot: with the couple's own address works; another couple's address or uid is denied", newOnly, async () => {
+    const base = { category: "dj", slotKey: "", slotLabel: "", vendorName: "", responses: {}, notes: [], barNotes: [], status: "not_started" };
+    await assertSucceeds(setDoc(doc(mine(), "vendorSlots/sam-alex_new1"), { ...base, coupleUid: "coupleA", coupleSlug: "sam-alex" }));
+    await assertFails(setDoc(doc(mine(), "vendorSlots/sam-alex_new2"), { ...base, coupleUid: "coupleA", coupleSlug: "jo-pat" }));
+    await assertFails(setDoc(doc(mine(), "vendorSlots/sam-alex_new3"), { ...base, coupleUid: "coupleB", coupleSlug: "jo-pat" }));
+    await assertFails(setDoc(doc(mine(), "vendorSlots/sam-alex_new4"), { ...base, coupleUid: "coupleA" }));
+  });
+  test("a vendor session still cannot change those fields either, and staff still can", async () => {
+    await assertFails(updateDoc(slotRef(vendor("sam-alex_dj", E("sam-alex_dj"))), { coupleUid: "coupleB" }));
+    await assertFails(updateDoc(slotRef(vendor("sam-alex_dj", E("sam-alex_dj"))), { coupleSlug: "jo-pat" }));
+    await assertSucceeds(updateDoc(slotRef(admin()), { coupleSlug: "jo-pat" }));
+  });
+});
+
+const PUBLIC_PAGE_FIELDS = ["slug", "coupleNames", "weddingDate", "ceremonyTime", "receptionTime", "ceremonyLocation", "ceremonyAddress", "dinnerStyle", "mealOptions",
+  "coverPhotoUrl", "photoUrl", "dressCode", "guestItinerary", "parkingNotes", "propertyMapUrl", "placesToStay", "weddingParty", "faqs", "itineraryItems", "thingsToDo", "registryItems", "registryLinks"];
+describe("E. release 2: a public page may only carry the fields the page writes", () => {
+  beforeEach(() => seed());
+  const fullPage = () => Object.fromEntries(PUBLIC_PAGE_FIELDS.map((k) => [k, k === "slug" ? "sam-alex" : (["mealOptions","placesToStay","weddingParty","faqs","itineraryItems","thingsToDo","registryItems","registryLinks"].includes(k) ? [] : "x")]));
+  test("the page's complete set of fields is accepted (create-style replace and update)", async () => {
+    await assertSucceeds(setDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), fullPage()));
+    await assertSucceeds(updateDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), { coupleNames: "Renamed", faqs: [{ q: 1 }] }));
+  });
+  test("the signup seed shape is accepted", async () => {
+    await rawDelete("publicCouples/sam-alex");
+    await assertSucceeds(setDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), { slug: "sam-alex", coupleNames: "A", weddingDate: "", ceremonyTime: "", receptionTime: "", ceremonyLocation: "", dinnerStyle: "Buffet", mealOptions: [], photoUrl: "", dressCode: "", guestItinerary: "", parkingNotes: "", propertyMapUrl: "", placesToStay: [] }));
+  });
+  for (const extra of ["guestRoster", "blockedGuestNames", "names", "email", "anythingElse"]) {
+    test(`a couple writing a page that includes "${extra}" is ${REL2 ? "refused" : "allowed on release 1"}`, async () => {
+      const attempt = setDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), { ...fullPage(), [extra]: extra === "blockedGuestNames" || extra === "guestRoster" ? ["x"] : "x" });
+      await (REL2 ? assertFails(attempt) : assertSucceeds(attempt));
+    });
+  }
+  test("an update that adds a roster field is refused on release 2", async () => {
+    const attempt = updateDoc(doc(couple("coupleA"), "publicCouples/sam-alex"), { guestRoster: [{ name: "x" }] });
+    await (REL2 ? assertFails(attempt) : assertSucceeds(attempt));
+  });
+  test("staff are not restricted: they can write any field and remove the old lists", async () => {
+    await assertSucceeds(setDoc(doc(admin(), "publicCouples/jo-pat"), { slug: "jo-pat", guestRoster: [{ name: "x" }], blockedGuestNames: ["y"], extra: 1 }));
+    const { deleteField } = require("firebase/firestore");
+    await assertSucceeds(updateDoc(doc(admin(), "publicCouples/jo-pat"), { guestRoster: deleteField(), blockedGuestNames: deleteField() }));
+  });
+  test("only the owner (or staff) can touch a page at all; the owner can still delete it; guests read but never write", async () => {
+    await assertFails(setDoc(doc(couple("coupleB"), "publicCouples/sam-alex"), { coupleNames: "x" }));
+    await assertFails(setDoc(doc(guest(), "publicCouples/sam-alex"), { coupleNames: "x" }));
+    await assertSucceeds(getDoc(doc(guest(), "publicCouples/sam-alex")));
+    await assertSucceeds(deleteDoc(doc(couple("coupleA"), "publicCouples/sam-alex")));
+  });
+});
+
+describe("E. release 2 differs from release 1 only in the public-page rule", () => {
+  test("the two rules files are identical once the publicCouples rule (and release 2's helper functions) are removed", () => {
+    const r1 = fs.readFileSync(path.join(__dirname, "..", "firestore.rules"), "utf8");
+    const r2 = fs.readFileSync(path.join(__dirname, "..", "firestore.rules.release2"), "utf8");
+    const strip1 = r1.replace(/\n    match \/publicCouples\/\{slug\} \{[\s\S]*?\n    \}\n/, "\n");
+    const strip2 = r2.replace(/\n    \/\/ RELEASE 2:[\s\S]*?match \/publicCouples\/\{slug\} \{[\s\S]*?\n    \}\n/, "\n");
+    require("node:assert").equal(strip2, strip1);
+    require("node:assert").ok(r2.includes("publicPageKeysAllowed") && !r1.includes("publicPageKeysAllowed"));
   });
 });

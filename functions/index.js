@@ -506,28 +506,36 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
 // wedding date exactly (YYYY-MM-DD).
 //
 // Abuse limits (cost-light on purpose, no database writes): a per-instance,
-// in-memory cap on calls per source address + page, and App Check. In-memory
-// means each function instance counts separately (maxInstances is 10), so the
-// cap is a coarse brake, not an exact one.
+// in-memory cap on calls per couple page (not per visitor), and App Check.
+// In-memory means each function instance counts separately (maxInstances is
+// 10), so the cap is a coarse brake, not an exact one.
 // ═══════════════════════════════════════════════════════════════════════
 const GUEST_SLUG_RE = /^[^\/\s]{1,200}$/;
 const GUEST_NAME_MAX_LEN = 200;
 const GUEST_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const GUEST_GATE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-const GUEST_GATE_MAX_CALLS = 30;             // per address + page, per instance, per window
-const guestGateCalls = new Map();
+const GUEST_GATE_MAX_CALLS = 200;            // per couple page, per function instance, per window
+const GUEST_GATE_MAX_TRACKED_PAGES = 5000;   // safety bound on memory; never reached with real pages
+const guestGateCalls = new Map();            // page address -> { start, count }   (insertion order = age)
 
-function guestGateWithinLimit(ip, slug, now) {
-  const key = String(ip || "unknown") + "|" + slug;
-  if (guestGateCalls.size > 5000) {
-    for (const [k, v] of guestGateCalls) if (now - v.start > GUEST_GATE_WINDOW_MS) guestGateCalls.delete(k);
-    if (guestGateCalls.size > 5000) guestGateCalls.clear();
+// The cap is per PAGE, not per visitor: the visitor's network address is not reliable behind Google's
+// front end (it can be a shared proxy address, or spoofable), so nothing here depends on it. Only pages
+// that really exist are counted, so a flood of made-up addresses can neither use up a real page's
+// allowance nor push its counter out of memory. If the table ever did exceed its bound, ONE oldest entry
+// is dropped at a time (never the whole table).
+function guestGateIsLimited(slug, now) {
+  const cur = guestGateCalls.get(slug);
+  return !!cur && now - cur.start <= GUEST_GATE_WINDOW_MS && cur.count >= GUEST_GATE_MAX_CALLS;
+}
+function guestGateCount(slug, now) {
+  const cur = guestGateCalls.get(slug);
+  if (cur && now - cur.start <= GUEST_GATE_WINDOW_MS) { cur.count++; return; }
+  if (cur) guestGateCalls.delete(slug);                      // window over: start a fresh one (re-inserted as newest)
+  if (guestGateCalls.size >= GUEST_GATE_MAX_TRACKED_PAGES) {
+    for (const [k, v] of guestGateCalls) { if (now - v.start > GUEST_GATE_WINDOW_MS) { guestGateCalls.delete(k); break; } }
+    if (guestGateCalls.size >= GUEST_GATE_MAX_TRACKED_PAGES) guestGateCalls.delete(guestGateCalls.keys().next().value);
   }
-  const cur = guestGateCalls.get(key);
-  if (!cur || now - cur.start > GUEST_GATE_WINDOW_MS) { guestGateCalls.set(key, { start: now, count: 1 }); return true; }
-  if (cur.count >= GUEST_GATE_MAX_CALLS) return false;
-  cur.count++;
-  return true;
+  guestGateCalls.set(slug, { start: now, count: 1 });
 }
 
 const guestNameKey = (s) => String(s == null ? "" : s).trim().toLowerCase();
@@ -546,14 +554,15 @@ exports.checkGuestGate = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIGINS }
     // Log a short fingerprint of the page address, never the address itself (it contains the couple's names).
     slugTag = crypto.createHash("sha256").update(slug).digest("hex").slice(0, 8);
 
-    const ip = request.rawRequest && request.rawRequest.ip;
-    if (!guestGateWithinLimit(ip, slug, Date.now())) {
+    // Already over the cap for this page: refuse without touching the database.
+    if (guestGateIsLimited(slug, Date.now())) {
       logger.info("checkGuestGate", { status: "rate-limited", page: slugTag });
       throw new HttpsError("resource-exhausted", "Too many tries. Please wait a few minutes and try again.");
     }
 
     const found = await db.collection("couples").where("slug", "==", slug).limit(2).get();
     if (found.size === 0) { logger.info("checkGuestGate", { status: "not-found", page: slugTag }); return { status: "not-found" }; }
+    guestGateCount(slug, Date.now());   // only real pages are counted
     if (found.size > 1) {
       // Two couples claim this address: refuse to guess which one is meant.
       logger.warn("checkGuestGate", { status: "ambiguous-page", page: slugTag });
