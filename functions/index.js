@@ -514,7 +514,9 @@ const GUEST_SLUG_RE = /^[^\/\s]{1,200}$/;
 const GUEST_NAME_MAX_LEN = 200;
 const GUEST_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const GUEST_GATE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-const GUEST_GATE_MAX_CALLS = 200;            // per couple page, per function instance, per window
+// 1,000: a wedding of ~200 guests opening the link together (plus retries and wedding-day revisits) must fit
+// comfortably. This is a cost backstop and a coarse brake, not a privacy control.
+const GUEST_GATE_MAX_CALLS = 1000;           // per couple page, per function instance, per window
 const GUEST_GATE_MAX_TRACKED_PAGES = 5000;   // safety bound on memory; never reached with real pages
 const guestGateCalls = new Map();            // page address -> { start, count }   (insertion order = age)
 

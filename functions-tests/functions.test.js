@@ -343,6 +343,7 @@ describe("saveVendorSlotNotes: note id validation", () => {
 
 // ═════════════════════════════════════════════════════════════════
 describe("checkGuestGate", () => {
+  const CAP = 1000;   // must match GUEST_GATE_MAX_CALLS in functions/index.js
   let PAGE = "alexandsam"; let pageN = 0;   // a fresh page address per test: the limiter's memory lasts for the whole process
   let ip = 0;
   const gate = (over, rawIp) => call(checkGuestGate, { data: { slug: PAGE, name: "Pat Guest", date: "2027-05-08", ...(over || {}) }, rawRequest: { ip: rawIp || "198.51.100." + (++ip % 250) + "." + Math.floor(ip / 250) } });
@@ -404,24 +405,24 @@ describe("checkGuestGate", () => {
   test("a very long name is cut to 200 characters, not an error", async () => {
     assert.equal((await gate({ name: "x".repeat(5000) })).out.status, "ok");
   });
-  test("the 201st call for one page in a window is refused, whoever is calling; other pages are unaffected", async () => {
+  test("the 1,001st call for one page in a window is refused, whoever is calling; other pages are unaffected", async () => {
     let tripped = null;
-    for (let i = 1; i <= 201; i++) { const r = await gate({}, "203.0.113." + (i % 250)); if (!r.ok && r.code === "resource-exhausted") { tripped = i; break; } }
-    assert.equal(tripped, 201);
+    for (let i = 1; i <= CAP + 1; i++) { const r = await gate({}, "203.0.113." + (i % 250)); if (!r.ok && r.code === "resource-exhausted") { tripped = i; break; } }
+    assert.equal(tripped, CAP + 1);
     assert.equal((await gate({}, "198.51.100.200")).code, "resource-exhausted");                       // any address
     assert.equal((await call(checkGuestGate, { data: { slug: PAGE, name: "Pat Guest", date: "2027-05-08" } })).code, "resource-exhausted"); // no address at all
     assert.ok((await gate({ slug: "someoneelse", date: "2028-01-01" })).ok);
   });
   test("the cap does not depend on the visitor's address at all (many addresses share it; a spoofed address does not escape it)", async () => {
-    let ok = 0; for (let i = 0; i < 200; i++) { const r = await call(checkGuestGate, { data: { slug: PAGE, name: "n" + i, date: "2027-05-08" }, rawRequest: { ip: "10." + (i % 255) + ".0." + i, headers: { "x-forwarded-for": "1.2.3." + i } } }); if (r.ok) ok++; }
-    assert.equal(ok, 200); assert.equal((await gate({}, "9.9.9.9")).code, "resource-exhausted");
+    let ok = 0; for (let i = 0; i < CAP; i++) { const r = await call(checkGuestGate, { data: { slug: PAGE, name: "n" + i, date: "2027-05-08" }, rawRequest: { ip: "10." + (i % 255) + ".0." + i, headers: { "x-forwarded-for": "1.2.3." + i } } }); if (r.ok) ok++; }
+    assert.equal(ok, CAP); assert.equal((await gate({}, "9.9.9.9")).code, "resource-exhausted");
   });
   test("a refused call does not read the database", async () => {
-    for (let i = 0; i < 200; i++) await gate({});
+    for (let i = 0; i < CAP; i++) await gate({});
     queryCount = 0; assert.equal((await gate({})).code, "resource-exhausted"); assert.equal(queryCount, 0);
   });
   test("made-up addresses neither use a real page's allowance nor push its counter out of memory", async () => {
-    for (let i = 0; i < 200; i++) await gate({});                                   // real page is now at its cap
+    for (let i = 0; i < CAP; i++) await gate({});                                   // real page is now at its cap
     for (let i = 0; i < 6000; i++) assert.equal((await gate({ slug: "junk" + i })).out.status, "not-found");
     assert.equal((await gate({})).code, "resource-exhausted");                      // still capped: the junk flood did not reset it
     assert.ok((await gate({ slug: "someoneelse", date: "2028-01-01" })).ok);        // and did not consume anyone else's allowance
@@ -430,7 +431,7 @@ describe("checkGuestGate", () => {
     const realNow = Date.now; let clock = realNow();
     Date.now = () => clock;
     try {
-      for (let i = 0; i < 200; i++) await gate({});
+      for (let i = 0; i < CAP; i++) await gate({});
       assert.equal((await gate({})).code, "resource-exhausted");
       clock += 10 * 60 * 1000 + 1000;
       assert.ok((await gate({})).ok);
@@ -441,7 +442,7 @@ describe("checkGuestGate", () => {
     try {
       for (let i = 0; i < 5000; i++) store.set("couples/p" + i, { uid: "p" + i, slug: "page" + i, meeting1: { weddingDate: "2027-01-01" }, guestList: [] });
       await gate({ slug: "page0", date: "2027-01-01" });                           // oldest tracked page
-      for (let i = 0; i < 200; i++) await gate({ slug: "page1", date: "2027-01-01" }); clock += 1;
+      for (let i = 0; i < CAP; i++) await gate({ slug: "page1", date: "2027-01-01" }); clock += 1;
       assert.equal((await gate({ slug: "page1", date: "2027-01-01" })).code, "resource-exhausted");
       for (let i = 2; i < 5000; i++) { clock += 1; await gate({ slug: "page" + i, date: "2027-01-01" }); }   // 4999 more pages: one past the bound
       assert.equal((await gate({ slug: "page1", date: "2027-01-01" })).code, "resource-exhausted");          // page1 NOT wiped

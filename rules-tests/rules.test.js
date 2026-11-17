@@ -632,3 +632,13 @@ describe("E. release 2 differs from release 1 only in the public-page rule", () 
     require("node:assert").ok(r2.includes("publicPageKeysAllowed") && !r1.includes("publicPageKeysAllowed"));
   });
 });
+
+describe("E. release 2: the allowed-field list in the rules is exactly the page's field list", () => {
+  test("hasOnly([...]) in firestore.rules.release2 equals the fields the page writes (as listed in these tests)", () => {
+    const r2 = fs.readFileSync(path.join(__dirname, "..", "firestore.rules.release2"), "utf8");
+    const m = r2.match(/function publicPageKeysAllowed\(\) \{[\s\S]*?hasOnly\(\[([\s\S]*?)\]\)/);
+    require("node:assert").ok(m, "allowed-field list not found");
+    const inRules = [...m[1].matchAll(/'([A-Za-z]+)'/g)].map((x) => x[1]).sort();
+    require("node:assert").deepEqual(inRules, [...PUBLIC_PAGE_FIELDS].sort());
+  });
+});
