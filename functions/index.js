@@ -492,10 +492,9 @@ exports.saveVendorSlotNotes = onCall({ enforceAppCheck: true, cors: ALLOWED_ORIG
 // ═══════════════════════════════════════════════════════════════════════
 // Guest page gate
 //
-// A couple's public page used to carry the full guest roster and the
-// blocked-names list so the page itself could check a guest's name. That made
-// both lists readable by anyone holding the page link. This function does the
-// check on the server instead: it reads the couple's own record (Admin SDK)
+// The check that lets a guest into a couple's page runs on the server, so the
+// public page does not need to carry the guest roster or the blocked-names
+// list. This function reads the couple's own record (Admin SDK)
 // and answers only "ok / blocked / date-mismatch / not-found", plus -- for a
 // successful check -- whether THAT one name has a plus-one. It never returns
 // the roster, the blocked list, or anyone else's name. (`onList` is there because the old

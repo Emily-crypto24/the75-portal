@@ -277,7 +277,7 @@
         } else if (code === "functions/resource-exhausted") {
           resetBtn(); showGuestGateError("Too many tries. Please wait a few minutes and try again."); return;
         } else {
-          resetBtn(); showGuestGateError("We couldn't check your details just now. Please try again in a moment."); return;
+          resetBtn(); showGuestGateError("We couldn't check your details just now. Please try again in a moment, try a different browser, or contact us."); return;
         }
       }
       resetBtn();
@@ -771,6 +771,7 @@
       if (isVendorViewMode) return;
       if (user) {
         currentUser = user;
+        checkPageIsCurrent();
 
         // Admin accounts must have a verified email (required by our Firestore rules).
         // Google sign-in verifies automatically; email/password accounts need to
@@ -3570,6 +3571,7 @@
 };
 
     async function syncPublicProfile(uid) {
+      if (pageIsOutdated) return; // an out-of-date tab must not rewrite the public page
       try {
         const snap = await getDoc(doc(db, "couples", uid));
         if (!snap.exists()) return;
@@ -5216,6 +5218,40 @@
       a.download = fn; a.click();
     }
 
+    // ── "RELOAD REQUIRED" CHECK FOR OPEN TABS ────────────────────────────────────
+    // A tab keeps running the page it loaded until it is reloaded. When a change must reach every open
+    // tab (for example when internal fields move to a new place), staff raise settings/appVersion ->
+    // minBuild above PAGE_BUILD. Any signed-in tab on an older build then shows a "reload" banner, stops
+    // writing the staff-only copy, and stops refreshing the public page. (Tabs opened before this check
+    // existed cannot see it, so they need one manual reload at the time this version goes live.)
+    const PAGE_BUILD = 1;
+    let pageIsOutdated = false;
+    function showReloadRequired() {
+      pageIsOutdated = true;
+      if (document.getElementById("reload-required-banner")) return;
+      const bar = document.createElement("div");
+      bar.id = "reload-required-banner";
+      bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483000;background:#2C2C2C;color:#fdfaf6;padding:14px 20px;font-size:14px;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,.4);";
+      bar.appendChild(document.createTextNode("A newer version of this page is available. Please reload to keep your work safe. "));
+      const b = document.createElement("button");
+      b.textContent = "Reload now";
+      b.style.cssText = "margin-left:12px;padding:6px 16px;font-size:13px;cursor:pointer;";
+      b.onclick = () => window.location.reload();
+      bar.appendChild(b);
+      document.body.appendChild(bar);
+    }
+    async function checkPageIsCurrent() {
+      if (!currentUser || pageIsOutdated) return;
+      try {
+        const sn = await getDoc(doc(db, "settings", "appVersion"));
+        const min = sn.exists() ? Number(sn.data().minBuild) : 0;
+        if (Number.isFinite(min) && min > PAGE_BUILD) showReloadRequired();
+      } catch (e) { /* offline, or no access: never block anyone because of this check */ }
+    }
+    window.checkPageIsCurrent = checkPageIsCurrent;
+    setInterval(checkPageIsCurrent, 10 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) checkPageIsCurrent(); });
+
     // ── STAFF-ONLY INTERNAL FIELDS: notes, dayOf, closeoutSheet ──────────────────
     // These belong to The Seventy Five staff. They live in the couple's own record AND in a
     // staff-only copy, coupleStaff/{uid}, which only staff can read or write. While both exist
@@ -5239,6 +5275,7 @@
     // existing notes / day-of data instead of losing them, and arrayUnion / dotted updates need no special
     // handling). Fields not touched are left alone in the staff copy.
     async function writeStaffFields(uid, updates) {
+      if (pageIsOutdated) throw new Error("This page is out of date. Please reload it and try again.");
       const fsm = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
       const coupleRef = fsm.doc(db, "couples", uid);
       await fsm.updateDoc(coupleRef, updates);

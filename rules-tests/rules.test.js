@@ -103,8 +103,8 @@ describe("A. live-site paths", () => {
   ]) {
     test(`couple saves own doc: ${label}`, async () => { await assertSucceeds(updateDoc(doc(couple("coupleA"), "couples/coupleA"), patch)); });
   }
-  // The deployed rules let a couple write this staff-only field; the Phase 1 rules do not (see section D).
-  test("couple writing dayOf (staff-only): allowed on the deployed rules, denied on the new rules", async () => {
+  // The two rule sets differ on purpose here (see section D).
+  test("couple updating dayOf: the result depends on the rule set", async () => {
     const attempt = updateDoc(doc(couple("coupleA"), "couples/coupleA"), { "dayOf.uniqueNotes": [] });
     await (NEW ? assertFails(attempt) : assertSucceeds(attempt));
   });
@@ -504,5 +504,21 @@ describe("D. coupleStaff is staff-only (works on the deployed rules too)", () =>
     await assertSucceeds(setDoc(doc(db, "coupleStaff/newOne"), { notes: [] }, { merge: true }));
     await assertSucceeds(updateDoc(doc(db, "coupleStaff/coupleA"), { "dayOf.a": "2", notes: arrayUnion({ text: "more" }) }));
     await assertSucceeds(deleteDoc(doc(db, "coupleStaff/newOne")));
+  });
+});
+
+describe("D. settings/appVersion (reload-required check)", () => {
+  beforeEach(async () => { await seed(); await rawSet("settings/appVersion", { minBuild: 1 }); });
+  test("any signed-in account can read it (couples, staff, vendors); a signed-out visitor cannot", async () => {
+    await assertSucceeds(getDoc(doc(couple("coupleA"), "settings/appVersion")));
+    await assertSucceeds(getDoc(doc(admin(), "settings/appVersion")));
+    await assertSucceeds(getDoc(doc(vendor("sam-alex_dj", E("sam-alex_dj")), "settings/appVersion")));
+    await assertFails(getDoc(doc(guest(), "settings/appVersion")));
+  });
+  test("only a verified staff member can change it", async () => {
+    await assertFails(updateDoc(doc(couple("coupleA"), "settings/appVersion"), { minBuild: 99 }));
+    await assertFails(updateDoc(doc(vendor("sam-alex_dj", E("sam-alex_dj")), "settings/appVersion"), { minBuild: 99 }));
+    await assertFails(updateDoc(doc(adminUnverified(), "settings/appVersion"), { minBuild: 99 }));
+    await assertSucceeds(updateDoc(doc(admin(), "settings/appVersion"), { minBuild: 2 }));
   });
 });
