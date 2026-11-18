@@ -20,6 +20,7 @@
     import { getAuth, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, sendEmailVerification, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
     import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
     import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyBmqd_uayeu-aCAteNoC5N5TIigbJhiKt8",
@@ -43,6 +44,7 @@
 
     const auth = getAuth(app);
     const db = getFirestore(app);
+    const functions = getFunctions(app);
     const provider = new GoogleAuthProvider();
 
     // Must match firestore.rules' isAdmin() email list exactly. The client used to
@@ -126,6 +128,9 @@
 
     let autoSaveTimers = {};
     let isGuestViewMode = false;
+    let guestGateSlug = "";   // the address in the link; also the public page's document id
+    // What the server said about the guest who passed the gate (the public page no longer carries the roster).
+    let guestGateResult = { onList: false, plusOneAllowed: false };
 
     // ── PUBLIC GUEST VIEW ROUTING ─────────────────────────────────
     // Guest links (e.g. planning.theseventyfivevenue.com/emilyandjames) hit GitHub's 404 page,
@@ -146,6 +151,7 @@
     let guestGateData = null;
 
     async function loadGuestView(slug) {
+      guestGateSlug = slug;
       const gateError = document.getElementById("guest-gate-error");
       try {
         const snap = await getDoc(doc(db, "publicCouples", slug));
@@ -164,7 +170,23 @@
       if (el) { el.textContent = msg; el.style.display = "block"; }
     }
 
-    window.submitGuestGate = function() {
+    // The name and date are checked on the server (checkGuestGate): the public page no longer carries the
+    // guest roster or the blocked-names list. If the server cannot be reached the guest is NOT let in.
+    // One narrow roll-out exception: if the server function is not deployed yet ("not-found" /
+    // "unimplemented") AND this page still carries the old lists, the old in-page check is used.
+    function legacyGateAvailable() {
+      return !!guestGateData && (Array.isArray(guestGateData.blockedGuestNames) || Array.isArray(guestGateData.guestRoster));
+    }
+    function legacyGateVerdict(name, enteredDate) {
+      const blockedNames = (guestGateData.blockedGuestNames || []).map(n => String(n).trim().toLowerCase());
+      if (blockedNames.includes(name.toLowerCase())) return { status: "blocked" };
+      if (enteredDate !== guestGateData.weddingDate) return { status: "date-mismatch" };
+      const roster = Array.isArray(guestGateData.guestRoster) ? guestGateData.guestRoster : [];
+      const match = roster.find(g => (g.name || "").trim().toLowerCase() === name.trim().toLowerCase());
+      return { status: "ok", onList: !!match, plusOneAllowed: match ? !!match.plusOneAllowed : false };
+    }
+
+    window.submitGuestGate = async function() {
       const nameEl = document.getElementById("guest-gate-name");
       const dateEl = document.getElementById("guest-gate-date");
       const name = nameEl.value.trim();
@@ -175,16 +197,40 @@
       if (!name) { showGuestGateError("Please enter your name."); return; }
       if (!enteredDate) { showGuestGateError("Please enter the wedding date from your invitation."); return; }
 
-      const blockedNames = (guestGateData.blockedGuestNames || []).map(n => n.trim().toLowerCase());
-      if (blockedNames.includes(name.toLowerCase())) {
+      const btn = document.querySelector('#guest-gate button[onclick*="submitGuestGate"]');
+      const btnLabel = btn ? btn.textContent : "";
+      const resetBtn = () => { if (btn) { btn.disabled = false; btn.textContent = btnLabel; } };
+      if (btn) { btn.disabled = true; btn.textContent = "Checking…"; }
+
+      let verdict;
+      try {
+        verdict = (await httpsCallable(functions, "checkGuestGate")({ slug: guestGateSlug, name, date: enteredDate })).data || {};
+      } catch (e) {
+        const code = String((e && e.code) || "");
+        if ((code === "functions/not-found" || code === "functions/unimplemented") && legacyGateAvailable()) {
+          verdict = legacyGateVerdict(name, enteredDate);
+        } else if (code === "functions/resource-exhausted") {
+          resetBtn(); showGuestGateError("Too many tries. Please wait a few minutes and try again."); return;
+        } else {
+          resetBtn(); showGuestGateError("We couldn't check your details just now. Please try again in a moment, try a different browser, or contact us."); return;
+        }
+      }
+      resetBtn();
+
+      if (verdict.status === "blocked") {
         showGuestGateError("Access to this page has been restricted. Please contact the couple directly.");
         return;
       }
-      if (enteredDate !== guestGateData.weddingDate) {
+      if (verdict.status === "date-mismatch") {
         showGuestGateError("That date doesn't match our records — please double check your invitation and try again.");
         return;
       }
+      if (verdict.status !== "ok") {
+        showGuestGateError("We couldn't find this page. Please check your link and try again.");
+        return;
+      }
 
+      guestGateResult = { onList: !!verdict.onList, plusOneAllowed: !!verdict.plusOneAllowed };
       document.getElementById("guest-gate").style.display = "none";
       document.getElementById("guest-content").style.display = "block";
       renderGuestContent(guestGateData, name);
@@ -521,9 +567,8 @@
         return;
       }
 
-      const roster = Array.isArray(data.guestRoster) ? data.guestRoster : [];
-      const match = roster.find(g => (g.name || "").trim().toLowerCase() === guestName.trim().toLowerCase());
-      const plusOneAllowed = match ? !!match.plusOneAllowed : false;
+      const match = guestGateResult.onList;                    // from the server's answer at the gate
+      const plusOneAllowed = guestGateResult.plusOneAllowed;
       const isPlated = data.dinnerStyle === "Plated";
       const mealOptions = Array.isArray(data.mealOptions) ? data.mealOptions : [];
       const mealOptionsHtml = '<option value="">Select a meal...</option>' + mealOptions.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
@@ -595,10 +640,8 @@
     window.reopenGuestRSVPForm = function() {
       const stored = getStoredRSVP(guestGateData.slug);
       const wrap = document.getElementById("guest-rsvp-form");
-      const roster = Array.isArray(guestGateData.guestRoster) ? guestGateData.guestRoster : [];
       const guestName = (stored && stored.guestName) || "";
-      const match = roster.find(g => (g.name || "").trim().toLowerCase() === guestName.trim().toLowerCase());
-      const plusOneAllowed = match ? !!match.plusOneAllowed : false;
+      const plusOneAllowed = guestGateResult.plusOneAllowed;   // from the server's answer at the gate
       const isPlated = guestGateData.dinnerStyle === "Plated";
       const mealOptions = Array.isArray(guestGateData.mealOptions) ? guestGateData.mealOptions : [];
       const mealOptionsHtml = '<option value="">Select a meal...</option>' + mealOptions.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
@@ -700,6 +743,7 @@
       if (!user && sessionUid) { sessionUid = null; window.location.reload(); return; }
       if (user) {
         currentUser = user;
+        checkPageIsCurrent();
 
         // Admin accounts must have a verified email (required by our Firestore rules).
         // Google sign-in verifies automatically; email/password accounts need to
@@ -775,8 +819,8 @@
             try {
               await setDoc(doc(db, "publicCouples", slug), {
                 slug, coupleNames: pendingCoupleNames || "", weddingDate: pendingWeddingDate || "",
-                ceremonyTime: "", receptionTime: "", ceremonyLocation: "", blockedGuestNames: [],
-                guestRoster: [], dinnerStyle: "Buffet", mealOptions: [],
+                ceremonyTime: "", receptionTime: "", ceremonyLocation: "",
+                dinnerStyle: "Buffet", mealOptions: [],
                 photoUrl: "", dressCode: "", guestItinerary: "", parkingNotes: "", propertyMapUrl: "", placesToStay: []
               });
             } catch(e) {}
@@ -3516,6 +3560,7 @@
 };
 
     async function syncPublicProfile(uid) {
+      if (pageIsOutdated) return; // an out-of-date tab must not rewrite the public page
       try {
         const snap = await getDoc(doc(db, "couples", uid));
         if (!snap.exists()) return;
@@ -3523,7 +3568,8 @@
         if (!data.slug) return;
         const m1 = data.meeting1 || {};
         const guestList = Array.isArray(data.guestList) ? data.guestList : [];
-        const guestRoster = guestList.map(g => ({ name: g.guestName || "", plusOneAllowed: !!g.plusOneAllowed }));
+        // The guest roster and blocked names are deliberately NOT copied to the public page: the guest
+        // page asks the checkGuestGate function instead.
         const settings = data.guestListSettings || {};
         const gpc = data.guestPortalContent || {};
         await setDoc(doc(db, "publicCouples", data.slug), {
@@ -3534,8 +3580,6 @@
           receptionTime: m1.receptionTime || "",
           ceremonyLocation: m1.ceremonyLocation || "",
           ceremonyAddress: m1.ceremonyAddress || "",
-          blockedGuestNames: Array.isArray(data.blockedGuestNames) ? data.blockedGuestNames : [],
-          guestRoster,
           dinnerStyle: settings.dinnerStyle || "Buffet",
           mealOptions: Array.isArray(settings.mealOptions) ? settings.mealOptions : [],
           coverPhotoUrl: gpc.coverPhotoUrl || "",
@@ -4232,6 +4276,7 @@
       const snap = await gd(dc(db,"couples",uid));
       if (!snap.exists()) return;
       const data = snap.data();
+      Object.assign(data, await loadStaffFields(uid, data)); // internal notes come from the staff-only copy when it has them
       document.getElementById("admin-modal-title").textContent = (data.meeting1||{}).coupleNames || data.displayName || data.email || "Couple";
       document.getElementById("admin-modal-body").innerHTML = buildDetail(data, uid);
       document.getElementById("admin-modal").style.display = "flex";
@@ -4331,7 +4376,7 @@
       const author = currentUser.displayName ? currentUser.displayName.split(" ")[0] : (currentUser.email || "Admin");
       const note = { text, author, timestamp: new Date().toISOString() };
       try {
-        await ud(dc(db,"couples",uid), { notes: arrayUnion(note) });
+        await writeStaffFields(uid, { notes: arrayUnion(note) });
         await window.openCouple(uid); // refresh modal with new note
       } catch(e) { alert("Couldn't save note: " + e.message); }
     };
@@ -4341,9 +4386,10 @@
       const { doc: dc, getDoc: gd, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
       try {
         const snap = await gd(dc(db,"couples",uid));
-        const notes = Array.isArray(snap.data().notes) ? snap.data().notes : [];
+        const sf = await loadStaffFields(uid, snap.data());
+        const notes = Array.isArray(sf.notes) ? sf.notes.slice() : [];
         notes.splice(index, 1);
-        await ud(dc(db,"couples",uid), { notes });
+        await writeStaffFields(uid, { notes });
         await window.openCouple(uid); // refresh modal
       } catch(e) { alert("Couldn't delete note: " + e.message); }
     };
@@ -4465,6 +4511,7 @@
       const snap = await gd(dc(db,"couples",uid));
       if (!snap.exists()) { alert("Couldn't load couple data."); return; }
       dofCurrentData = snap.data();
+      dofCurrentData.dayOf = (await loadStaffFields(uid, dofCurrentData)).dayOf;
       dofTimelineCache = Array.isArray(dofCurrentData.timelineItems) ? dofCurrentData.timelineItems : [];
       const names = (dofCurrentData.meeting1||{}).coupleNames || dofCurrentData.displayName || "Couple";
       const rawDate = (dofCurrentData.meeting1||{}).weddingDate;
@@ -4524,7 +4571,7 @@
       dofRenderNotes();
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db,"couples",dofCurrentUid), { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
+        await writeStaffFields(dofCurrentUid, { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
         dofSyncStamp();
       } catch(e) { alert("Couldn't save note: " + e.message); }
     };
@@ -4535,7 +4582,7 @@
       dofRenderNotes();
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db,"couples",dofCurrentUid), { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
+        await writeStaffFields(dofCurrentUid, { "dayOf.uniqueNotes": dofCurrentData.dayOf.uniqueNotes });
         dofSyncStamp();
       } catch(e) { alert("Couldn't delete note: " + e.message); }
     };
@@ -4578,7 +4625,7 @@
       if (wrap) { wrap.textContent = val || "Tap to add"; wrap.className = "dof-field-val dof-editable" + (val ? "" : " empty"); }
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db,"couples",dofCurrentUid), { [`dayOf.${key}`]: val });
+        await writeStaffFields(dofCurrentUid, { [`dayOf.${key}`]: val });
         dofSyncStamp();
       } catch(e) { alert("Couldn't save: " + e.message); }
     };
@@ -4664,6 +4711,7 @@
       const snap = await gd(dc(db,"couples",uid));
       if (!snap.exists()) { alert("Couldn't load couple data."); return; }
       clsCurrentData = snap.data();
+      clsCurrentData.closeoutSheet = (await loadStaffFields(uid, clsCurrentData)).closeoutSheet;
       clsRender();
     };
 
@@ -4677,7 +4725,7 @@
       clsCurrentData.closeoutSheet[key] = val;
       try {
         const { doc: dc, updateDoc: ud } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        await ud(dc(db,"couples",clsCurrentUid), { [`closeoutSheet.${key}`]: val });
+        await writeStaffFields(clsCurrentUid, { [`closeoutSheet.${key}`]: val });
       } catch(e) { console.error(e); }
     };
 
@@ -4860,6 +4908,75 @@
       const a = document.createElement("a");
       a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
       a.download = fn; a.click();
+    }
+
+    // ── "RELOAD REQUIRED" CHECK FOR OPEN TABS ────────────────────────────────────
+    // A tab keeps running the page it loaded until it is reloaded. When a change must reach every open
+    // tab (for example when internal fields move to a new place), staff raise settings/appVersion ->
+    // minBuild above PAGE_BUILD. Any signed-in tab on an older build then shows a "reload" banner, stops
+    // writing the staff-only copy, and stops refreshing the public page. (Tabs opened before this check
+    // existed cannot see it, so they need one manual reload at the time this version goes live.)
+    const PAGE_BUILD = 1;
+    let pageIsOutdated = false;
+    function showReloadRequired() {
+      pageIsOutdated = true;
+      if (document.getElementById("reload-required-banner")) return;
+      const bar = document.createElement("div");
+      bar.id = "reload-required-banner";
+      bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483000;background:#2C2C2C;color:#fdfaf6;padding:14px 20px;font-size:14px;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,.4);";
+      bar.appendChild(document.createTextNode("A newer version of this page is available. Please reload to keep your work safe. "));
+      const b = document.createElement("button");
+      b.textContent = "Reload now";
+      b.style.cssText = "margin-left:12px;padding:6px 16px;font-size:13px;cursor:pointer;";
+      b.onclick = () => window.location.reload();
+      bar.appendChild(b);
+      document.body.appendChild(bar);
+    }
+    async function checkPageIsCurrent() {
+      if (!currentUser || pageIsOutdated) return;
+      try {
+        const sn = await getDoc(doc(db, "settings", "appVersion"));
+        const min = sn.exists() ? Number(sn.data().minBuild) : 0;
+        if (Number.isFinite(min) && min > PAGE_BUILD) showReloadRequired();
+      } catch (e) { /* offline, or no access: never block anyone because of this check */ }
+    }
+    window.checkPageIsCurrent = checkPageIsCurrent;
+    setInterval(checkPageIsCurrent, 10 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) checkPageIsCurrent(); });
+
+    // ── STAFF-ONLY INTERNAL FIELDS: notes, dayOf, closeoutSheet ──────────────────
+    // These belong to The Seventy Five staff. They live in the couple's own record AND in a
+    // staff-only copy, coupleStaff/{uid}, which only staff can read or write. While both exist
+    // (the "dual" phase):
+    //   * a read takes a field from coupleStaff when that document has it, otherwise from the
+    //     couple's record (so nothing is lost for a couple whose copy has not been made yet);
+    //   * a write goes to the couple's record first, exactly as before, then the staff copy is brought
+    //     up to match for the field that changed. A later step drops the copy in the couple's record.
+    const STAFF_FIELDS = ["notes", "dayOf", "closeoutSheet"];
+    async function loadStaffFields(uid, coupleData) {
+      const fsm = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      let staff = null;
+      try { const sn = await fsm.getDoc(fsm.doc(db, "coupleStaff", uid)); staff = sn.exists() ? sn.data() : null; }
+      catch (e) { console.warn("Staff-only copy could not be read; using the couple's record.", e && e.code); }
+      const out = {};
+      STAFF_FIELDS.forEach(k => { out[k] = (staff && Object.prototype.hasOwnProperty.call(staff, k)) ? staff[k] : (coupleData || {})[k]; });
+      return out;
+    }
+    // After the couple's record is updated, the staff copy is set to the couple record's RESULTING value of
+    // each field that was touched (so a first write for a couple with no staff copy yet starts from the
+    // existing notes / day-of data instead of losing them, and arrayUnion / dotted updates need no special
+    // handling). Fields not touched are left alone in the staff copy.
+    async function writeStaffFields(uid, updates) {
+      if (pageIsOutdated) throw new Error("This page is out of date. Please reload it and try again.");
+      const fsm = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const coupleRef = fsm.doc(db, "couples", uid);
+      await fsm.updateDoc(coupleRef, updates);
+      const after = (await fsm.getDoc(coupleRef)).data() || {};
+      const touched = [...new Set(Object.keys(updates).map(k => k.split(".")[0]))].filter(k => STAFF_FIELDS.includes(k));
+      if (!touched.length) return;
+      const mirror = {};
+      touched.forEach(k => { mirror[k] = (after[k] === undefined) ? fsm.deleteField() : after[k]; });
+      await fsm.setDoc(fsm.doc(db, "coupleStaff", uid), mirror, { merge: true });
     }
 
     window.adminSignOut = async function() { await signOut(auth); };
